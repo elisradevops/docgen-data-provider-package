@@ -1,0 +1,21 @@
+name: "🚀 ci"
+
+on: [pull_request]
+
+jobs:
+  build_and_test:
+    name: 🚀 build  and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📚 checkout
+        uses: actions/checkout@v2
+      - name: 🟢 node
+        uses: actions/setup-node@v2
+        with:
+          node-version: 14
+          registry-url: https://registry.npmjs.org
+      - run: npm install
+      - run: npm run build
+        env:
+          ORG_URL: ${{secrets.AZDO_ORG_URL}}
+          PAT: ${{secrets.AZDO_PAT}}

@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2015",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "baseUrl": "./src",
+    "allowJs": true,
+    "checkJs": true,
+    "outDir": "./bin",
+    "declaration": true,
+    "sourceMap": true,
+    "strict": true,
+    "lib": ["ES2017", "DOM"],
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictPropertyInitialization": false
+  },
+  "include": [
+    "**/*.ts"
+    // "test/test.ts",
+    // "test/sample.ts",
+    // "models/tfs-data.ts",
+    // "src/index.ts",
+    // "helpers/tfs.ts",
+    // "helpers/helper.ts"
+  ]
+}
