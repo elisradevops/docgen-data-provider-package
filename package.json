@@ -1,6 +1,6 @@
 {
   "name": "@elisra-devops/dg-data-provider-azuredevops",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "A document generator data provider, aimed to retrive data from azure devops",
   "repository": {
     "type": "git",
