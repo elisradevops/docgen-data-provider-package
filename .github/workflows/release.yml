@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   release:
     name: 🚀 publish
@@ -12,20 +16,25 @@ jobs:
     steps:
       - name: 📚 checkout
         uses: actions/checkout@v2
+
       - name: 🟢 node
         uses: actions/setup-node@v2
         with:
           node-version: 14
           registry-url: https://registry.npmjs.org
+
       - run: npm install
+
       - run: npm run build
-      - name:  'Automated Version Bump'
-        uses:  'phips28/gh-action-bump-version@master'
+
+      - name: 'Automated Version Bump'
+        uses: 'phips28/gh-action-bump-version@master'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           commit-message: 'CI: bumps version to {{version}} [skip ci]'
+
       - name: 🚀 publish
         run: npm publish --access public
         env:
-          NODE_AUTH_TOKEN: ${{secrets.NPM_AUTH_TOKEN}}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
