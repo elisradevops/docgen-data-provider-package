@@ -28,6 +28,8 @@ describe("Test module - tests", () => {
       "tests",
       "545",
       "546",
+      true,
+      true,
       true
     );
     expect(attachList.length > 0).toBeDefined();
@@ -48,6 +50,8 @@ describe("Test module - tests", () => {
       "tests",
       "540", 
       "549", 
+      true,
+      true,
       true
     );
     expect(attachList.length > 1000).toBeDefined(); //not enough test cases for stress test

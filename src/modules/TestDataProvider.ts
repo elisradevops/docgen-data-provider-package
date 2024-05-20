@@ -1,7 +1,7 @@
 import { TFSServices } from "../helpers/tfs";
 import { Workitem } from "../models/tfs-data";
 import { Helper, suiteData, Links, Trace, Relations } from "../helpers/helper";
-import { Query, TestSteps } from "../models/tfs-data";
+import { Query, TestSteps, Relation } from "../models/tfs-data";
 import { QueryType } from "../models/tfs-data";
 import { QueryAllTypes } from "../models/tfs-data";
 import { Column } from "../models/tfs-data";
@@ -91,7 +91,6 @@ export default class TestDataProvider {
     let testSuites = await this.GetTestSuitesForPlan(project, planId);
     // GetTestSuites(project, planId);
     Helper.suitList = [];
-    Helper.level = 1;
     let dataSuites: any = Helper.findSuitesRecursive(
       planId,
       this.orgUrl,
@@ -111,7 +110,9 @@ export default class TestDataProvider {
     project: string,
     planId: string,
     suiteId: string,
-    recursiv: boolean
+    recursiv: boolean,
+    relations: boolean,
+    CustomerRequirementId: boolean
   ): Promise<Array<any>> {
     let testCasesList: Array<any> = new Array<any>();
     let suitesTestCasesList: Array<suiteData> = await this.GetTestSuiteById(
@@ -129,7 +130,9 @@ export default class TestDataProvider {
       let testCseseWithSteps: any = await this.StructureTestCase(
         project,
         testCases,
-        suitesTestCasesList[i]
+        suitesTestCasesList[i],
+        relations,
+        CustomerRequirementId
       );
       if (testCseseWithSteps.length > 0)
         testCasesList = [...testCasesList, ...testCseseWithSteps];
@@ -140,18 +143,23 @@ export default class TestDataProvider {
   async StructureTestCase(
     project: string,
     testCases: any,
-    suite: suiteData
+    suite: suiteData,
+    relations: boolean,
+    CustomerRequirementId: boolean
   ): Promise<Array<any>> {
+
     let url = this.orgUrl + project + "/_workitems/edit/";
     let testCasesUrlList: Array<any> = new Array<any>();
     //let tesrCase:TestCase;
     for (let i = 0; i < testCases.count; i++) {
       try{
+      let newurl = testCases.value[i].testCase.url + "?$expand=All"
       let test: any = await TFSServices.getItemContent(
-        testCases.value[i].testCase.url,
+        newurl,
         this.token
       );
       let testCase: TestCase = new TestCase();
+
       testCase.title = test.fields["System.Title"];
       testCase.area = test.fields["System.AreaPath"];
       testCase.description = test.fields["System.Description"];
@@ -164,12 +172,45 @@ export default class TestDataProvider {
           test.fields["Microsoft.VSTS.TCM.Steps"]
         );
         testCase.steps = steps;
-      }
+      }      
+      if (relations && test.relations) {
+        for (const relation of test.relations) {
+            // Only proceed if the URL contains 'workItems'
+            if (relation.url.includes('/workItems/')) {
+                try {
+                    let relatedItemContent: any = await TFSServices.getItemContent(relation.url, this.token);
+                    
+                    // Check if the WorkItemType is "Requirement" before adding to relations
+                    if (relatedItemContent.fields["System.WorkItemType"] === "Requirement") {
+                        let customerId = undefined;
+                        // Check if CustomerRequirementId is true and set customerId
+                        if (CustomerRequirementId) {
+                            // Here we check for either of the two potential fields for customer ID
+                            customerId = relatedItemContent.fields["Custom.CustomerID"] || relatedItemContent.fields["Elisra.CustomerRequirementId"] || " ";
+                        }
+                        
+                        let relatedItem: Relation = {
+                            id: relatedItemContent.id,
+                            title: relatedItemContent.fields["System.Title"],
+                            customerId: customerId  // Add this field conditionally
+                        };
+                        testCase.relations.push(relatedItem);
+                    }
+                } catch (fetchError) {
+                    // Log error silently or handle as needed
+                    console.error("Failed to fetch relation content", fetchError);
+                    logger.error(`Failed to fetch relation content for URL ${relation.url}: ${fetchError}`);
+                }
+            }
+        }
+    }    
       testCasesUrlList.push(testCase);
     }
+    
     catch{
       logger.error(`ran into an issue while retriving testCase ${testCases.value[i].testCase.id}`);
     }
+    
   }
 
     return testCasesUrlList;
