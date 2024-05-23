@@ -4,7 +4,9 @@ on:
   push:
     branches:
       - main
-
+    paths-ignore:
+      - '.github/**'
+      
 permissions:
   contents: write
   packages: write
@@ -17,7 +19,9 @@ jobs:
     steps:
       - name: 📚 checkout
         uses: actions/checkout@v2
-
+        with:
+          token:  ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          
       - name: 🟢 node
         uses: actions/setup-node@v2
         with:
@@ -34,8 +38,6 @@ jobs:
 
       - name: 'Automated Version Bump'
         uses: 'phips28/gh-action-bump-version@master'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           commit-message: 'CI: bumps version to {{version}} [skip ci]'
 
