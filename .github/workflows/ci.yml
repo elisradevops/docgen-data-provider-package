@@ -1,7 +1,11 @@
 name: "🚀 ci"
 
-on: [pull_request]
-
+on:
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/**'
 jobs:
   build_and_test:
     name: 🚀 build  and test
