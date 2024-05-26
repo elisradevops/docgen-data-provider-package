@@ -186,7 +186,7 @@ export default class TestDataProvider {
                         // Check if CustomerRequirementId is true and set customerId
                         if (CustomerRequirementId) {
                             // Here we check for either of the two potential fields for customer ID
-                            customerId = relatedItemContent.fields["Custom.CustomerID"] || relatedItemContent.fields["Elisra.CustomerRequirementId"] || " ";
+                            customerId = relatedItemContent.fields["Custom.CustomerRequirementID"] || relatedItemContent.fields["Custom.CustomerID"] || relatedItemContent.fields["Elisra.CustomerRequirementId"] || " ";
                         }
                         
                         let relatedItem: Relation = {
