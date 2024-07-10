@@ -1,4 +1,3 @@
-
 export class QueryAllTypes {
   q: Query;
   source: number;
@@ -45,7 +44,7 @@ export class Workitem {
   fields: value[];
   Source: number = 0;
   attachments: any[];
-  level:number;
+  level: number;
 }
 export class value {
   name: string;
@@ -53,12 +52,12 @@ export class value {
 }
 enum QueryResultType {
   WorkItem = 1,
-  WorkItemLink = 2
+  WorkItemLink = 2,
 }
 export enum QueryType {
-  Flat = "flat",
-  Tree = "tree",
-  OneHop = "oneHop"
+  Flat = 'flat',
+  Tree = 'tree',
+  OneHop = 'oneHop',
 }
 
 class Workitemrelation {
@@ -137,10 +136,32 @@ export class TestCase {
   }
 }
 
-export type Relation = {
+type Relation = RequirementRelation | BugRelation;
+
+type RequirementRelation = {
+  type: 'requirement';
   id: string;
   title: string;
   customerId?: string;
+};
+
+type BugRelation = {
+  type: 'bug';
+  id: string;
+  title: string;
+  severity?: string;
+};
+
+export function createRequirementRelation(
+  id: string,
+  title: string,
+  customerId?: string
+): RequirementRelation {
+  return { type: 'requirement', id, title, customerId };
+}
+
+export function createBugRelation(id: string, title: string, severity?: string): BugRelation {
+  return { type: 'bug', id, title, severity };
 }
 
 export class TestSteps {
