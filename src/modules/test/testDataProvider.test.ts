@@ -13,11 +13,6 @@ describe('Test module - tests', () => {
     let json: any = await TestDataProvider.GetTestPlans('tests');
     expect(json.count).toBeGreaterThanOrEqual(1);
   });
-  test('should return configurations of test plans', async () => {
-    let TestDataProvider = await dgDataProviderAzureDevOps.getTestDataProvider();
-    let json: any = await TestDataProvider.getTestConfigurations('tests');
-    expect(json.count).toBeGreaterThanOrEqual(1);
-  });
   test('should return test suites by plan', async () => {
     //not working yet
     let TestDataProvider = await dgDataProviderAzureDevOps.getTestDataProvider();

@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2015",
+    "target": "ES2022",
     "module": "commonjs",
     "moduleResolution": "node",
     "baseUrl": "./src",
@@ -10,7 +10,7 @@
     "declaration": true,
     "sourceMap": true,
     "strict": true,
-    "lib": ["ES2017", "DOM"],
+    "lib": ["ES2022", "DOM"],
     "noImplicitAny": true,
     "strictNullChecks": true,
     "strictPropertyInitialization": false

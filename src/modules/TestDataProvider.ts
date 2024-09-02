@@ -32,13 +32,6 @@ export default class TestDataProvider {
     let testPlanUrl: string = `${this.orgUrl}${project}/_apis/test/plans`;
     return TFSServices.getItemContent(testPlanUrl, this.token);
   }
-
-  //Get all test configurations
-  async getTestConfigurations(project: string): Promise<any> {
-    let url: string = `${this.orgUrl}${project}/_apis/testplan/configurations`;
-    return TFSServices.getItemContent(url, this.token);
-  }
-
   //async get data test
 
   // get all test suits in projct test plan
