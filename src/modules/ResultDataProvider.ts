@@ -244,7 +244,8 @@ export default class ResultDataProvider {
         }
       }
     }
-    return detailedResults;
+    //Filter out all the results with no comment
+    return detailedResults.filter((result) => result.stepComments !== '');
   }
 
   /**
@@ -312,6 +313,11 @@ export default class ResultDataProvider {
     };
   }
 
+  /**
+   * Fetching all the linked wi for the given test case
+   * @param testCaseId Test case id number
+   * @returns Array of linked Work items
+   */
   private async fetchLinkedWi(project: string, testCaseId: string): Promise<any[]> {
     try {
       // Construct the base URL and fetch linked work items
@@ -352,6 +358,13 @@ export default class ResultDataProvider {
     }
   }
 
+  /**
+   * Mapping the linked work item of the OpenPcr table
+   * @param wis Work item list
+   * @param project
+   * @returns array of mapped workitems
+   */
+
   private MapLinkedWorkItem(wis: any[], project: string): any[] {
     return wis.map((item) => {
       const { id, fields } = item;
@@ -366,6 +379,40 @@ export default class ResultDataProvider {
   }
 
   /**
+   * Fetching Open PCRs data
+   */
+
+  private async fetchOpenPcrData(testItems: any[], projectName: string, combinedResults: any[]) {
+    const linkedWorkItemsPromises = testItems.map((summaryItem) =>
+      this.fetchLinkedWi(projectName, summaryItem.testId)
+        .then((linkItems) => ({
+          ...summaryItem,
+          linkItems,
+        }))
+        .catch((error: any) => {
+          logger.error(`Error occurred for testCase ${summaryItem.testId}: ${error.message}`);
+          return { ...summaryItem, testPointsItems: [] };
+        })
+    );
+
+    const linkedWorkItems = await Promise.all(linkedWorkItemsPromises);
+
+    const flatOpenPcrsItems = linkedWorkItems
+      .filter((item) => item.linkItems.length > 0)
+      .flatMap((item) => {
+        const { linkItems, ...restItem } = item;
+        return linkItems.map((linkedItem: any) => ({ ...restItem, ...linkedItem }));
+      });
+
+    // Add openPCR to combined results
+    combinedResults.push({
+      contentControl: 'open-pcr-content-control',
+      data: flatOpenPcrsItems,
+      skin: 'open-pcr-table',
+    });
+  }
+
+  /**
    * Combines the results of test group result summary, test results summary, and detailed results summary into a single key-value pair array.
    */
   public async getCombinedResultsSummary(
@@ -373,7 +420,9 @@ export default class ResultDataProvider {
     projectName: string,
     selectedSuiteIds?: number[],
     addConfiguration: boolean = false,
-    isHierarchyGroupName: boolean = false
+    isHierarchyGroupName: boolean = false,
+    includeOpenPCRs: boolean = false,
+    includeTestLog: boolean = false
   ): Promise<any[]> {
     const combinedResults: any[] = [];
     //TODO: add support for fetching all the data of the attachments
@@ -398,10 +447,12 @@ export default class ResultDataProvider {
       const testPoints = await Promise.all(testPointsPromises);
 
       // 1. Calculate Test Group Result Summary
-      const summarizedResults = testPoints.map((testPoint) => {
-        const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
-        return { ...testPoint, groupResultSummary };
-      });
+      const summarizedResults = testPoints
+        .filter((testPoint) => testPoint.testPointsItems && testPoint.testPointsItems.length > 0)
+        .map((testPoint) => {
+          const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
+          return { ...testPoint, groupResultSummary };
+        });
 
       const totalSummary = this.calculateTotalSummary(summarizedResults);
       const testGroupArray = summarizedResults.map((item) => ({
@@ -460,36 +511,15 @@ export default class ResultDataProvider {
       });
       */
 
-      //5. Open PCRs data (only if enabled)
-      const linkedWorkItemsPromises = testResultsSummary.map((summaryItem) =>
-        this.fetchLinkedWi(projectName, summaryItem.testId)
-          .then((linkItems) => ({
-            ...summaryItem,
-            linkItems,
-          }))
-          .catch((error: any) => {
-            logger.error(`Error occurred for testCase ${summaryItem.testId}: ${error.message}`);
-            return { ...summaryItem, testPointsItems: [] };
-          })
-      );
-
-      const linkedWorkItems = await Promise.all(linkedWorkItemsPromises);
-
-      const flatOpenPcrsItems = linkedWorkItems
-        .filter((item) => item.linkItems.length > 0)
-        .flatMap((item) => {
-          const { linkItems, ...restItem } = item;
-          return linkItems.map((linkedItem: any) => ({ ...restItem, ...linkedItem }));
-        });
-
-      // Add openPCR to combined results
-      combinedResults.push({
-        contentControl: 'open-pcr-content-control',
-        data: flatOpenPcrsItems,
-        skin: 'open-pcr-table',
-      });
+      if (includeOpenPCRs) {
+        //5. Open PCRs data (only if enabled)
+        await this.fetchOpenPcrData(testResultsSummary, projectName, combinedResults);
+      }
 
       //6. Test Log (only if enabled)
+      if (includeTestLog) {
+        //TODO: implement Test log data fetching
+      }
 
       return combinedResults;
     } catch (error: any) {
