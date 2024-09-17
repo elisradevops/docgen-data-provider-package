@@ -2,6 +2,7 @@ import { TFSServices } from '../helpers/tfs';
 import { TestSteps } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 import logger from '../utils/logger';
+import { error, log } from 'console';
 
 export default class ResultDataProvider {
   orgUrl: string = '';
@@ -243,7 +244,8 @@ export default class ResultDataProvider {
         }
       }
     }
-    return detailedResults;
+    //Filter out all the results with no comment
+    return detailedResults.filter((result) => result.stepComments !== '' || result.stepStatus === 'Failed');
   }
 
   /**
@@ -306,8 +308,120 @@ export default class ResultDataProvider {
       testSuiteId,
       lastRunId,
       lastResultId,
+      //Currently supporting only the
       iteration: iterations.length > 0 ? iterations[iterations.length - 1] : undefined,
     };
+  }
+
+  /**
+   * Fetching all the linked wi for the given test case
+   * @param testCaseId Test case id number
+   * @returns Array of linked Work items
+   */
+  private async fetchLinkedWi(project: string, testCaseId: string): Promise<any[]> {
+    try {
+      // Construct the base URL and fetch linked work items
+      const vstmrUrl = new URL(this.orgUrl);
+      vstmrUrl.hostname = 'vstmr.dev.azure.com';
+      const getLinkedWiUrl = `${vstmrUrl.toString()}${project}/_apis/testresults/results/workitems?workItemCategory=all&testCaseId=${testCaseId}`;
+
+      // Fetch linked work items
+      const { value: linkedWorkItems } = await TFSServices.getItemContent(getLinkedWiUrl, this.token);
+
+      // Check if linkedWorkItems is an array
+      if (!Array.isArray(linkedWorkItems)) {
+        throw new Error('Unexpected format for linked work items data');
+      }
+
+      if (linkedWorkItems.length === 0) {
+        return [];
+      }
+
+      // Prepare list of work item IDs
+      const idsString = linkedWorkItems.map((item: any) => item.id).join(',');
+
+      // Construct URL to fetch work item details
+      const getWiDataUrl = `${this.orgUrl.toString()}${project}/_apis/wit/workItems?ids=${idsString}&$expand=1`;
+
+      // Fetch work item details
+      const { value: wi } = await TFSServices.getItemContent(getWiDataUrl, this.token);
+
+      // Validate response and return formatted data
+      if (!Array.isArray(wi)) {
+        throw new Error('Unexpected format for work items data');
+      }
+
+      //Filter out wi in Closed or resolved states
+      const filteredWi = wi.filter(({ fields }) => {
+        const { 'System.WorkItemType': workItemType, 'System.State': state } = fields;
+        return (
+          (workItemType === 'Change Request' || workItemType === 'Bug') &&
+          state !== 'Closed' &&
+          state !== 'Resolved'
+        );
+      });
+
+      return filteredWi?.length > 0 ? this.MapLinkedWorkItem(filteredWi, project) : [];
+    } catch (error) {
+      logger.error('Error fetching linked work items:', error);
+      return []; // Return an empty array or handle it as needed
+    }
+  }
+
+  /**
+   * Mapping the linked work item of the OpenPcr table
+   * @param wis Work item list
+   * @param project
+   * @returns array of mapped workitems
+   */
+
+  private MapLinkedWorkItem(wis: any[], project: string): any[] {
+    return wis.map((item) => {
+      const { id, fields } = item;
+      return {
+        pcrId: id,
+        workItemType: fields['System.WorkItemType'],
+        title: fields['System.Title'],
+        severity: fields['Microsoft.VSTS.Common.Severity'] || '',
+        pcrUrl: `${this.orgUrl}${project}/_workitems/edit/${id}`,
+      };
+    });
+  }
+
+  /**
+   * Fetching Open PCRs data
+   */
+
+  private async fetchOpenPcrData(testItems: any[], projectName: string, combinedResults: any[]) {
+    const linkedWorkItemsPromises = testItems.map((summaryItem) =>
+      this.fetchLinkedWi(projectName, summaryItem.testId)
+        .then((linkItems) => ({
+          ...summaryItem,
+          linkItems,
+        }))
+        .catch((error: any) => {
+          logger.error(`Error occurred for testCase ${summaryItem.testId}: ${error.message}`);
+          return { ...summaryItem, linkItems: [] };
+        })
+    );
+
+    const linkedWorkItems = await Promise.all(linkedWorkItemsPromises);
+
+    const flatOpenPcrsItems = linkedWorkItems
+      .filter((item) => item.linkItems.length > 0)
+      .flatMap((item) => {
+        const { linkItems, ...restItem } = item;
+        return linkItems.map((linkedItem: any) => ({ ...restItem, ...linkedItem }));
+      });
+
+    if (flatOpenPcrsItems?.length > 0) {
+      // Add openPCR to combined results
+      combinedResults.push({
+        contentControl: 'open-pcr-content-control',
+        data: flatOpenPcrsItems,
+        skin: 'open-pcr-table',
+      });
+    }
   }
 
   /**
@@ -318,10 +432,12 @@ export default class ResultDataProvider {
     projectName: string,
     selectedSuiteIds?: number[],
     addConfiguration: boolean = false,
-    isHierarchyGroupName: boolean = false
+    isHierarchyGroupName: boolean = false,
+    includeOpenPCRs: boolean = false,
+    includeTestLog: boolean = false
   ): Promise<any[]> {
     const combinedResults: any[] = [];
-
+    //TODO: add support for fetching all the data of the attachments
     try {
       // Fetch test suites
       const suites = await this.fetchTestSuites(
@@ -343,10 +459,12 @@ export default class ResultDataProvider {
       const testPoints = await Promise.all(testPointsPromises);
 
       // 1. Calculate Test Group Result Summary
-      const summarizedResults = testPoints.map((testPoint) => {
-        const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
-        return { ...testPoint, groupResultSummary };
-      });
+      const summarizedResults = testPoints
+        .filter((testPoint) => testPoint.testPointsItems && testPoint.testPointsItems.length > 0)
+        .map((testPoint) => {
+          const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
+          return { ...testPoint, groupResultSummary };
+        });
 
       const totalSummary = this.calculateTotalSummary(summarizedResults);
       const testGroupArray = summarizedResults.map((item) => ({
@@ -378,6 +496,7 @@ export default class ResultDataProvider {
       // 3. Calculate Detailed Results Summary
       const testData = await this.fetchTestData(suites, projectName, testPlanId);
       const iterations = await this.fetchAllIterations(testData, projectName);
+
       const detailedResultsSummary = this.alignStepsWithIterations(testData, iterations);
 
       // Add detailed results summary to combined results
@@ -386,6 +505,33 @@ export default class ResultDataProvider {
         data: detailedResultsSummary,
         skin: 'detailed-test-result-table',
       });
+      /* TODO: Add it later after the design of the appendix... also add the add attachment boolean here to see its needed or not...
+      //4. Fetch all attachment data
+      const iterationDataForAttachments = iterations.map((iterationItem) => {
+        return {
+          suiteId: iterationItem.suiteId,
+          runId: iterationItem.lastRunId,
+          resultId: iterationItem.lastResultId,
+          iteration: iterationItem.iteration,
+        };
+      });
+
+      combinedResults.push({
+        contentControl: 'str-attachment',
+        data: iterationDataForAttachments,
+        skin: 'test-run-attachment-list',
+      });
+      */
+
+      if (includeOpenPCRs) {
+        //5. Open PCRs data (only if enabled)
+        await this.fetchOpenPcrData(testResultsSummary, projectName, combinedResults);
+      }
+
+      //6. Test Log (only if enabled)
+      if (includeTestLog) {
+        //TODO: implement Test log data fetching
+      }
 
       return combinedResults;
     } catch (error: any) {

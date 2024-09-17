@@ -1,19 +1,24 @@
-import { TFSServices } from "../helpers/tfs";
-import { Workitem } from "../models/tfs-data";
-import { Helper, suiteData, Links, Trace, Relations } from "../helpers/helper";
-import { Query, TestSteps } from "../models/tfs-data";
-import { QueryType } from "../models/tfs-data";
-import { QueryAllTypes } from "../models/tfs-data";
-import { Column } from "../models/tfs-data";
-import { value } from "../models/tfs-data";
-import { TestCase } from "../models/tfs-data";
-import * as xml2js from "xml2js";
+import { TFSServices } from '../helpers/tfs';
+import { Workitem } from '../models/tfs-data';
+import { Helper, suiteData, Links, Trace, Relations } from '../helpers/helper';
+import { Query, TestSteps } from '../models/tfs-data';
+import { QueryType } from '../models/tfs-data';
+import { QueryAllTypes } from '../models/tfs-data';
+import { Column } from '../models/tfs-data';
+import { value } from '../models/tfs-data';
+import { TestCase } from '../models/tfs-data';
+import * as xml2js from 'xml2js';
 
-import logger from "../utils/logger";
+import logger from '../utils/logger';
+
+// Define the type of the dictionary
+type Dictionary<T> = {
+  [key: string]: T[];
+};
 
 export default class TicketsDataProvider {
-  orgUrl: string = "";
-  token: string = "";
+  orgUrl: string = '';
+  token: string = '';
   queriesList: Array<any> = new Array<any>();
 
   constructor(orgUrl: string, token: string) {
@@ -21,17 +26,11 @@ export default class TicketsDataProvider {
     this.token = token;
   }
 
-  async GetWorkItem(
-    project: string,
-    id: string
-  ): Promise<any> {
+  async GetWorkItem(project: string, id: string): Promise<any> {
     let url = `${this.orgUrl}${project}/_apis/wit/workitems/${id}?$expand=All`;
     return TFSServices.getItemContent(url, this.token);
   }
-  async GetLinksByIds(
-    project: string, 
-    ids: any
-  ) {
+  async GetLinksByIds(project: string, ids: any) {
     var trace: Array<Trace> = new Array<Trace>();
     let wis = await this.PopulateWorkItemsByIds(ids, project);
     let linksMap: any = await this.GetRelationsIds(wis);
@@ -42,37 +41,35 @@ export default class TicketsDataProvider {
       traceItem = await this.GetParentLink(project, wis[i]);
 
       if (linksMap.get(wis[i].id).rels.length > 0) {
-        relations = await this.PopulateWorkItemsByIds(
-          linksMap.get(wis[i].id).rels,
-          project
-        );
+        relations = await this.PopulateWorkItemsByIds(linksMap.get(wis[i].id).rels, project);
         traceItem.links = await this.GetLinks(project, wis[i], relations);
       }
       trace.push(traceItem);
     }
     return trace;
   }
-  async GetParentLink(
-    project: string,
-    wi: any
-  ) {
+
+  async GetTestResult(project: string, runId: string, resultId: string): Promise<any> {
+    const url = new URL(this.orgUrl);
+    // Switch to 'vstmr.dev.azure.com'
+    url.hostname = 'vstmr.dev.azure.com';
+    const vstmrOrgUrl = `${url.toString()}${project}/_apis/tcm/runs/${runId}/results/${resultId}?detailsToInclude=5`;
+    return TFSServices.getItemContent(vstmrOrgUrl, this.token);
+  }
+
+  async GetParentLink(project: string, wi: any) {
     let trace: Trace = new Trace();
     if (wi != null) {
       trace.id = wi.id;
-      trace.title = wi.fields["System.Title"];
-      trace.url = this.orgUrl + project + "/_workitems/edit/" + wi.id;
-      if (
-        wi.fields["System.CustomerId"] != null &&
-        wi.fields["System.CustomerId"] != undefined
-      ) {
-        trace.customerId = wi.fields["System.CustomerId"];
+      trace.title = wi.fields['System.Title'];
+      trace.url = this.orgUrl + project + '/_workitems/edit/' + wi.id;
+      if (wi.fields['System.CustomerId'] != null && wi.fields['System.CustomerId'] != undefined) {
+        trace.customerId = wi.fields['System.CustomerId'];
       }
     }
     return trace;
   }
-  async GetRelationsIds(
-    ids: any
-  ) {
+  async GetRelationsIds(ids: any) {
     let rel = new Map<string, Relations>();
     try {
       for (let i = 0; i < ids.length; i++) {
@@ -80,8 +77,8 @@ export default class TicketsDataProvider {
         link.id = ids[i].id;
         if (ids[i].relations != null)
           for (let j = 0; j < ids[i].relations.length; j++) {
-            if (ids[i].relations[j].rel != "AttachedFile") {
-              let index = ids[i].relations[j].url.lastIndexOf("/");
+            if (ids[i].relations[j].rel != 'AttachedFile') {
+              let index = ids[i].relations[j].url.lastIndexOf('/');
               let id = ids[i].relations[j].url.substring(index + 1);
               link.rels.push(id);
             }
@@ -91,23 +88,19 @@ export default class TicketsDataProvider {
     } catch (e) {}
     return rel;
   }
-  async GetLinks(
-    project: string,
-    wi: any,
-    links: any
-  ) {
+  async GetLinks(project: string, wi: any, links: any) {
     var linkList: Array<Links> = new Array<Links>();
     for (let i = 0; i < wi.relations.length; i++) {
       for (let j = 0; j < links.length; j++) {
-        let index = wi.relations[i].url.lastIndexOf("/");
+        let index = wi.relations[i].url.lastIndexOf('/');
         let linkId = wi.relations[i].url.substring(index + 1);
         if (linkId == links[j].id) {
           var link = new Links();
           link.type = wi.relations[i].rel;
           link.id = links[j].id;
-          link.title = links[j].fields["System.Title"];
-          link.description = links[j].fields["System.Description"];
-          link.url = this.orgUrl + project + "/_workitems/edit/" + linkId;
+          link.title = links[j].fields['System.Title'];
+          link.description = links[j].fields['System.Description'];
+          link.url = this.orgUrl + project + '/_workitems/edit/' + linkId;
           linkList.push(link);
           break;
         }
@@ -116,16 +109,11 @@ export default class TicketsDataProvider {
     return linkList;
   }
   // gets queries recursiv
-  async GetSharedQueries(
-    project: string,
-    path: string
-  ): Promise<any> {
+  async GetSharedQueries(project: string, path: string): Promise<any> {
     let url;
     try {
-      if (path == "")
-        url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=1`;
-      else
-        url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=1`;
+      if (path == '') url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=1`;
+      else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=1`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
       for (let i = 0; i < queries.children.length; i++)
         if (queries.children[i].isFolder) {
@@ -138,9 +126,7 @@ export default class TicketsDataProvider {
     } catch (e) {}
   }
   // get queris structured
-  GetModeledQuery(
-    list: Array<any>
-  ): Array<any> {
+  GetModeledQuery(list: Array<any>): Array<any> {
     let queryListObject: Array<any> = [];
     list.forEach((query) => {
       let newObj = {
@@ -153,14 +139,11 @@ export default class TicketsDataProvider {
     return queryListObject;
   }
   // gets query results
-  async GetQueryResultsByWiqlHref(
-    wiqlHref: string,
-    project: string
-  ): Promise<any> {
+  async GetQueryResultsByWiqlHref(wiqlHref: string, project: string): Promise<any> {
     try {
       let results: any = await TFSServices.getItemContent(wiqlHref, this.token);
       let modeledResult = await this.GetModeledQueryResults(results, project);
-      if (modeledResult.queryType == "tree") {
+      if (modeledResult.queryType == 'tree') {
         let levelResults: Array<Workitem> = Helper.LevelBuilder(
           modeledResult,
           modeledResult.workItems[0].fields[0].value
@@ -171,14 +154,11 @@ export default class TicketsDataProvider {
     } catch (e) {}
   }
   // gets query results
-  async GetQueryResultsByWiqlString(
-    wiql: string,
-    projectName: string
-  ): Promise<any> {
+  async GetQueryResultsByWiqlString(wiql: string, projectName: string): Promise<any> {
     let res;
     let url = `${this.orgUrl}${projectName}/_apis/wit/wiql?$top=2147483646&expand={all}`;
     try {
-      res = await TFSServices.getItemContent(url, this.token, "post", {
+      res = await TFSServices.getItemContent(url, this.token, 'post', {
         query: wiql,
       });
     } catch (error) {
@@ -187,20 +167,14 @@ export default class TicketsDataProvider {
     }
     return res;
   }
-  async GetQueryResultById(
-    query: string,
-    project: string
-  ): Promise<any> {
+  async GetQueryResultById(query: string, project: string): Promise<any> {
     var url = `${this.orgUrl}${project}/_apis/wit/queries/${query}`;
     let querie: any = await TFSServices.getItemContent(url, this.token);
     var wiql = querie._links.wiql;
     return await this.GetQueryResultsByWiqlHref(wiql.href, project);
   }
 
-  async PopulateWorkItemsByIds(
-    workItemsArray: any[] = [],
-    projectName: string = ""
-  ): Promise<any[]> {
+  async PopulateWorkItemsByIds(workItemsArray: any[] = [], projectName: string = ''): Promise<any[]> {
     let url = `${this.orgUrl}${projectName}/_apis/wit/workitemsbatch`;
     let res: any[] = [];
     let divByMax = Math.floor(workItemsArray.length / 200);
@@ -211,8 +185,8 @@ export default class TicketsDataProvider {
       let to = (i + 1) * 200;
       let currentIds = workItemsArray.slice(from, to);
       try {
-        let subRes = await TFSServices.getItemContent(url, this.token, "post", {
-          $expand: "Relations",
+        let subRes = await TFSServices.getItemContent(url, this.token, 'post', {
+          $expand: 'Relations',
           ids: currentIds,
         });
         res = [...res, ...subRes.value];
@@ -225,12 +199,9 @@ export default class TicketsDataProvider {
     //compliting the rimainder
     if (modulusByMax !== 0) {
       try {
-        let currentIds = workItemsArray.slice(
-          workItemsArray.length - modulusByMax,
-          workItemsArray.length
-        );
-        let subRes = await TFSServices.getItemContent(url, this.token, "post", {
-          $expand: "Relations",
+        let currentIds = workItemsArray.slice(workItemsArray.length - modulusByMax, workItemsArray.length);
+        let subRes = await TFSServices.getItemContent(url, this.token, 'post', {
+          $expand: 'Relations',
           ids: currentIds,
         });
         res = [...res, ...subRes.value];
@@ -243,15 +214,9 @@ export default class TicketsDataProvider {
 
     return res;
   }
-  
-  async GetModeledQueryResults(
-    results: any,
-    project: string
-  ) {
-    let ticketsDataProvider = new TicketsDataProvider(
-      this.orgUrl,
-      this.token,
-    );
+
+  async GetModeledQueryResults(results: any, project: string) {
+    let ticketsDataProvider = new TicketsDataProvider(this.orgUrl, this.token);
     var queryResult: Query = new Query();
     queryResult.asOf = results.asOf;
     queryResult.queryResultType = results.queryResultType;
@@ -262,10 +227,7 @@ export default class TicketsDataProvider {
       //TODO:check if wi.relations exist
       //TODO: add attachment to any list from 1
       for (var j = 0; j < results.workItems.length; j++) {
-        let wi = await ticketsDataProvider.GetWorkItem(
-          project,
-          results.workItems[j].id
-        );
+        let wi = await ticketsDataProvider.GetWorkItem(project, results.workItems[j].id);
 
         queryResult.workItems[j] = new Workitem();
         queryResult.workItems[j].url = results.workItems[j].url;
@@ -278,23 +240,20 @@ export default class TicketsDataProvider {
           queryResult.columns[i] = new Column();
           queryResult.workItems[j].fields[i] = new value();
           queryResult.columns[i].name = results.columns[i].name;
-          queryResult.columns[i].referenceName =
-            results.columns[i].referenceName;
+          queryResult.columns[i].referenceName = results.columns[i].referenceName;
           queryResult.columns[i].url = results.columns[i].url;
-          if (results.columns[i].referenceName.toUpperCase() == "SYSTEM.ID") {
+          if (results.columns[i].referenceName.toUpperCase() == 'SYSTEM.ID') {
             queryResult.workItems[j].fields[i].value = wi.id.toString();
-            queryResult.workItems[j].fields[i].name = "ID";
+            queryResult.workItems[j].fields[i].name = 'ID';
           } else if (
-            results.columns[i].referenceName.toUpperCase() ==
-              "SYSTEM.ASSIGNEDTO" &&
+            results.columns[i].referenceName.toUpperCase() == 'SYSTEM.ASSIGNEDTO' &&
             wi.fields[results.columns[i].referenceName] != null
           )
             queryResult.workItems[j].fields[i].value =
               wi.fields[results.columns[i].referenceName].displayName;
           else {
             let s: string = wi.fields[results.columns[i].referenceName];
-            queryResult.workItems[j].fields[i].value =
-              wi.fields[results.columns[i].referenceName];
+            queryResult.workItems[j].fields[i].value = wi.fields[results.columns[i].referenceName];
             queryResult.workItems[j].fields[i].name = results.columns[i].name;
           }
         }
@@ -304,10 +263,7 @@ export default class TicketsDataProvider {
       this.BuildColumns(results, queryResult);
       for (var j = 0; j < results.workItemRelations.length; j++) {
         if (results.workItemRelations[j].target != null) {
-          let wiT = await ticketsDataProvider.GetWorkItem(
-            project,
-            results.workItemRelations[j].target.id
-          );
+          let wiT = await ticketsDataProvider.GetWorkItem(project, results.workItemRelations[j].target.id);
           // var rel = new QueryAllTypes();
           queryResult.workItems[j] = new Workitem();
           queryResult.workItems[j].url = wiT.url;
@@ -319,33 +275,25 @@ export default class TicketsDataProvider {
           for (i = 0; i < queryResult.columns.length; i++) {
             //..  rel.q.workItems[j].fields[i] = new value();
             queryResult.workItems[j].fields[i] = new value();
-            queryResult.workItems[j].fields[i].name =
-              queryResult.columns[i].name;
+            queryResult.workItems[j].fields[i].name = queryResult.columns[i].name;
             if (
-              results.columns[i].referenceName.toUpperCase() ==
-                "SYSTEM.ASSIGNEDTO" &&
+              results.columns[i].referenceName.toUpperCase() == 'SYSTEM.ASSIGNEDTO' &&
               wiT.fields[results.columns[i].referenceName] != null
             )
               queryResult.workItems[j].fields[i].value =
                 wiT.fields[results.columns[i].referenceName].displayName;
-            else
-              queryResult.workItems[j].fields[i].value =
-                wiT.fields[queryResult.columns[i].referenceName];
+            else queryResult.workItems[j].fields[i].value = wiT.fields[queryResult.columns[i].referenceName];
             //}
           }
           if (results.workItemRelations[j].source != null)
-            queryResult.workItems[j].Source =
-              results.workItemRelations[j].source.id;
+            queryResult.workItems[j].Source = results.workItemRelations[j].source.id;
         }
       }
     }
     return queryResult;
   }
 
-  BuildColumns(
-    results: any,
-    queryResult: Query
-  ) {
+  BuildColumns(results: any, queryResult: Query) {
     for (var i = 0; i < results.columns.length; i++) {
       queryResult.columns[i] = new Column();
       queryResult.columns[i].name = results.columns[i].name;
@@ -354,10 +302,7 @@ export default class TicketsDataProvider {
     }
   }
 
-  async GetIterationsByTeamName(
-    projectName: string,
-    teamName: string
-  ): Promise<any[]> {
+  async GetIterationsByTeamName(projectName: string, teamName: string): Promise<any[]> {
     let res: any;
     let url;
     if (teamName) {
@@ -365,36 +310,26 @@ export default class TicketsDataProvider {
     } else {
       url = `${this.orgUrl}${projectName}/_apis/work/teamsettings/iterations`;
     }
-    res = await TFSServices.getItemContent(url, this.token, "get");
+    res = await TFSServices.getItemContent(url, this.token, 'get');
     return res;
   } //GetIterationsByTeamName
 
-  async CreateNewWorkItem(
-    projectName: string,
-    wiBody: any,
-    wiType: string,
-    byPass: boolean
-  ) {
-    let url = 
-    `${this.orgUrl}${projectName}/_apis/wit/workitems/$${wiType}?bypassRules=${String(byPass).toString()}`;
-    return TFSServices.getItemContent(url,this.token,"POST",wiBody,{"Content-Type": "application/json-patch+json"});
-    } //CreateNewWorkItem
+  async CreateNewWorkItem(projectName: string, wiBody: any, wiType: string, byPass: boolean) {
+    let url = `${this.orgUrl}${projectName}/_apis/wit/workitems/$${wiType}?bypassRules=${String(byPass).toString()}`;
+    return TFSServices.getItemContent(url, this.token, 'POST', wiBody, {
+      'Content-Type': 'application/json-patch+json',
+    });
+  } //CreateNewWorkItem
 
-  async GetWorkitemAttachments(
-    project: string,
-    id: string
-  ) {
+  async GetWorkitemAttachments(project: string, id: string) {
     let attachmentList: Array<string> = [];
-    let ticketsDataProvider = new TicketsDataProvider(
-      this.orgUrl,
-      this.token,
-    );
+    let ticketsDataProvider = new TicketsDataProvider(this.orgUrl, this.token);
     try {
       let wi = await ticketsDataProvider.GetWorkItem(project, id);
       if (!wi.relations) return [];
       await Promise.all(
         wi.relations.map(async (relation: any) => {
-          if (relation.rel == "AttachedFile") {
+          if (relation.rel == 'AttachedFile') {
             let attachment = JSON.parse(JSON.stringify(relation));
             attachment.downloadUrl = `${relation.url}/${relation.attributes.name}`;
             attachmentList.push(attachment);
@@ -409,26 +344,64 @@ export default class TicketsDataProvider {
     }
   }
 
-  async GetWorkitemAttachmentsJSONData(
-    project: string,
-    attachmentId: string
-  ) {
-    let wiuRL =`${this.orgUrl}${project}/_apis/wit/attachments/${attachmentId}`;
+  async GetTestRunResultAttachments(project: string, runId: string, resultId: string) {
+    const includedAttachments: Dictionary<any> = {};
+
+    //Define the case level attachments
+    includedAttachments['caseLevel'] = [];
+    //Define the step level attachments
+    includedAttachments['stepLevel'] = [];
+
+    try {
+      let testResult = await this.GetTestResult(project, runId, resultId);
+      if (!testResult.iterationDetails || testResult.iterationDetails.length === 0) return [];
+
+      const { iterationDetails } = testResult;
+
+      await Promise.all(
+        iterationDetails.forEach((iteration: any) => {
+          const { attachments } = iteration;
+          //Skips to the next iteration
+          if (attachments === undefined || attachments.length === 0) {
+            return;
+          }
+
+          attachments.forEach((attachment: any) => {
+            attachment.downloadUrl = `${attachment.url}/${attachment.name}`;
+          });
+
+          for (let i = 0; i < attachments.length; i++) {
+            let attachment = attachments[i];
+            const url = new URL(this.orgUrl);
+            // Switch to 'vstmr.dev.azure.com'
+            url.hostname = 'vstmr.dev.azure.com';
+            const downloadUrl = `${url.toString()}${project}/_apis/testresults/runs/${runId}/results/${resultId}/attachments/${attachment.id}/${attachment.name}`;
+            attachment.downloadUrl = downloadUrl;
+            attachment.actionPath === undefined || attachment.actionPath === ''
+              ? includedAttachments['caseLevel'].push(attachment)
+              : includedAttachments['stepLevel'].push(attachment);
+          }
+        })
+      );
+      return includedAttachments;
+    } catch (e: any) {
+      logger.error(`error fetching attachments for run ${runId}`);
+      logger.error(`${JSON.stringify(e.message)}`);
+      return [];
+    }
+  }
+
+  async GetWorkitemAttachmentsJSONData(project: string, attachmentId: string) {
+    let wiuRL = `${this.orgUrl}${project}/_apis/wit/attachments/${attachmentId}`;
     let attachment = await TFSServices.getItemContent(wiuRL, this.token);
     return attachment;
   }
 
-  async UpdateWorkItem(
-    projectName: string,
-    wiBody: any,
-    workItemId: number,
-    byPass: boolean
-  ) {
+  async UpdateWorkItem(projectName: string, wiBody: any, workItemId: number, byPass: boolean) {
     let res: any;
-    let url: string = 
-    `${this.orgUrl}${projectName}/_apis/wit/workitems/${workItemId}?bypassRules=${String(byPass).toString()}`;
-    res = await TFSServices.getItemContent(url, this.token, "patch", wiBody, {
-      "Content-Type": "application/json-patch+json",
+    let url: string = `${this.orgUrl}${projectName}/_apis/wit/workitems/${workItemId}?bypassRules=${String(byPass).toString()}`;
+    res = await TFSServices.getItemContent(url, this.token, 'patch', wiBody, {
+      'Content-Type': 'application/json-patch+json',
     });
     return res;
   } //CreateNewWorkItem
