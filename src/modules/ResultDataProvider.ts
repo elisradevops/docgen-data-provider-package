@@ -245,7 +245,7 @@ export default class ResultDataProvider {
       }
     }
     //Filter out all the results with no comment
-    return detailedResults.filter((result) => result.stepComments !== '');
+    return detailedResults.filter((result) => result.stepComments !== '' || result.stepStatus === 'Failed');
   }
 
   /**
@@ -351,7 +351,17 @@ export default class ResultDataProvider {
         throw new Error('Unexpected format for work items data');
       }
 
-      return this.MapLinkedWorkItem(wi, project);
+      //Filter out wi in Closed or resolved states
+      const filteredWi = wi.filter(({ fields }) => {
+        const { 'System.WorkItemType': workItemType, 'System.State': state } = fields;
+        return (
+          (workItemType === 'Change Request' || workItemType === 'Bug') &&
+          state !== 'Closed' &&
+          state !== 'Resolved'
+        );
+      });
+
+      return filteredWi?.length > 0 ? this.MapLinkedWorkItem(filteredWi, project) : [];
     } catch (error) {
       logger.error('Error fetching linked work items:', error);
       return []; // Return an empty array or handle it as needed
@@ -391,7 +401,7 @@ export default class ResultDataProvider {
         }))
         .catch((error: any) => {
           logger.error(`Error occurred for testCase ${summaryItem.testId}: ${error.message}`);
-          return { ...summaryItem, testPointsItems: [] };
+          return { ...summaryItem, linkItems: [] };
         })
     );
 
@@ -404,12 +414,14 @@ export default class ResultDataProvider {
         return linkItems.map((linkedItem: any) => ({ ...restItem, ...linkedItem }));
       });
 
-    // Add openPCR to combined results
-    combinedResults.push({
-      contentControl: 'open-pcr-content-control',
-      data: flatOpenPcrsItems,
-      skin: 'open-pcr-table',
-    });
+    if (flatOpenPcrsItems?.length > 0) {
+      // Add openPCR to combined results
+      combinedResults.push({
+        contentControl: 'open-pcr-content-control',
+        data: flatOpenPcrsItems,
+        skin: 'open-pcr-table',
+      });
+    }
   }
 
   /**
