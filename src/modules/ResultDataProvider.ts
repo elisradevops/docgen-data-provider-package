@@ -140,6 +140,7 @@ export default class ResultDataProvider {
       outcome: testPoint.results?.outcome,
       lastRunId: testPoint.results?.lastTestRunId,
       lastResultId: testPoint.results?.lastResultId,
+      lastResultDetails: testPoint.results?.lastResultDetails,
     };
   }
 
@@ -425,6 +426,32 @@ export default class ResultDataProvider {
   }
 
   /**
+   * Fetch Test log data
+   */
+  private fetchTestLogData(testItems: any[], combinedResults: any[]) {
+    const testLogData = testItems
+      .filter((item) => item.lastResultDetails)
+      .map((item) => {
+        const { dateCompleted, runBy } = item.lastResultDetails;
+        return {
+          testId: item.testCaseId,
+          testName: item.testCaseName,
+          executedDate: dateCompleted,
+          performedBy: runBy.displayName,
+        };
+      });
+
+    if (testLogData?.length > 0) {
+      // Add openPCR to combined results
+      combinedResults.push({
+        contentControl: 'test-execution-content-control',
+        data: testLogData,
+        skin: 'test-log-table',
+      });
+    }
+  }
+
+  /**
    * Combines the results of test group result summary, test results summary, and detailed results summary into a single key-value pair array.
    */
   public async getCombinedResultsSummary(
@@ -482,6 +509,7 @@ export default class ResultDataProvider {
 
       // 2. Calculate Test Results Summary
       const flattenedTestPoints = this.flattenTestPoints(testPoints);
+      logger.info(`flat test points ${JSON.stringify(flattenedTestPoints)}`);
       const testResultsSummary = flattenedTestPoints.map((testPoint) =>
         this.formatTestResult(testPoint, addConfiguration)
       );
@@ -530,7 +558,7 @@ export default class ResultDataProvider {
 
       //6. Test Log (only if enabled)
       if (includeTestLog) {
-        //TODO: implement Test log data fetching
+        this.fetchTestLogData(flattenedTestPoints, combinedResults);
       }
 
       return combinedResults;
