@@ -447,6 +447,7 @@ export default class ResultDataProvider {
         contentControl: 'test-execution-content-control',
         data: testLogData,
         skin: 'test-log-table',
+        insertPageBreak: true,
       });
     }
   }
@@ -509,7 +510,6 @@ export default class ResultDataProvider {
 
       // 2. Calculate Test Results Summary
       const flattenedTestPoints = this.flattenTestPoints(testPoints);
-      logger.info(`flat test points ${JSON.stringify(flattenedTestPoints)}`);
       const testResultsSummary = flattenedTestPoints.map((testPoint) =>
         this.formatTestResult(testPoint, addConfiguration)
       );
