@@ -160,10 +160,17 @@ export default class ResultDataProvider {
   /**
    * Fetches iterations data by run and result IDs.
    */
-  private async fetchIterations(projectName: string, runId: string, resultId: string): Promise<any[]> {
-    const url = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/Results/${resultId}/iterations`;
-    const { value: iterations } = await TFSServices.getItemContent(url, this.token);
-    return iterations;
+  private async fetchResult(projectName: string, runId: string, resultId: string): Promise<any> {
+    try {
+      const url = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/Results/${resultId}?detailsToInclude=5`;
+      const resultData = await TFSServices.getItemContent(url, this.token);
+      const attachmentsUrl = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/Results/${resultId}/attachments`;
+      const { value: analysisAttachments } = await TFSServices.getItemContent(attachmentsUrl, this.token);
+      return { ...resultData, analysisAttachments };
+    } catch (error: any) {
+      logger.error(`Error while fetching run result: ${error.message}`);
+      return null;
+    }
   }
 
   /**
@@ -178,7 +185,7 @@ export default class ResultDataProvider {
       case 'notApplicable':
         return 'Not Applicable';
       default:
-        return 'Unspecified';
+        return 'Not Run';
     }
   }
 
@@ -239,7 +246,7 @@ export default class ResultDataProvider {
             stepNo: stepIndex + 1,
             stepAction: steps[stepIndex].action,
             stepExpected: steps[stepIndex].expected,
-            stepStatus: actionResult.outcome !== 'Unspecified' ? actionResult.outcome : '',
+            stepStatus: actionResult.outcome !== 'Not Run' ? actionResult.outcome : '',
             stepComments: actionResult.errorMessage || '',
           });
         }
@@ -285,32 +292,42 @@ export default class ResultDataProvider {
   }
 
   /**
-   * Fetches iterations for all test points within the given test data.
+   * Fetches result data for all test points within the given test data.
    */
-  private async fetchAllIterations(testData: any[], projectName: string): Promise<any[]> {
+  private async fetchAllResultData(testData: any[], projectName: string): Promise<any[]> {
     const pointsToFetch = testData
       .filter((item) => item.testPointsItems && item.testPointsItems.length > 0)
       .flatMap((item) => {
         const { testSuiteId, testPointsItems } = item;
         const validPoints = testPointsItems.filter((point: any) => point.lastRunId && point.lastResultId);
-        return validPoints.map((point: any) => this.fetchIterationData(projectName, testSuiteId, point));
+        return validPoints.map((point: any) => this.fetchResultData(projectName, testSuiteId, point));
       });
 
     return Promise.all(pointsToFetch);
   }
 
   /**
-   * Fetches iteration data for a specific test point.
+   * Fetches result Data data for a specific test point.
    */
-  private async fetchIterationData(projectName: string, testSuiteId: string, point: any): Promise<any> {
+  private async fetchResultData(projectName: string, testSuiteId: string, point: any): Promise<any> {
     const { lastRunId, lastResultId } = point;
-    const iterations = await this.fetchIterations(projectName, lastRunId.toString(), lastResultId.toString());
+    const resultData = await this.fetchResult(projectName, lastRunId.toString(), lastResultId.toString());
     return {
+      testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
+      testCaseId: resultData.testCase.id,
+      testSuiteName: `${resultData.testSuite.name}`,
       testSuiteId,
       lastRunId,
       lastResultId,
       //Currently supporting only the
-      iteration: iterations.length > 0 ? iterations[iterations.length - 1] : undefined,
+      iteration:
+        resultData.iterationDetails.length > 0
+          ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
+          : undefined,
+      failureType: resultData.failureType,
+      resolution: resultData.resolutionState,
+      comment: resultData.comment,
+      analysisAttachments: resultData.analysisAttachments,
     };
   }
 
@@ -430,7 +447,7 @@ export default class ResultDataProvider {
    */
   private fetchTestLogData(testItems: any[], combinedResults: any[]) {
     const testLogData = testItems
-      .filter((item) => item.lastResultDetails)
+      .filter((item) => item.lastResultDetails && item.lastResultDetails.runBy.displayName !== null)
       .map((item) => {
         const { dateCompleted, runBy } = item.lastResultDetails;
         return {
@@ -453,6 +470,40 @@ export default class ResultDataProvider {
   }
 
   /**
+   * Mapping each attachment to a proper URL for downloading it
+   * @param runResults Array of run results
+   */
+  public mapAttachmentsUrl(runResults: any[], project: string) {
+    return runResults.map((result) => {
+      const { iteration, analysisAttachments, ...restResult } = result;
+      //add downloadUri field for each attachment
+      // Switch to 'vstmr.dev.azure.com'
+      const url = new URL(this.orgUrl);
+
+      url.hostname = 'vstmr.dev.azure.com';
+      const baseDownloadUrl = `${url.toString()}${project}/_apis/testresults/runs/${result.lastRunId}/results/${result.lastResultId}/attachments`;
+      if (iteration && iteration.attachments?.length > 0) {
+        const { attachments, ...restOfIteration } = iteration;
+
+        const mappedAttachments = attachments.map((attachment: any) => ({
+          ...attachment,
+          downloadUrl: `${baseDownloadUrl}/${attachment.id}/${attachment.name}`,
+        }));
+
+        restResult.iteration = { ...restOfIteration, attachments: mappedAttachments };
+      }
+      if (analysisAttachments && analysisAttachments.length > 0) {
+        restResult.analysisAttachments = analysisAttachments.map((attachment: any) => ({
+          ...attachment,
+          downloadUrl: `${baseDownloadUrl}/${attachment.id}/${attachment.fileName}`,
+        }));
+      }
+
+      return { ...restResult };
+    });
+  }
+
+  /**
    * Combines the results of test group result summary, test results summary, and detailed results summary into a single key-value pair array.
    */
   public async getCombinedResultsSummary(
@@ -462,7 +513,9 @@ export default class ResultDataProvider {
     addConfiguration: boolean = false,
     isHierarchyGroupName: boolean = false,
     includeOpenPCRs: boolean = false,
-    includeTestLog: boolean = false
+    includeTestLog: boolean = false,
+    stepExecution?: any,
+    stepAnalysis?: any
   ): Promise<any[]> {
     const combinedResults: any[] = [];
     //TODO: add support for fetching all the data of the attachments
@@ -523,9 +576,9 @@ export default class ResultDataProvider {
 
       // 3. Calculate Detailed Results Summary
       const testData = await this.fetchTestData(suites, projectName, testPlanId);
-      const iterations = await this.fetchAllIterations(testData, projectName);
+      const runResults = await this.fetchAllResultData(testData, projectName);
 
-      const detailedResultsSummary = this.alignStepsWithIterations(testData, iterations);
+      const detailedResultsSummary = this.alignStepsWithIterations(testData, runResults);
 
       // Add detailed results summary to combined results
       combinedResults.push({
@@ -533,23 +586,6 @@ export default class ResultDataProvider {
         data: detailedResultsSummary,
         skin: 'detailed-test-result-table',
       });
-      /* TODO: Add it later after the design of the appendix... also add the add attachment boolean here to see its needed or not...
-      //4. Fetch all attachment data
-      const iterationDataForAttachments = iterations.map((iterationItem) => {
-        return {
-          suiteId: iterationItem.suiteId,
-          runId: iterationItem.lastRunId,
-          resultId: iterationItem.lastResultId,
-          iteration: iterationItem.iteration,
-        };
-      });
-
-      combinedResults.push({
-        contentControl: 'str-attachment',
-        data: iterationDataForAttachments,
-        skin: 'test-run-attachment-list',
-      });
-      */
 
       if (includeOpenPCRs) {
         //5. Open PCRs data (only if enabled)
@@ -559,6 +595,30 @@ export default class ResultDataProvider {
       //6. Test Log (only if enabled)
       if (includeTestLog) {
         this.fetchTestLogData(flattenedTestPoints, combinedResults);
+      }
+
+      if (stepAnalysis && stepAnalysis.isEnabled) {
+        const mappedAnalysisData = runResults.filter(
+          (result) =>
+            result.comment ||
+            result.iteration?.attachments?.length > 0 ||
+            result.analysisAttachments?.length > 0
+        );
+
+        const mappedAnalysisResultData = stepAnalysis.generateRunAttachments.isEnabled
+          ? this.mapAttachmentsUrl(mappedAnalysisData, projectName)
+          : mappedAnalysisData;
+        if (mappedAnalysisResultData?.length > 0) {
+          combinedResults.push({
+            contentControl: 'appendix-a-content-control',
+            data: mappedAnalysisResultData,
+            skin: 'step-analysis-appendix-skin',
+          });
+        }
+      }
+
+      if (stepExecution && stepExecution.isEnabled) {
+        //TODO: Generate Execution appendix (similar to STD)
       }
 
       return combinedResults;

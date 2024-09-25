@@ -11,11 +11,6 @@ import * as xml2js from 'xml2js';
 
 import logger from '../utils/logger';
 
-// Define the type of the dictionary
-type Dictionary<T> = {
-  [key: string]: T[];
-};
-
 export default class TicketsDataProvider {
   orgUrl: string = '';
   token: string = '';
@@ -340,53 +335,6 @@ export default class TicketsDataProvider {
     } catch (e) {
       logger.error(`error fetching attachments for work item ${id}`);
       logger.error(`${JSON.stringify(e)}`);
-      return [];
-    }
-  }
-
-  async GetTestRunResultAttachments(project: string, runId: string, resultId: string) {
-    const includedAttachments: Dictionary<any> = {};
-
-    //Define the case level attachments
-    includedAttachments['caseLevel'] = [];
-    //Define the step level attachments
-    includedAttachments['stepLevel'] = [];
-
-    try {
-      let testResult = await this.GetTestResult(project, runId, resultId);
-      if (!testResult.iterationDetails || testResult.iterationDetails.length === 0) return [];
-
-      const { iterationDetails } = testResult;
-
-      await Promise.all(
-        iterationDetails.forEach((iteration: any) => {
-          const { attachments } = iteration;
-          //Skips to the next iteration
-          if (attachments === undefined || attachments.length === 0) {
-            return;
-          }
-
-          attachments.forEach((attachment: any) => {
-            attachment.downloadUrl = `${attachment.url}/${attachment.name}`;
-          });
-
-          for (let i = 0; i < attachments.length; i++) {
-            let attachment = attachments[i];
-            const url = new URL(this.orgUrl);
-            // Switch to 'vstmr.dev.azure.com'
-            url.hostname = 'vstmr.dev.azure.com';
-            const downloadUrl = `${url.toString()}${project}/_apis/testresults/runs/${runId}/results/${resultId}/attachments/${attachment.id}/${attachment.name}`;
-            attachment.downloadUrl = downloadUrl;
-            attachment.actionPath === undefined || attachment.actionPath === ''
-              ? includedAttachments['caseLevel'].push(attachment)
-              : includedAttachments['stepLevel'].push(attachment);
-          }
-        })
-      );
-      return includedAttachments;
-    } catch (e: any) {
-      logger.error(`error fetching attachments for run ${runId}`);
-      logger.error(`${JSON.stringify(e.message)}`);
       return [];
     }
   }
