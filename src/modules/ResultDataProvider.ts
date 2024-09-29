@@ -234,26 +234,24 @@ export default class ResultDataProvider {
           const stepIndex = parseInt(actionResult.stepIdentifier, 10) - 2;
           if (!steps[stepIndex]) continue;
 
-          // const actionPath = actionResult.actionPath;
-
-          // const testStepAttachments = iteration.attachments.find(
-          //   (attachment: any) => attachment.actionPath === actionPath
-          // );
-
           detailedResults.push({
             testId: point.testCaseId,
             testName: point.testCaseName,
             stepNo: stepIndex + 1,
             stepAction: steps[stepIndex].action,
             stepExpected: steps[stepIndex].expected,
-            stepStatus: actionResult.outcome !== 'Not Run' ? actionResult.outcome : '',
+            stepStatus:
+              actionResult.outcome === 'Unspecified'
+                ? 'Not Run'
+                : actionResult.outcome !== 'Not Run'
+                  ? actionResult.outcome
+                  : '',
             stepComments: actionResult.errorMessage || '',
           });
         }
       }
     }
-    //Filter out all the results with no comment
-    return detailedResults.filter((result) => result.stepComments !== '' || result.stepStatus === 'Failed');
+    return detailedResults;
   }
 
   /**
@@ -518,8 +516,8 @@ export default class ResultDataProvider {
     stepAnalysis?: any
   ): Promise<any[]> {
     const combinedResults: any[] = [];
-    //TODO: add support for fetching all the data of the attachments
     try {
+      logger.debug(`Generating Combined Result summary`);
       // Fetch test suites
       const suites = await this.fetchTestSuites(
         testPlanId,
@@ -527,6 +525,8 @@ export default class ResultDataProvider {
         selectedSuiteIds,
         isHierarchyGroupName
       );
+
+      logger.debug(`suites ${JSON.stringify(suites)}`);
 
       // Prepare test data for summaries
       const testPointsPromises = suites.map((suite) =>
@@ -539,6 +539,8 @@ export default class ResultDataProvider {
       );
       const testPoints = await Promise.all(testPointsPromises);
 
+      logger.debug(`testPoints ${JSON.stringify(testPoints)}`);
+
       // 1. Calculate Test Group Result Summary
       const summarizedResults = testPoints
         .filter((testPoint) => testPoint.testPointsItems && testPoint.testPointsItems.length > 0)
@@ -546,6 +548,8 @@ export default class ResultDataProvider {
           const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
           return { ...testPoint, groupResultSummary };
         });
+
+      logger.debug(`summarizedResults ${JSON.stringify(summarizedResults)}`);
 
       const totalSummary = this.calculateTotalSummary(summarizedResults);
       const testGroupArray = summarizedResults.map((item) => ({
@@ -563,6 +567,7 @@ export default class ResultDataProvider {
 
       // 2. Calculate Test Results Summary
       const flattenedTestPoints = this.flattenTestPoints(testPoints);
+      logger.debug(`flattened test points ${JSON.stringify(flattenedTestPoints)}`);
       const testResultsSummary = flattenedTestPoints.map((testPoint) =>
         this.formatTestResult(testPoint, addConfiguration)
       );
@@ -579,11 +584,15 @@ export default class ResultDataProvider {
       const runResults = await this.fetchAllResultData(testData, projectName);
 
       const detailedResultsSummary = this.alignStepsWithIterations(testData, runResults);
+      //Filter out all the results with no comment
+      const filteredDetailedResults = detailedResultsSummary.filter(
+        (result) => result.stepComments !== '' || result.stepStatus === 'Failed'
+      );
 
       // Add detailed results summary to combined results
       combinedResults.push({
         contentControl: 'detailed-test-result-content-control',
-        data: detailedResultsSummary,
+        data: filteredDetailedResults,
         skin: 'detailed-test-result-table',
       });
 
@@ -618,7 +627,13 @@ export default class ResultDataProvider {
       }
 
       if (stepExecution && stepExecution.isEnabled) {
-        //TODO: Generate Execution appendix (similar to STD)
+        const mappedDetailedResults = this.mapStepResultsForExecutionAppendix(detailedResultsSummary);
+
+        combinedResults.push({
+          contentControl: 'appendix-b-content-control',
+          data: mappedDetailedResults,
+          skin: 'step-execution-appendix-skin',
+        });
       }
 
       return combinedResults;
@@ -626,6 +641,17 @@ export default class ResultDataProvider {
       logger.error(`Error during getCombinedResultsSummary: ${error.message}`);
       return combinedResults; // Return whatever is computed even in case of error
     }
+  }
+
+  private mapStepResultsForExecutionAppendix(detailedResults: any[]): any {
+    return detailedResults.length > 0
+      ? detailedResults.map((result) => ({
+          testId: result.testId,
+          stepNo: result.stepNo,
+          stepStatus: result.stepStatus,
+          stepComments: result.stepComments,
+        }))
+      : [];
   }
 
   /**
