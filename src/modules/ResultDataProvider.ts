@@ -203,6 +203,9 @@ export default class ResultDataProvider {
         return;
       }
 
+      if (result.steps === undefined || parseInt(result.steps.$.last) === 0) {
+        return;
+      }
       const stepsArray = Array.isArray(result.steps?.step) ? result.steps.step : [result.steps?.step];
 
       stepsArray.forEach((stepObj: any) => {
@@ -231,12 +234,15 @@ export default class ResultDataProvider {
         const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
         if (!testCase) continue;
         logger.debug(`work item ---> ${JSON.stringify(testCase.workItem)}`);
-        if (!testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']) {
-          throw new Error(
-            `Could not fetch the steps from the iteration data ${JSON.stringify(testCase.workItem.workItemFields)}`
-          );
+        if (testCase.workItem.workItemFields.length === 0) {
+          logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
+          continue;
         }
         const steps = this.parseTestSteps(testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']);
+        if (steps.length === 0) {
+          logger.warn('No steps were found');
+          continue;
+        }
         const iterationKey = `${point.lastRunId}-${point.lastResultId}`;
         const iteration = iterationsMap[iterationKey]?.iteration;
 
