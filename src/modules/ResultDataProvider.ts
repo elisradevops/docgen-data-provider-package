@@ -166,6 +166,9 @@ export default class ResultDataProvider {
       const resultData = await TFSServices.getItemContent(url, this.token);
       const attachmentsUrl = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/Results/${resultId}/attachments`;
       const { value: analysisAttachments } = await TFSServices.getItemContent(attachmentsUrl, this.token);
+
+      logger.debug(`result Data --------> ${JSON.stringify({ ...resultData, analysisAttachments })}`);
+
       return { ...resultData, analysisAttachments };
     } catch (error: any) {
       logger.error(`Error while fetching run result: ${error.message}`);
@@ -218,12 +221,21 @@ export default class ResultDataProvider {
   private alignStepsWithIterations(testData: any[], iterations: any[]): any[] {
     const detailedResults: any[] = [];
     const iterationsMap = this.createIterationsMap(iterations);
-
+    logger.debug(`Align Steps with iterations`);
+    logger.debug(`test data ---> ${JSON.stringify(testData)}`);
+    logger.debug(`iterations ---> ${JSON.stringify(iterations)}`);
     for (const testItem of testData) {
+      logger.debug(`testItem ---> ${JSON.stringify(testItem)}`);
+
       for (const point of testItem.testPointsItems) {
         const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
         if (!testCase) continue;
-
+        logger.debug(`work item ---> ${JSON.stringify(testCase.workItem)}`);
+        if (!testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']) {
+          throw new Error(
+            `Could not fetch the steps from the iteration data ${JSON.stringify(testCase.workItem.workItemFields)}`
+          );
+        }
         const steps = this.parseTestSteps(testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']);
         const iterationKey = `${point.lastRunId}-${point.lastResultId}`;
         const iteration = iterationsMap[iterationKey]?.iteration;
@@ -296,6 +308,7 @@ export default class ResultDataProvider {
     const pointsToFetch = testData
       .filter((item) => item.testPointsItems && item.testPointsItems.length > 0)
       .flatMap((item) => {
+        logger.debug(`result data ------> ${JSON.stringify(item)}`);
         const { testSuiteId, testPointsItems } = item;
         const validPoints = testPointsItems.filter((point: any) => point.lastRunId && point.lastResultId);
         return validPoints.map((point: any) => this.fetchResultData(projectName, testSuiteId, point));
@@ -310,14 +323,14 @@ export default class ResultDataProvider {
   private async fetchResultData(projectName: string, testSuiteId: string, point: any): Promise<any> {
     const { lastRunId, lastResultId } = point;
     const resultData = await this.fetchResult(projectName, lastRunId.toString(), lastResultId.toString());
-    return {
+    const obj = {
       testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
       testCaseId: resultData.testCase.id,
       testSuiteName: `${resultData.testSuite.name}`,
       testSuiteId,
       lastRunId,
       lastResultId,
-      //Currently supporting only the
+      //Currently supporting only the last one
       iteration:
         resultData.iterationDetails.length > 0
           ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
@@ -327,6 +340,8 @@ export default class ResultDataProvider {
       comment: resultData.comment,
       analysisAttachments: resultData.analysisAttachments,
     };
+    logger.debug(`fetch result data ------> ${JSON.stringify(obj)}`);
+    return obj;
   }
 
   /**
@@ -572,8 +587,11 @@ export default class ResultDataProvider {
       });
 
       // 3. Calculate Detailed Results Summary
+      logger.debug(`calculating the detailed results`);
       const testData = await this.fetchTestData(suites, projectName, testPlanId);
+      logger.debug(`test data ------> ${JSON.stringify(testData)}`);
       const runResults = await this.fetchAllResultData(testData, projectName);
+      logger.debug(`run Results ------> ${JSON.stringify(runResults)}`);
 
       const detailedResultsSummary = this.alignStepsWithIterations(testData, runResults);
       //Filter out all the results with no comment
