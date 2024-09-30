@@ -517,7 +517,6 @@ export default class ResultDataProvider {
   ): Promise<any[]> {
     const combinedResults: any[] = [];
     try {
-      logger.debug(`Generating Combined Result summary`);
       // Fetch test suites
       const suites = await this.fetchTestSuites(
         testPlanId,
@@ -525,8 +524,6 @@ export default class ResultDataProvider {
         selectedSuiteIds,
         isHierarchyGroupName
       );
-
-      logger.debug(`suites ${JSON.stringify(suites)}`);
 
       // Prepare test data for summaries
       const testPointsPromises = suites.map((suite) =>
@@ -539,8 +536,6 @@ export default class ResultDataProvider {
       );
       const testPoints = await Promise.all(testPointsPromises);
 
-      logger.debug(`testPoints ${JSON.stringify(testPoints)}`);
-
       // 1. Calculate Test Group Result Summary
       const summarizedResults = testPoints
         .filter((testPoint) => testPoint.testPointsItems && testPoint.testPointsItems.length > 0)
@@ -548,8 +543,6 @@ export default class ResultDataProvider {
           const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
           return { ...testPoint, groupResultSummary };
         });
-
-      logger.debug(`summarizedResults ${JSON.stringify(summarizedResults)}`);
 
       const totalSummary = this.calculateTotalSummary(summarizedResults);
       const testGroupArray = summarizedResults.map((item) => ({
@@ -567,7 +560,6 @@ export default class ResultDataProvider {
 
       // 2. Calculate Test Results Summary
       const flattenedTestPoints = this.flattenTestPoints(testPoints);
-      logger.debug(`flattened test points ${JSON.stringify(flattenedTestPoints)}`);
       const testResultsSummary = flattenedTestPoints.map((testPoint) =>
         this.formatTestResult(testPoint, addConfiguration)
       );
