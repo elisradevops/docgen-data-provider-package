@@ -351,46 +351,49 @@ export default class ResultDataProvider {
   }
 
   /**
-   * Fetching all the linked wi for the given test case
-   * @param testCaseId Test case id number
-   * @returns Array of linked Work items
+   * Fetches all the linked work items (WI) for the given test case.
+   * @param project Project name
+   * @param testCaseId Test case ID number
+   * @returns Array of linked Work Items
    */
   private async fetchLinkedWi(project: string, testCaseId: string): Promise<any[]> {
     try {
-      // Construct the base URL and fetch linked work items
-      const vstmrUrl = new URL(this.orgUrl);
-      vstmrUrl.hostname = 'vstmr.dev.azure.com';
-      const getLinkedWiUrl = `${vstmrUrl.toString()}${project}/_apis/testresults/results/workitems?workItemCategory=all&testCaseId=${testCaseId}`;
+      // Construct URL to fetch linked work items
+      const getLinkedWiUrl = `${this.orgUrl}${project}/_apis/wit/workItems/${testCaseId}?$expand=relations`;
 
       // Fetch linked work items
-      const { value: linkedWorkItems } = await TFSServices.getItemContent(getLinkedWiUrl, this.token);
+      const { relations } = await TFSServices.getItemContent(getLinkedWiUrl, this.token);
 
-      // Check if linkedWorkItems is an array
-      if (!Array.isArray(linkedWorkItems)) {
-        throw new Error('Unexpected format for linked work items data');
-      }
-
-      if (linkedWorkItems.length === 0) {
+      // Ensure relations is an array
+      if (!Array.isArray(relations) || relations.length === 0) {
         return [];
       }
 
-      // Prepare list of work item IDs
-      const idsString = linkedWorkItems.map((item: any) => item.id).join(',');
+      // Filter relations by 'Tests' attribute and extract work item IDs
+      const workItemIds = relations
+        .filter((relation) => relation?.attributes?.name === 'Tests')
+        .map((relation) => relation.url.split('/').pop());
+
+      if (workItemIds.length === 0) {
+        return [];
+      }
 
       // Construct URL to fetch work item details
-      const getWiDataUrl = `${this.orgUrl.toString()}${project}/_apis/wit/workItems?ids=${idsString}&$expand=1`;
+      const idsString = workItemIds.join(',');
+      const getWiDataUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${idsString}&$expand=1`;
 
       // Fetch work item details
-      const { value: wi } = await TFSServices.getItemContent(getWiDataUrl, this.token);
+      const { value: workItems } = await TFSServices.getItemContent(getWiDataUrl, this.token);
 
-      // Validate response and return formatted data
-      if (!Array.isArray(wi)) {
+      // Ensure workItems is an array
+      if (!Array.isArray(workItems)) {
         throw new Error('Unexpected format for work items data');
       }
 
-      //Filter out wi in Closed or resolved states
-      const filteredWi = wi.filter(({ fields }) => {
-        const { 'System.WorkItemType': workItemType, 'System.State': state } = fields;
+      // Filter work items based on type and state
+      const filteredWi = workItems.filter(({ fields }) => {
+        const workItemType = fields?.['System.WorkItemType'];
+        const state = fields?.['System.State'];
         return (
           (workItemType === 'Change Request' || workItemType === 'Bug') &&
           state !== 'Closed' &&
@@ -398,7 +401,8 @@ export default class ResultDataProvider {
         );
       });
 
-      return filteredWi?.length > 0 ? this.MapLinkedWorkItem(filteredWi, project) : [];
+      // Return mapped work items if any exist
+      return filteredWi.length > 0 ? this.MapLinkedWorkItem(filteredWi, project) : [];
     } catch (error) {
       logger.error('Error fetching linked work items:', error);
       return []; // Return an empty array or handle it as needed
