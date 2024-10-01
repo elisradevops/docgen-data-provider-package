@@ -44,14 +44,6 @@ export default class TicketsDataProvider {
     return trace;
   }
 
-  async GetTestResult(project: string, runId: string, resultId: string): Promise<any> {
-    const url = new URL(this.orgUrl);
-    // Switch to 'vstmr.dev.azure.com'
-    url.hostname = 'vstmr.dev.azure.com';
-    const vstmrOrgUrl = `${url.toString()}${project}/_apis/tcm/runs/${runId}/results/${resultId}?detailsToInclude=5`;
-    return TFSServices.getItemContent(vstmrOrgUrl, this.token);
-  }
-
   async GetParentLink(project: string, wi: any) {
     let trace: Trace = new Trace();
     if (wi != null) {
