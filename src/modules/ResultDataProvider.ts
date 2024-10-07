@@ -167,8 +167,6 @@ export default class ResultDataProvider {
       const attachmentsUrl = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/Results/${resultId}/attachments`;
       const { value: analysisAttachments } = await TFSServices.getItemContent(attachmentsUrl, this.token);
 
-      logger.debug(`result Data --------> ${JSON.stringify({ ...resultData, analysisAttachments })}`);
-
       return { ...resultData, analysisAttachments };
     } catch (error: any) {
       logger.error(`Error while fetching run result: ${error.message}`);
@@ -224,23 +222,18 @@ export default class ResultDataProvider {
   private alignStepsWithIterations(testData: any[], iterations: any[]): any[] {
     const detailedResults: any[] = [];
     const iterationsMap = this.createIterationsMap(iterations);
-    logger.debug(`Align Steps with iterations`);
-    logger.debug(`test data ---> ${JSON.stringify(testData)}`);
-    logger.debug(`iterations ---> ${JSON.stringify(iterations)}`);
-    for (const testItem of testData) {
-      logger.debug(`testItem ---> ${JSON.stringify(testItem)}`);
 
+    for (const testItem of testData) {
       for (const point of testItem.testPointsItems) {
         const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
         if (!testCase) continue;
-        logger.debug(`work item ---> ${JSON.stringify(testCase.workItem)}`);
         if (testCase.workItem.workItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
         }
         const steps = this.parseTestSteps(testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']);
         if (steps.length === 0) {
-          logger.warn('No steps were found');
+          logger.warn(`No steps were found for WI ${testCase.workItem?.id}`);
           continue;
         }
         const iterationKey = `${point.lastRunId}-${point.lastResultId}`;
@@ -314,7 +307,6 @@ export default class ResultDataProvider {
     const pointsToFetch = testData
       .filter((item) => item.testPointsItems && item.testPointsItems.length > 0)
       .flatMap((item) => {
-        logger.debug(`result data ------> ${JSON.stringify(item)}`);
         const { testSuiteId, testPointsItems } = item;
         const validPoints = testPointsItems.filter((point: any) => point.lastRunId && point.lastResultId);
         return validPoints.map((point: any) => this.fetchResultData(projectName, testSuiteId, point));
@@ -346,7 +338,6 @@ export default class ResultDataProvider {
       comment: resultData.comment,
       analysisAttachments: resultData.analysisAttachments,
     };
-    logger.debug(`fetch result data ------> ${JSON.stringify(obj)}`);
     return obj;
   }
 
@@ -500,11 +491,7 @@ export default class ResultDataProvider {
     return runResults.map((result) => {
       const { iteration, analysisAttachments, ...restResult } = result;
       //add downloadUri field for each attachment
-      // Switch to 'vstmr.dev.azure.com'
-      const url = new URL(this.orgUrl);
-
-      url.hostname = 'vstmr.dev.azure.com';
-      const baseDownloadUrl = `${url.toString()}${project}/_apis/testresults/runs/${result.lastRunId}/results/${result.lastResultId}/attachments`;
+      const baseDownloadUrl = `${this.orgUrl}${project}/_apis/test/runs/${result.lastRunId}/results/${result.lastResultId}/attachments`;
       if (iteration && iteration.attachments?.length > 0) {
         const { attachments, ...restOfIteration } = iteration;
 
@@ -597,11 +584,8 @@ export default class ResultDataProvider {
       });
 
       // 3. Calculate Detailed Results Summary
-      logger.debug(`calculating the detailed results`);
       const testData = await this.fetchTestData(suites, projectName, testPlanId);
-      logger.debug(`test data ------> ${JSON.stringify(testData)}`);
       const runResults = await this.fetchAllResultData(testData, projectName);
-      logger.debug(`run Results ------> ${JSON.stringify(runResults)}`);
 
       const detailedResultsSummary = this.alignStepsWithIterations(testData, runResults);
       //Filter out all the results with no comment
