@@ -1,12 +1,9 @@
-"use strict";
-import * as winston from "winston";
-import BrowserConsole from "winston-transport-browserconsole";
+'use strict';
+import * as winston from 'winston';
+import BrowserConsole from 'winston-transport-browserconsole';
 let logger: winston.Logger;
 
-const logFormat = winston.format.printf(
-  (info) => `${info.level} - ${info.message}`
-);
-
+const logFormat = winston.format.printf((info) => `${info.timestamp} - ${info.level}: ${info.message}`);
 // if (typeof window === "undefined") {
 //   let logsPath = process.env.logs_path || "./logs/";
 
@@ -29,8 +26,11 @@ const logFormat = winston.format.printf(
 // } else {
 logger = winston.createLogger({
   format: winston.format.timestamp(),
-  level: "silly",
-  transports: [new BrowserConsole({ format: logFormat, level: "debug" })],
+  level: 'silly',
+  transports: [
+    new winston.transports.Console({ format: logFormat, level: 'debug' }),
+    // new BrowserConsole({ format: logFormat, level: 'debug' }),
+  ],
 });
 // }
 

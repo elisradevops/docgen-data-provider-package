@@ -10,7 +10,6 @@ import { TestCase } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 
 import logger from '../utils/logger';
-import { log } from 'winston';
 
 export default class TestDataProvider {
   orgUrl: string = '';
@@ -120,59 +119,68 @@ export default class TestDataProvider {
   ): Promise<Array<any>> {
     let url = this.orgUrl + project + '/_workitems/edit/';
     let testCasesUrlList: Array<any> = new Array<any>();
-    //let tesrCase:TestCase;
-    for (let i = 0; i < testCases.count; i++) {
-      try {
-        let newurl = testCases.value[i].testCase.url + '?$expand=All';
-        let test: any = await TFSServices.getItemContent(newurl, this.token);
-        let testCase: TestCase = new TestCase();
+    logger.debug(`Trying to structure Test case for ${project} suite: ${suite.id}:${suite.name}`);
+    try {
+      if (!testCases) {
+        throw new Error('test cases were not found');
+      }
+      for (let i = 0; i < testCases.count; i++) {
+        try {
+          let newurl = testCases.value[i].testCase.url + '?$expand=All';
+          let test: any = await TFSServices.getItemContent(newurl, this.token);
+          let testCase: TestCase = new TestCase();
 
-        testCase.title = test.fields['System.Title'];
-        testCase.area = test.fields['System.AreaPath'];
-        testCase.description = test.fields['System.Description'];
-        testCase.url = url + test.id;
-        //testCase.steps = test.fields["Microsoft.VSTS.TCM.Steps"];
-        testCase.id = test.id;
-        testCase.suit = suite.id;
-        if (test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
-          let steps: Array<TestSteps> = this.ParseSteps(test.fields['Microsoft.VSTS.TCM.Steps']);
-          testCase.steps = steps;
-        }
-        if ((includeBugs || includeRequirements) && test.relations) {
-          for (const relation of test.relations) {
-            // Only proceed if the URL contains 'workItems'
-            if (relation.url.includes('/workItems/')) {
-              try {
-                let relatedItemContent: any = await TFSServices.getItemContent(relation.url, this.token);
-                // Check if the WorkItemType is "Requirement" before adding to relations
-                if (
-                  includeRequirements &&
-                  relatedItemContent.fields['System.WorkItemType'] === 'Requirement'
-                ) {
-                  const newRequirementRelation = this.createNewRequirement(
-                    CustomerRequirementId,
-                    relatedItemContent
-                  );
-                  testCase.relations.push(newRequirementRelation);
-                }
+          testCase.title = test.fields['System.Title'];
+          testCase.area = test.fields['System.AreaPath'];
+          testCase.description = test.fields['System.Description'];
+          testCase.url = url + test.id;
+          //testCase.steps = test.fields["Microsoft.VSTS.TCM.Steps"];
+          testCase.id = test.id;
+          testCase.suit = suite.id;
+          if (test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
+            let steps: Array<TestSteps> = this.ParseSteps(test.fields['Microsoft.VSTS.TCM.Steps']);
+            testCase.steps = steps;
+          }
+          if ((includeBugs || includeRequirements) && test.relations) {
+            for (const relation of test.relations) {
+              // Only proceed if the URL contains 'workItems'
+              if (relation.url.includes('/workItems/')) {
+                try {
+                  let relatedItemContent: any = await TFSServices.getItemContent(relation.url, this.token);
+                  // Check if the WorkItemType is "Requirement" before adding to relations
+                  if (
+                    includeRequirements &&
+                    relatedItemContent.fields['System.WorkItemType'] === 'Requirement'
+                  ) {
+                    const newRequirementRelation = this.createNewRequirement(
+                      CustomerRequirementId,
+                      relatedItemContent
+                    );
+                    testCase.relations.push(newRequirementRelation);
+                  }
 
-                // Check if the WorkItemType is "Requirement" before adding to relations
-                if (includeBugs && relatedItemContent.fields['System.WorkItemType'] === 'Bug') {
-                  const newBugRelation = this.createBugRelation(includeSeverity, relatedItemContent);
-                  testCase.relations.push(newBugRelation);
+                  // Check if the WorkItemType is "Requirement" before adding to relations
+                  if (includeBugs && relatedItemContent.fields['System.WorkItemType'] === 'Bug') {
+                    const newBugRelation = this.createBugRelation(includeSeverity, relatedItemContent);
+                    testCase.relations.push(newBugRelation);
+                  }
+                } catch (fetchError) {
+                  // Log error silently or handle as needed
+                  console.error('Failed to fetch relation content', fetchError);
+                  logger.error(`Failed to fetch relation content for URL ${relation.url}: ${fetchError}`);
                 }
-              } catch (fetchError) {
-                // Log error silently or handle as needed
-                console.error('Failed to fetch relation content', fetchError);
-                logger.error(`Failed to fetch relation content for URL ${relation.url}: ${fetchError}`);
               }
             }
           }
+          testCasesUrlList.push(testCase);
+        } catch {
+          const errorMsg = `ran into an issue while retriving testCase ${testCases.value[i].testCase.id}`;
+          logger.error(`errorMsg`);
+          throw new Error(errorMsg);
         }
-        testCasesUrlList.push(testCase);
-      } catch {
-        logger.error(`ran into an issue while retriving testCase ${testCases.value[i].testCase.id}`);
       }
+    } catch (err: any) {
+      logger.error(`Error: ${err.message} while trying to structure testCases for test suite ${suite.id}`);
     }
 
     return testCasesUrlList;
@@ -245,6 +253,7 @@ export default class TestDataProvider {
     let testCaseUrl: string =
       this.orgUrl + project + '/_apis/test/Plans/' + planId + '/suites/' + suiteId + '/testcases/';
     let testCases: any = await TFSServices.getItemContent(testCaseUrl, this.token);
+    logger.debug(`test cases for plan ${planId} and ${suiteId} were ${testCases ? 'found' : 'not found'}`);
     return testCases;
   }
 
