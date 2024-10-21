@@ -1,6 +1,6 @@
-import axios from "axios";
-import logger from "../utils/logger";
-import * as request from "request";
+import axios from 'axios';
+import logger from '../utils/logger';
+import * as request from 'request';
 
 export class TFSServices {
   public static async downloadZipFile(url: string, pat: string): Promise<any> {
@@ -8,18 +8,18 @@ export class TFSServices {
     try {
       var d = {
         request: {
-          method: "getUser",
+          method: 'getUser',
           auth: {
-            username: "",
+            username: '',
             password: `${pat}`,
           },
         },
       };
       let res = await request({
         url: url,
-        headers: { "Content-Type": "application/zip" },
+        headers: { 'Content-Type': 'application/zip' },
         auth: {
-          username: "",
+          username: '',
           password: pat,
         },
         encoding: null,
@@ -34,7 +34,7 @@ export class TFSServices {
   public static async getItemContent(
     url: string,
     pat: string,
-    requestMethod: string = "get",
+    requestMethod: string = 'get',
     data: any = {},
     customHeaders: any = {}
   ): Promise<any> {
@@ -42,7 +42,7 @@ export class TFSServices {
       headers: customHeaders,
       method: requestMethod,
       auth: {
-        username: "",
+        username: '',
         password: pat,
       },
       data: data,
@@ -54,8 +54,9 @@ export class TFSServices {
     try {
       let result = await axios(url, config);
       json = JSON.parse(JSON.stringify(result.data));
-    } catch (e) {
-      logger.error(`error making request to azure devops , url : ${url}`);
+    } catch (e: any) {
+      logger.error(`error making request to azure devops: ${e.message}, url : ${url}`);
+
       // logger.error(JSON.stringify(e.data));
     }
     return json;
@@ -64,7 +65,7 @@ export class TFSServices {
   public static async postRequest(
     url: string,
     pat: string,
-    requestMethod: string = "post",
+    requestMethod: string = 'post',
     data: any,
     customHeaders: any = {}
   ): Promise<any> {
@@ -72,7 +73,7 @@ export class TFSServices {
       headers: customHeaders,
       method: requestMethod,
       auth: {
-        username: "",
+        username: '',
         password: pat,
       },
       data: data,
