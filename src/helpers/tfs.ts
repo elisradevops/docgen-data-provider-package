@@ -55,9 +55,15 @@ export class TFSServices {
       let result = await axios(url, config);
       json = JSON.parse(JSON.stringify(result.data));
     } catch (e: any) {
-      logger.error(`error making request to azure devops: ${e.message}, url : ${url}`);
-
-      // logger.error(JSON.stringify(e.data));
+      if (e.response) {
+        // Log detailed error information including the URL
+        logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
+        logger.error(`Status: ${e.response.status}`);
+        logger.error(`Response Data: ${JSON.stringify(e.response.data)}`);
+      } else {
+        // Handle other errors (network, etc.)
+        logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
+      }
     }
     return json;
   }

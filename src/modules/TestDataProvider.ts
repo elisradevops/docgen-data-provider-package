@@ -43,6 +43,12 @@ export default class TestDataProvider {
   }
 
   async GetTestSuitesForPlan(project: string, planid: string): Promise<any> {
+    if (!project) {
+      throw new Error('Project not selected');
+    }
+    if (!planid) {
+      throw new Error('Plan not selected');
+    }
     let url =
       this.orgUrl + '/' + project + '/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=' + planid;
     let suites = await TFSServices.getItemContent(url, this.token);
