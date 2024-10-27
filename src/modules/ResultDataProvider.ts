@@ -162,9 +162,9 @@ export default class ResultDataProvider {
    */
   private async fetchResult(projectName: string, runId: string, resultId: string): Promise<any> {
     try {
-      const url = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/Results/${resultId}?detailsToInclude=5`;
+      const url = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/results/${resultId}?detailsToInclude=Iterations`;
       const resultData = await TFSServices.getItemContent(url, this.token);
-      const attachmentsUrl = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/Results/${resultId}/attachments`;
+      const attachmentsUrl = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/results/${resultId}/attachments`;
       const { value: analysisAttachments } = await TFSServices.getItemContent(attachmentsUrl, this.token);
 
       return { ...resultData, analysisAttachments };
@@ -255,8 +255,8 @@ export default class ResultDataProvider {
               actionResult.outcome === 'Unspecified'
                 ? 'Not Run'
                 : actionResult.outcome !== 'Not Run'
-                  ? actionResult.outcome
-                  : '',
+                ? actionResult.outcome
+                : '',
             stepComments: actionResult.errorMessage || '',
           });
         }
@@ -269,16 +269,13 @@ export default class ResultDataProvider {
    * Creates a mapping of iterations by their unique keys.
    */
   private createIterationsMap(iterations: any[]): Record<string, any> {
-    return iterations.reduce(
-      (map, iterationItem) => {
-        if (iterationItem.iteration) {
-          const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}`;
-          map[key] = iterationItem;
-        }
-        return map;
-      },
-      {} as Record<string, any>
-    );
+    return iterations.reduce((map, iterationItem) => {
+      if (iterationItem.iteration) {
+        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}`;
+        map[key] = iterationItem;
+      }
+      return map;
+    }, {} as Record<string, any>);
   }
 
   /**
