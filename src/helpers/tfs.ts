@@ -64,6 +64,7 @@ export class TFSServices {
         // Handle other errors (network, etc.)
         logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
       }
+      throw e;
     }
     return json;
   }
