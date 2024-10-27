@@ -282,18 +282,21 @@ export default class ResultDataProvider {
    * Fetches test data for all suites, including test points and test cases.
    */
   private async fetchTestData(suites: any[], projectName: string, testPlanId: string): Promise<any[]> {
-    return Promise.all(
-      suites.map((suite) =>
-        Promise.all([
-          this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId),
-          this.fetchTestCasesBySuiteId(projectName, testPlanId, suite.testSuiteId),
-        ])
-          .then(([testPointsItems, testCasesItems]) => ({ ...suite, testPointsItems, testCasesItems }))
-          .catch((error: any) => {
-            logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
-            return suite;
-          })
-      )
+    return await Promise.all(
+      suites.map(async (suite) => {
+        try {
+          const testPointsItems = await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId);
+          const testCasesItems = await this.fetchTestCasesBySuiteId(
+            projectName,
+            testPlanId,
+            suite.testSuiteId
+          );
+          return { ...suite, testPointsItems, testCasesItems };
+        } catch (error: any) {
+          logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
+          return suite;
+        }
+      })
     );
   }
 
@@ -301,41 +304,50 @@ export default class ResultDataProvider {
    * Fetches result data for all test points within the given test data.
    */
   private async fetchAllResultData(testData: any[], projectName: string): Promise<any[]> {
-    const pointsToFetch = testData
-      .filter((item) => item.testPointsItems && item.testPointsItems.length > 0)
-      .flatMap((item) => {
-        const { testSuiteId, testPointsItems } = item;
-        const validPoints = testPointsItems.filter((point: any) => point.lastRunId && point.lastResultId);
-        return validPoints.map((point: any) => this.fetchResultData(projectName, testSuiteId, point));
-      });
-
-    return Promise.all(pointsToFetch);
+    return await Promise.all(
+      testData
+        .filter((item) => item.testPointsItems && item.testPointsItems.length > 0)
+        .flatMap((item) => {
+          const { testSuiteId, testPointsItems } = item;
+          const validPoints = testPointsItems.filter((point: any) => point.lastRunId && point.lastResultId);
+          return validPoints.map(
+            async (point: any) => await this.fetchResultData(projectName, testSuiteId, point)
+          );
+        })
+        .filter((validPoint) => validPoint !== null)
+    );
   }
 
   /**
    * Fetches result Data data for a specific test point.
    */
-  private async fetchResultData(projectName: string, testSuiteId: string, point: any): Promise<any> {
+  private async fetchResultData(projectName: string, testSuiteId: string, point: any) {
     const { lastRunId, lastResultId } = point;
     const resultData = await this.fetchResult(projectName, lastRunId.toString(), lastResultId.toString());
-    const obj = {
-      testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
-      testCaseId: resultData.testCase.id,
-      testSuiteName: `${resultData.testSuite.name}`,
-      testSuiteId,
-      lastRunId,
-      lastResultId,
-      //Currently supporting only the last one
-      iteration:
-        resultData.iterationDetails.length > 0
-          ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
-          : undefined,
-      failureType: resultData.failureType,
-      resolution: resultData.resolutionState,
-      comment: resultData.comment,
-      analysisAttachments: resultData.analysisAttachments,
-    };
-    return obj;
+    logger.debug(
+      `resultData is  ${
+        resultData ? 'available' : 'unavailable'
+      } for run ${lastRunId} result ${lastResultId} `
+    );
+    return resultData
+      ? {
+          testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
+          testCaseId: resultData.testCase.id,
+          testSuiteName: `${resultData.testSuite.name}`,
+          testSuiteId,
+          lastRunId,
+          lastResultId,
+          //Currently supporting only the last one
+          iteration:
+            resultData.iterationDetails?.length > 0
+              ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
+              : undefined,
+          failureType: resultData.failureType,
+          resolution: resultData.resolutionState,
+          comment: resultData.comment,
+          analysisAttachments: resultData.analysisAttachments,
+        }
+      : null;
   }
 
   /**
@@ -486,6 +498,9 @@ export default class ResultDataProvider {
    */
   public mapAttachmentsUrl(runResults: any[], project: string) {
     return runResults.map((result) => {
+      if (!result.iteration) {
+        return result;
+      }
       const { iteration, analysisAttachments, ...restResult } = result;
       //add downloadUri field for each attachment
       const baseDownloadUrl = `${this.orgUrl}${project}/_apis/test/runs/${result.lastRunId}/results/${result.lastResultId}/attachments`;
