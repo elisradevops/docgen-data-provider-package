@@ -137,7 +137,7 @@ export default class ResultDataProvider {
       testCaseId: testPoint.testCaseReference.id,
       testCaseName: testPoint.testCaseReference.name,
       configurationName: testPoint.configuration?.name,
-      outcome: testPoint.results?.outcome,
+      outcome: testPoint.results?.outcome || 'Not Run',
       lastRunId: testPoint.results?.lastTestRunId,
       lastResultId: testPoint.results?.lastResultId,
       lastResultDetails: testPoint.results?.lastResultDetails,
@@ -221,6 +221,9 @@ export default class ResultDataProvider {
    */
   private alignStepsWithIterations(testData: any[], iterations: any[]): any[] {
     const detailedResults: any[] = [];
+    if (!iterations || iterations?.length === 0) {
+      return detailedResults;
+    }
     const iterationsMap = this.createIterationsMap(iterations);
 
     for (const testItem of testData) {
@@ -255,8 +258,8 @@ export default class ResultDataProvider {
               actionResult.outcome === 'Unspecified'
                 ? 'Not Run'
                 : actionResult.outcome !== 'Not Run'
-                ? actionResult.outcome
-                : '',
+                  ? actionResult.outcome
+                  : '',
             stepComments: actionResult.errorMessage || '',
           });
         }
@@ -269,13 +272,16 @@ export default class ResultDataProvider {
    * Creates a mapping of iterations by their unique keys.
    */
   private createIterationsMap(iterations: any[]): Record<string, any> {
-    return iterations.reduce((map, iterationItem) => {
-      if (iterationItem.iteration) {
-        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}`;
-        map[key] = iterationItem;
-      }
-      return map;
-    }, {} as Record<string, any>);
+    return iterations.reduce(
+      (map, iterationItem) => {
+        if (iterationItem.iteration) {
+          const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}`;
+          map[key] = iterationItem;
+        }
+        return map;
+      },
+      {} as Record<string, any>
+    );
   }
 
   /**
@@ -294,7 +300,7 @@ export default class ResultDataProvider {
           return { ...suite, testPointsItems, testCasesItems };
         } catch (error: any) {
           logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
-          return suite;
+          return suite; // Return the suite without the items if there's an error
         }
       })
     );
@@ -303,19 +309,32 @@ export default class ResultDataProvider {
   /**
    * Fetches result data for all test points within the given test data.
    */
+  /**
+   * Fetches result data for all test points within the given test data, sequentially to avoid context-related errors.
+   */
   private async fetchAllResultData(testData: any[], projectName: string): Promise<any[]> {
-    return await Promise.all(
-      testData
-        .filter((item) => item.testPointsItems && item.testPointsItems.length > 0)
-        .flatMap((item) => {
-          const { testSuiteId, testPointsItems } = item;
-          const validPoints = testPointsItems.filter((point: any) => point.lastRunId && point.lastResultId);
-          return validPoints.map(
-            async (point: any) => await this.fetchResultData(projectName, testSuiteId, point)
-          );
-        })
-        .filter((validPoint) => validPoint !== null)
-    );
+    const results = [];
+
+    for (const item of testData) {
+      if (item.testPointsItems && item.testPointsItems.length > 0) {
+        const { testSuiteId, testPointsItems } = item;
+
+        // Filter and sort valid points
+        const validPoints = testPointsItems.filter(
+          (point: any) => point && point.lastRunId && point.lastResultId
+        );
+
+        // Fetch results for each point sequentially
+        for (const point of validPoints) {
+          const resultData = await this.fetchResultData(projectName, testSuiteId, point);
+          if (resultData !== null) {
+            results.push(resultData);
+          }
+        }
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -325,11 +344,9 @@ export default class ResultDataProvider {
     const { lastRunId, lastResultId } = point;
     const resultData = await this.fetchResult(projectName, lastRunId.toString(), lastResultId.toString());
     logger.debug(
-      `resultData is  ${
-        resultData ? 'available' : 'unavailable'
-      } for run ${lastRunId} result ${lastResultId} `
+      `resultData is ${resultData ? 'available' : 'unavailable'} for run ${lastRunId} result ${lastResultId} `
     );
-    return resultData
+    return resultData?.testCase
       ? {
           testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
           testCaseId: resultData.testCase.id,
@@ -602,7 +619,7 @@ export default class ResultDataProvider {
       const detailedResultsSummary = this.alignStepsWithIterations(testData, runResults);
       //Filter out all the results with no comment
       const filteredDetailedResults = detailedResultsSummary.filter(
-        (result) => result.stepComments !== '' || result.stepStatus === 'Failed'
+        (result) => result && (result.stepComments !== '' || result.stepStatus === 'Failed')
       );
 
       // Add detailed results summary to combined results
@@ -655,12 +672,16 @@ export default class ResultDataProvider {
       return combinedResults;
     } catch (error: any) {
       logger.error(`Error during getCombinedResultsSummary: ${error.message}`);
+      logger.error(`Error Stack:\n ${error.stack}`);
+      if (error.response) {
+        logger.error(`Response Data: ${JSON.stringify(error.response.data)}`);
+      }
       return combinedResults; // Return whatever is computed even in case of error
     }
   }
 
   private mapStepResultsForExecutionAppendix(detailedResults: any[]): any {
-    return detailedResults.length > 0
+    return detailedResults?.length > 0
       ? detailedResults.map((result) => ({
           testId: result.testId,
           stepNo: result.stepNo,
