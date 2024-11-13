@@ -535,10 +535,15 @@ export default class ResultDataProvider {
       //add downloadUri field for each attachment
       const baseDownloadUrl = `${this.orgUrl}${project}/_apis/test/runs/${result.lastRunId}/results/${result.lastResultId}/attachments`;
       if (iteration && iteration.attachments?.length > 0) {
-        const { attachments, ...restOfIteration } = iteration;
+        const { attachments, actionResults, ...restOfIteration } = iteration;
+        const attachmentPathToIndexMap: Map<string, number> =
+          this.CreateAttachmentPathIndexMap(actionResults);
 
         const mappedAttachments = attachments.map((attachment: any) => ({
           ...attachment,
+          stepNo: attachmentPathToIndexMap.has(attachment.actionPath)
+            ? attachmentPathToIndexMap.get(attachment.actionPath)
+            : undefined,
           downloadUrl: `${baseDownloadUrl}/${attachment.id}/${attachment.name}`,
         }));
 
@@ -553,6 +558,16 @@ export default class ResultDataProvider {
 
       return { ...restResult };
     });
+  }
+
+  private CreateAttachmentPathIndexMap(actionResults: any) {
+    const attachmentPathToIndexMap: Map<string, number> = new Map();
+
+    for (let i = 0; i < actionResults.length; i++) {
+      const actionPath = actionResults[i].actionPath;
+      attachmentPathToIndexMap.set(actionPath, i);
+    }
+    return attachmentPathToIndexMap;
   }
 
   /**
@@ -629,9 +644,9 @@ export default class ResultDataProvider {
       const testData = await this.fetchTestData(suites, projectName, testPlanId);
       const runResults = await this.fetchAllResultData(testData, projectName);
 
-      const detailedResultsSummary = this.alignStepsWithIterations(testData, runResults);
+      const detailedStepResultsSummary = this.alignStepsWithIterations(testData, runResults);
       //Filter out all the results with no comment
-      const filteredDetailedResults = detailedResultsSummary.filter(
+      const filteredDetailedResults = detailedStepResultsSummary.filter(
         (result) => result && (result.stepComments !== '' || result.stepStatus === 'Failed')
       );
 
@@ -673,7 +688,7 @@ export default class ResultDataProvider {
       }
 
       if (stepExecution && stepExecution.isEnabled) {
-        const mappedDetailedResults = this.mapStepResultsForExecutionAppendix(detailedResultsSummary);
+        const mappedDetailedResults = this.mapStepResultsForExecutionAppendix(detailedStepResultsSummary);
 
         combinedResults.push({
           contentControl: 'appendix-b-content-control',
