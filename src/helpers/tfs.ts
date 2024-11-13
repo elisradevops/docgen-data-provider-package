@@ -1,28 +1,16 @@
 import axios from 'axios';
 import logger from '../utils/logger';
-import * as request from 'request';
 
 export class TFSServices {
   public static async downloadZipFile(url: string, pat: string): Promise<any> {
-    let json;
     try {
-      var d = {
-        request: {
-          method: 'getUser',
-          auth: {
-            username: '',
-            password: `${pat}`,
-          },
-        },
-      };
-      let res = await request({
+      let res = await axios.request({
         url: url,
         headers: { 'Content-Type': 'application/zip' },
         auth: {
           username: '',
           password: pat,
         },
-        encoding: null,
       });
       return res;
     } catch (e) {

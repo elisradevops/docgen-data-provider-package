@@ -166,7 +166,6 @@ export default class ResultDataProvider {
       const resultData = await TFSServices.getItemContent(url, this.token);
       const attachmentsUrl = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/results/${resultId}/attachments`;
       const { value: analysisAttachments } = await TFSServices.getItemContent(attachmentsUrl, this.token);
-
       return { ...resultData, analysisAttachments };
     } catch (error: any) {
       logger.error(`Error while fetching run result: ${error.message}`);
@@ -193,8 +192,9 @@ export default class ResultDataProvider {
   /**
    * Parses test steps from XML format into a structured array.
    */
-  private parseTestSteps(xmlSteps: string): TestSteps[] {
+  private parseTestSteps(xmlSteps: string): { stepsList: TestSteps[]; lookupStepsMap: Map<number, number> } {
     const stepsList: TestSteps[] = [];
+    const lookupStepsMap: Map<number, number> = new Map();
     xml2js.parseString(xmlSteps, { explicitArray: false }, (err, result) => {
       if (err) {
         logger.warn('Failed to parse XML test steps.');
@@ -206,14 +206,17 @@ export default class ResultDataProvider {
       }
       const stepsArray = Array.isArray(result.steps?.step) ? result.steps.step : [result.steps?.step];
 
-      stepsArray.forEach((stepObj: any) => {
+      for (let i = 0; i < stepsArray.length; i++) {
+        const stepObj = stepsArray[i];
         const step = new TestSteps();
+        step.stepId = Number(stepObj.$.id);
         step.action = stepObj.parameterizedString?.[0]?._ || '';
         step.expected = stepObj.parameterizedString?.[1]?._ || '';
         stepsList.push(step);
-      });
+        lookupStepsMap.set(step.stepId, i);
+      }
     });
-    return stepsList;
+    return { stepsList, lookupStepsMap };
   }
 
   /**
@@ -234,7 +237,10 @@ export default class ResultDataProvider {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
         }
-        const steps = this.parseTestSteps(testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']);
+        const { stepsList: steps, lookupStepsMap } = this.parseTestSteps(
+          testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']
+        );
+
         if (steps.length === 0) {
           logger.warn(`No steps were found for WI ${testCase.workItem?.id}`);
           continue;
@@ -242,27 +248,37 @@ export default class ResultDataProvider {
         const iterationKey = `${point.lastRunId}-${point.lastResultId}`;
         const iteration = iterationsMap[iterationKey]?.iteration;
 
-        if (!iteration) continue;
+        if (!iteration || !iteration?.actionResults) continue;
 
-        for (const actionResult of iteration.actionResults) {
-          const stepIndex = parseInt(actionResult.stepIdentifier, 10) - 2;
-          if (!steps[stepIndex]) continue;
+        const { actionResults } = iteration;
 
-          detailedResults.push({
+        for (let i = 0; i < actionResults.length; i++) {
+          const stepIdentifier = parseInt(actionResults[i].stepIdentifier, 10);
+
+          if (!lookupStepsMap.has(stepIdentifier)) {
+            throw new Error(`Could not extract step ${stepIdentifier}`);
+          }
+          const stepIndex: any = lookupStepsMap.get(stepIdentifier);
+
+          const resultObj = {
             testId: point.testCaseId,
             testName: point.testCaseName,
-            stepNo: stepIndex + 1,
+            stepIdentifier: stepIdentifier,
+            stepNo: i + 1,
             stepAction: steps[stepIndex].action,
             stepExpected: steps[stepIndex].expected,
             stepStatus:
-              actionResult.outcome === 'Unspecified'
+              actionResults[i].outcome === 'Unspecified'
                 ? 'Not Run'
-                : actionResult.outcome !== 'Not Run'
-                  ? actionResult.outcome
-                  : '',
-            stepComments: actionResult.errorMessage || '',
-          });
+                : actionResults[i].outcome !== 'Not Run'
+                ? actionResults[i].outcome
+                : '',
+            stepComments: actionResults[i].errorMessage || '',
+          };
+
+          detailedResults.push(resultObj);
         }
+        lookupStepsMap.clear();
       }
     }
     return detailedResults;
@@ -272,16 +288,13 @@ export default class ResultDataProvider {
    * Creates a mapping of iterations by their unique keys.
    */
   private createIterationsMap(iterations: any[]): Record<string, any> {
-    return iterations.reduce(
-      (map, iterationItem) => {
-        if (iterationItem.iteration) {
-          const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}`;
-          map[key] = iterationItem;
-        }
-        return map;
-      },
-      {} as Record<string, any>
-    );
+    return iterations.reduce((map, iterationItem) => {
+      if (iterationItem.iteration) {
+        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}`;
+        map[key] = iterationItem;
+      }
+      return map;
+    }, {} as Record<string, any>);
   }
 
   /**
