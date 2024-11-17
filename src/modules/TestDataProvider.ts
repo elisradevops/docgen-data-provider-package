@@ -213,7 +213,7 @@ export default class TestDataProvider {
     if (CustomerRequirementId) {
       // Here we check for either of the two potential fields for customer ID
       customerId =
-        relatedItemContent.fields['Custom.CustomerRequirementID'] ||
+        relatedItemContent.fields['Custom.CustomerRequirementId'] ||
         relatedItemContent.fields['Custom.CustomerID'] ||
         relatedItemContent.fields['Elisra.CustomerRequirementId'] ||
         ' ';

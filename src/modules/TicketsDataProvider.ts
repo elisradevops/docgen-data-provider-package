@@ -10,6 +10,8 @@ import { TestCase } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 
 import logger from '../utils/logger';
+import { log } from 'console';
+import { pid, title } from 'process';
 
 export default class TicketsDataProvider {
   orgUrl: string = '';
@@ -99,19 +101,91 @@ export default class TicketsDataProvider {
   async GetSharedQueries(project: string, path: string): Promise<any> {
     let url;
     try {
-      if (path == '') url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=1`;
-      else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=1`;
+      if (path == '')
+        url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all`;
+      else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
-      for (let i = 0; i < queries.children.length; i++)
-        if (queries.children[i].isFolder) {
-          this.queriesList.push(queries.children[i]);
-          await this.GetSharedQueries(project, queries.children[i].path);
-        } else {
-          this.queriesList.push(queries.children[i]);
-        }
-      return this.GetModeledQuery(this.queriesList);
-    } catch (e) {}
+
+      const { tree1: reqTestTree, tree2: testReqTree } = this.structureQueries(queries);
+      return { reqTestTree, testReqTree };
+    } catch (err: any) {
+      logger.error(err.message);
+    }
   }
+
+  async GetQueryResultsFromWiqlHref(wiqlHref: string = '', includeCustomerId: boolean = false): Promise<any> {
+    try {
+      if (!wiqlHref) {
+        throw new Error('Incorrect WIQL Link');
+      }
+
+      // Remember to add customer id if needed
+      const queryResult: any = await TFSServices.getItemContent(wiqlHref, this.token);
+      if (!queryResult) {
+        throw new Error('Query result failed');
+      }
+
+      const { columns, workItemRelations } = queryResult;
+
+      if (workItemRelations.length === 0) {
+        throw new Error('No related work items were found');
+      }
+
+      // Extract column names
+      const columnNames: string[] = columns.map((column: any) => column.referenceName);
+
+      let concatenatedColumnNames = columnNames.join(',');
+      if (includeCustomerId) {
+        //Customer Id options
+        concatenatedColumnNames += ',Custom.CustomerID,Custom.CustomerRequirementId';
+      }
+
+      // Initialize maps
+      const primaryMap: Map<any, any[]> = new Map();
+      const lookupMap: Map<number, any> = new Map();
+
+      for (const relation of workItemRelations) {
+        if (!relation.source) {
+          // Root link
+          const wi: any = await this.fetchWIByRelation(relation, concatenatedColumnNames);
+          if (!lookupMap.has(wi.id)) {
+            primaryMap.set(wi, []);
+            lookupMap.set(wi.id, wi);
+          }
+          continue; // Move to the next relation
+        }
+
+        if (!relation.target) {
+          throw new Error('Target relation is missing');
+        }
+
+        // Get relation source from lookup
+        const sourceRelation = lookupMap.get(relation.source.id);
+        if (!sourceRelation) {
+          throw new Error('Source relation has no mapping');
+        }
+
+        const targetWi: any = await this.fetchWIByRelation(relation, concatenatedColumnNames);
+        const targets: any = primaryMap.get(sourceRelation) || [];
+        targets.push(targetWi);
+        primaryMap.set(sourceRelation, targets);
+      }
+
+      return primaryMap;
+    } catch (err: any) {
+      logger.error(err.message);
+    }
+  }
+
+  private async fetchWIByRelation(relation: any, fields: string) {
+    const url = `${relation.target.url}?fields=${fields}`;
+    const wi: any = await TFSServices.getItemContent(url, this.token);
+    if (!wi) {
+      throw new Error(`WI ${relation.target.id} not found`);
+    }
+    return wi;
+  }
+
   // get queris structured
   GetModeledQuery(list: Array<any>): Array<any> {
     let queryListObject: Array<any> = [];
@@ -143,7 +217,7 @@ export default class TicketsDataProvider {
   // gets query results
   async GetQueryResultsByWiqlString(wiql: string, projectName: string): Promise<any> {
     let res;
-    let url = `${this.orgUrl}${projectName}/_apis/wit/wiql?$top=2147483646&expand={all}`;
+    let url = `${this.orgUrl}${projectName}/_apis/wit/wiql?$top=2147483646&expand=all`;
     try {
       res = await TFSServices.getItemContent(url, this.token, 'post', {
         query: wiql,
@@ -302,7 +376,9 @@ export default class TicketsDataProvider {
   } //GetIterationsByTeamName
 
   async CreateNewWorkItem(projectName: string, wiBody: any, wiType: string, byPass: boolean) {
-    let url = `${this.orgUrl}${projectName}/_apis/wit/workitems/$${wiType}?bypassRules=${String(byPass).toString()}`;
+    let url = `${this.orgUrl}${projectName}/_apis/wit/workitems/$${wiType}?bypassRules=${String(
+      byPass
+    ).toString()}`;
     return TFSServices.getItemContent(url, this.token, 'POST', wiBody, {
       'Content-Type': 'application/json-patch+json',
     });
@@ -339,10 +415,93 @@ export default class TicketsDataProvider {
 
   async UpdateWorkItem(projectName: string, wiBody: any, workItemId: number, byPass: boolean) {
     let res: any;
-    let url: string = `${this.orgUrl}${projectName}/_apis/wit/workitems/${workItemId}?bypassRules=${String(byPass).toString()}`;
+    let url: string = `${this.orgUrl}${projectName}/_apis/wit/workitems/${workItemId}?bypassRules=${String(
+      byPass
+    ).toString()}`;
     res = await TFSServices.getItemContent(url, this.token, 'patch', wiBody, {
       'Content-Type': 'application/json-patch+json',
     });
     return res;
   } //CreateNewWorkItem
+
+  private structureQueries(rootQuery: any, parentId: any = null): any {
+    if (!rootQuery.hasChildren) {
+      if (!rootQuery.isFolder && rootQuery.queryType === 'oneHop') {
+        const wiql = rootQuery.wiql;
+        let tree1Node = null;
+        let tree2Node = null;
+
+        if (this.matchesReqTestCondition(wiql)) {
+          tree1Node = {
+            id: rootQuery.id,
+            pId: parentId,
+            value: rootQuery.name,
+            title: rootQuery.name,
+            queryType: rootQuery.queryType,
+            wiql: rootQuery._links.wiql ?? undefined,
+            isValidQuery: true,
+          };
+        }
+        if (this.matchesTestReqCondition(wiql)) {
+          tree2Node = {
+            id: rootQuery.id,
+            pId: parentId,
+            value: rootQuery.name,
+            title: rootQuery.name,
+            queryType: rootQuery.queryType,
+            wiql: rootQuery._links.wiql ?? undefined,
+            isValidQuery: true,
+          };
+        }
+        return { tree1: tree1Node, tree2: tree2Node };
+      } else {
+        return { tree1: null, tree2: null };
+      }
+    }
+
+    // Process children recursively
+    const childResults = rootQuery.children.map((child: any) => this.structureQueries(child, rootQuery.id));
+
+    // Build tree1
+    const tree1Children = childResults.map((res: any) => res.tree1).filter((child: any) => child !== null);
+    const tree1Node =
+      tree1Children.length > 0
+        ? {
+            id: rootQuery.id,
+            pId: parentId,
+            value: rootQuery.name,
+            title: rootQuery.name,
+            children: tree1Children,
+          }
+        : null;
+
+    // Build tree2
+    const tree2Children = childResults.map((res: any) => res.tree2).filter((child: any) => child !== null);
+    const tree2Node =
+      tree2Children.length > 0
+        ? {
+            id: rootQuery.id,
+            value: rootQuery.name,
+            pId: parentId,
+            title: rootQuery.name,
+            children: tree2Children,
+          }
+        : null;
+
+    return { tree1: tree1Node, tree2: tree2Node };
+  }
+
+  private matchesReqTestCondition(wiql: string): boolean {
+    return (
+      wiql.includes("Source.[System.WorkItemType] = 'Requirement'") &&
+      wiql.includes("Target.[System.WorkItemType] = 'Test Case'")
+    );
+  }
+
+  private matchesTestReqCondition(wiql: string): boolean {
+    return (
+      wiql.includes("Source.[System.WorkItemType] = 'Test Case'") &&
+      wiql.includes("Target.[System.WorkItemType] = 'Requirement'")
+    );
+  }
 }
