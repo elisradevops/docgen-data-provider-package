@@ -212,6 +212,8 @@ export default class ResultDataProvider {
         step.stepId = Number(stepObj.$.id);
         step.action = stepObj.parameterizedString?.[0]?._ || '';
         step.expected = stepObj.parameterizedString?.[1]?._ || '';
+        logger.debug(`Step id: ${step.stepId}, index: ${i}`);
+
         stepsList.push(step);
         lookupStepsMap.set(step.stepId, i);
       }
@@ -233,6 +235,8 @@ export default class ResultDataProvider {
       for (const point of testItem.testPointsItems) {
         const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
         if (!testCase) continue;
+        logger.debug(`parsing data for test case Id ${point.testCaseId}`);
+
         if (testCase.workItem.workItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
@@ -246,6 +250,7 @@ export default class ResultDataProvider {
           continue;
         }
         const iterationKey = `${point.lastRunId}-${point.lastResultId}`;
+        logger.debug(`iteration key {last run - last result} ${iterationKey}`);
         const iteration = iterationsMap[iterationKey]?.iteration;
 
         if (!iteration || !iteration?.actionResults) continue;
