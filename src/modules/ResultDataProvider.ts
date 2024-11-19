@@ -205,15 +205,12 @@ export default class ResultDataProvider {
         return;
       }
       const stepsArray = Array.isArray(result.steps?.step) ? result.steps.step : [result.steps?.step];
-
       for (let i = 0; i < stepsArray.length; i++) {
         const stepObj = stepsArray[i];
         const step = new TestSteps();
         step.stepId = Number(stepObj.$.id);
         step.action = stepObj.parameterizedString?.[0]?._ || '';
         step.expected = stepObj.parameterizedString?.[1]?._ || '';
-        logger.debug(`Step id: ${step.stepId}, index: ${i}`);
-
         stepsList.push(step);
         lookupStepsMap.set(step.stepId, i);
       }
@@ -229,12 +226,13 @@ export default class ResultDataProvider {
     if (!iterations || iterations?.length === 0) {
       return detailedResults;
     }
-    const iterationsMap = this.createIterationsMap(iterations);
 
     for (const testItem of testData) {
       for (const point of testItem.testPointsItems) {
         const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
         if (!testCase) continue;
+        const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id);
+
         logger.debug(`parsing data for test case Id ${point.testCaseId}`);
 
         if (testCase.workItem.workItemFields.length === 0) {
@@ -249,40 +247,62 @@ export default class ResultDataProvider {
           logger.warn(`No steps were found for WI ${testCase.workItem?.id}`);
           continue;
         }
-        const iterationKey = `${point.lastRunId}-${point.lastResultId}`;
-        logger.debug(`iteration key {last run - last result} ${iterationKey}`);
-        const iteration = iterationsMap[iterationKey]?.iteration;
 
-        if (!iteration || !iteration?.actionResults) continue;
+        if (point.lastRunId && point.lastResultId) {
+          const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
 
-        const { actionResults } = iteration;
+          logger.debug(`iteration key ${iterationKey}`);
 
-        for (let i = 0; i < actionResults.length; i++) {
-          const stepIdentifier = parseInt(actionResults[i].stepIdentifier, 10);
+          const iteration = iterationsMap[iterationKey]?.iteration;
 
-          if (!lookupStepsMap.has(stepIdentifier)) {
-            throw new Error(`Could not extract step ${stepIdentifier}`);
+          if (!iteration || !iteration?.actionResults) continue;
+
+          const { actionResults } = iteration;
+
+          for (let i = 0; i < actionResults.length; i++) {
+            const stepIdentifier = parseInt(actionResults[i].stepIdentifier, 10);
+
+            if (!lookupStepsMap.has(stepIdentifier)) {
+              throw new Error(`Could not extract step ${stepIdentifier}`);
+            }
+            const stepIndex: any = lookupStepsMap.get(stepIdentifier);
+
+            const resultObj = {
+              testId: point.testCaseId,
+              testName: point.testCaseName,
+              stepIdentifier: stepIdentifier,
+              stepNo: i + 1,
+              stepAction: steps[stepIndex].action,
+              stepExpected: steps[stepIndex].expected,
+              stepStatus:
+                actionResults[i].outcome === 'Unspecified'
+                  ? 'Not Run'
+                  : actionResults[i].outcome !== 'Not Run'
+                  ? actionResults[i].outcome
+                  : '',
+              stepComments: actionResults[i].errorMessage || '',
+            };
+
+            detailedResults.push(resultObj);
           }
-          const stepIndex: any = lookupStepsMap.get(stepIdentifier);
-
-          const resultObj = {
-            testId: point.testCaseId,
-            testName: point.testCaseName,
-            stepIdentifier: stepIdentifier,
-            stepNo: i + 1,
-            stepAction: steps[stepIndex].action,
-            stepExpected: steps[stepIndex].expected,
-            stepStatus:
-              actionResults[i].outcome === 'Unspecified'
-                ? 'Not Run'
-                : actionResults[i].outcome !== 'Not Run'
-                ? actionResults[i].outcome
-                : '',
-            stepComments: actionResults[i].errorMessage || '',
-          };
-
-          detailedResults.push(resultObj);
+        } else {
+          //In case of not tested
+          logger.debug(`Test case ${point.testCaseId} does not have a test result`);
+          for (let i = 0; i < steps.length; i++) {
+            const resultObj = {
+              testId: point.testCaseId,
+              testName: point.testCaseName,
+              stepIdentifier: steps[i].stepId,
+              stepNo: i + 1,
+              stepAction: steps[i].action,
+              stepExpected: steps[i].expected,
+              stepStatus: 'Not Run',
+              stepComments: 'No Result',
+            };
+            detailedResults.push(resultObj);
+          }
         }
+
         lookupStepsMap.clear();
       }
     }
@@ -292,10 +312,10 @@ export default class ResultDataProvider {
   /**
    * Creates a mapping of iterations by their unique keys.
    */
-  private createIterationsMap(iterations: any[]): Record<string, any> {
+  private createIterationsMap(iterations: any[], testCaseId: number): Record<string, any> {
     return iterations.reduce((map, iterationItem) => {
       if (iterationItem.iteration) {
-        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}`;
+        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${testCaseId}`;
         map[key] = iterationItem;
       }
       return map;
