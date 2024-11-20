@@ -153,6 +153,7 @@ export default class ResultDataProvider {
     suiteId: string
   ): Promise<any[]> {
     const url = `${this.orgUrl}${projectName}/_apis/testplan/Plans/${testPlanId}/Suites/${suiteId}/TestCase?witFields=Microsoft.VSTS.TCM.Steps`;
+
     const { value: testCases } = await TFSServices.getItemContent(url, this.token);
     return testCases;
   }
@@ -166,7 +167,15 @@ export default class ResultDataProvider {
       const resultData = await TFSServices.getItemContent(url, this.token);
       const attachmentsUrl = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/results/${resultId}/attachments`;
       const { value: analysisAttachments } = await TFSServices.getItemContent(attachmentsUrl, this.token);
-      return { ...resultData, analysisAttachments };
+      const wiUrl = `${this.orgUrl}${projectName}/_apis/wit/workItems/${resultData.testCase.id}/revisions/${resultData.testCaseRevision}`;
+      const wiByRevision = await TFSServices.getItemContent(wiUrl, this.token);
+
+      return {
+        ...resultData,
+        stepsResultXml: wiByRevision.fields['Microsoft.VSTS.TCM.Steps'] || undefined,
+        analysisAttachments,
+        testCaseRevision: resultData.testCaseRevision,
+      };
     } catch (error: any) {
       logger.error(`Error while fetching run result: ${error.message}`);
       return null;
@@ -192,9 +201,9 @@ export default class ResultDataProvider {
   /**
    * Parses test steps from XML format into a structured array.
    */
-  private parseTestSteps(xmlSteps: string): { stepsList: TestSteps[]; lookupStepsMap: Map<number, number> } {
+  private parseTestSteps(xmlSteps: string): { stepsList: TestSteps[] } {
     const stepsList: TestSteps[] = [];
-    const lookupStepsMap: Map<number, number> = new Map();
+
     xml2js.parseString(xmlSteps, { explicitArray: false }, (err, result) => {
       if (err) {
         logger.warn('Failed to parse XML test steps.');
@@ -212,10 +221,9 @@ export default class ResultDataProvider {
         step.action = stepObj.parameterizedString?.[0]?._ || '';
         step.expected = stepObj.parameterizedString?.[1]?._ || '';
         stepsList.push(step);
-        lookupStepsMap.set(step.stepId, i);
       }
     });
-    return { stepsList, lookupStepsMap };
+    return { stepsList };
   }
 
   /**
@@ -239,41 +247,25 @@ export default class ResultDataProvider {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
         }
-        const { stepsList: steps, lookupStepsMap } = this.parseTestSteps(
-          testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']
-        );
-
-        if (steps.length === 0) {
-          logger.warn(`No steps were found for WI ${testCase.workItem?.id}`);
-          continue;
-        }
 
         if (point.lastRunId && point.lastResultId) {
           const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
 
-          logger.debug(`iteration key ${iterationKey}`);
+          const testCastObj = iterationsMap[iterationKey];
+          if (!testCastObj || !testCastObj.iteration || !testCastObj.iteration.actionResults) continue;
 
-          const iteration = iterationsMap[iterationKey]?.iteration;
+          const { actionResults } = testCastObj?.iteration;
 
-          if (!iteration || !iteration?.actionResults) continue;
-
-          const { actionResults } = iteration;
-
-          for (let i = 0; i < actionResults.length; i++) {
+          for (let i = 0; i < actionResults?.length; i++) {
             const stepIdentifier = parseInt(actionResults[i].stepIdentifier, 10);
-
-            if (!lookupStepsMap.has(stepIdentifier)) {
-              throw new Error(`Could not extract step ${stepIdentifier}`);
-            }
-            const stepIndex: any = lookupStepsMap.get(stepIdentifier);
-
             const resultObj = {
               testId: point.testCaseId,
+              testCaseRevision: testCastObj.testCaseRevision,
               testName: point.testCaseName,
               stepIdentifier: stepIdentifier,
               stepNo: i + 1,
-              stepAction: steps[stepIndex].action,
-              stepExpected: steps[stepIndex].expected,
+              stepAction: actionResults[i].action,
+              stepExpected: actionResults[i].expected,
               stepStatus:
                 actionResults[i].outcome === 'Unspecified'
                   ? 'Not Run'
@@ -286,6 +278,14 @@ export default class ResultDataProvider {
             detailedResults.push(resultObj);
           }
         } else {
+          const { stepsList: steps } = this.parseTestSteps(
+            testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']
+          );
+
+          if (steps.length === 0) {
+            logger.warn(`No steps were found for WI ${testCase.workItem?.id}`);
+            continue;
+          }
           //In case of not tested
           logger.debug(`Test case ${point.testCaseId} does not have a test result`);
           for (let i = 0; i < steps.length; i++) {
@@ -293,6 +293,7 @@ export default class ResultDataProvider {
               testId: point.testCaseId,
               testName: point.testCaseName,
               stepIdentifier: steps[i].stepId,
+              testCaseRevision: undefined,
               stepNo: i + 1,
               stepAction: steps[i].action,
               stepExpected: steps[i].expected,
@@ -302,8 +303,6 @@ export default class ResultDataProvider {
             detailedResults.push(resultObj);
           }
         }
-
-        lookupStepsMap.clear();
       }
     }
     return detailedResults;
@@ -384,6 +383,27 @@ export default class ResultDataProvider {
     logger.debug(
       `resultData is ${resultData ? 'available' : 'unavailable'} for run ${lastRunId} result ${lastResultId} `
     );
+    const iteration =
+      resultData.iterationDetails.length > 0
+        ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
+        : undefined;
+
+    if (resultData.stepsResultXml && iteration) {
+      const { stepsList } = this.parseTestSteps(resultData.stepsResultXml);
+
+      const stepMap = new Map<string, any>();
+      for (const step of stepsList) {
+        stepMap.set(step.stepId.toString(), step);
+      }
+
+      for (const actionResult of iteration.actionResults) {
+        const step = stepMap.get(actionResult.stepIdentifier);
+        if (step) {
+          actionResult.action = step.action;
+          actionResult.expected = step.expected;
+        }
+      }
+    }
     return resultData?.testCase
       ? {
           testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
@@ -392,11 +412,8 @@ export default class ResultDataProvider {
           testSuiteId,
           lastRunId,
           lastResultId,
-          //Currently supporting only the last one
-          iteration:
-            resultData.iterationDetails?.length > 0
-              ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
-              : undefined,
+          iteration,
+          testCaseRevision: resultData.testCaseRevision,
           failureType: resultData.failureType,
           resolution: resultData.resolutionState,
           comment: resultData.comment,
@@ -714,7 +731,6 @@ export default class ResultDataProvider {
 
       if (stepExecution && stepExecution.isEnabled) {
         const mappedDetailedResults = this.mapStepResultsForExecutionAppendix(detailedStepResultsSummary);
-
         combinedResults.push({
           contentControl: 'appendix-b-content-control',
           data: mappedDetailedResults,
@@ -735,12 +751,16 @@ export default class ResultDataProvider {
 
   private mapStepResultsForExecutionAppendix(detailedResults: any[]): any {
     return detailedResults?.length > 0
-      ? detailedResults.map((result) => ({
-          testId: result.testId,
-          stepNo: result.stepNo,
-          stepStatus: result.stepStatus,
-          stepComments: result.stepComments,
-        }))
+      ? detailedResults.map((result) => {
+          return {
+            testId: result.testId,
+            testCaseRevision: result.testCaseRevision || undefined,
+            stepNo: result.stepNo,
+            stepIdentifier: result.stepIdentifier,
+            stepStatus: result.stepStatus,
+            stepComments: result.stepComments,
+          };
+        })
       : [];
   }
 
