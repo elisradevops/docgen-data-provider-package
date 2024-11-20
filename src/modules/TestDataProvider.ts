@@ -89,7 +89,8 @@ export default class TestDataProvider {
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
     includeBugs: boolean,
-    includeSeverity: boolean
+    includeSeverity: boolean,
+    stepResultDetails?: any[]
   ): Promise<Array<any>> {
     let testCasesList: Array<any> = new Array<any>();
     let suitesTestCasesList: Array<suiteData> = await this.GetTestSuiteById(
@@ -107,7 +108,8 @@ export default class TestDataProvider {
         includeRequirements,
         CustomerRequirementId,
         includeBugs,
-        includeSeverity
+        includeSeverity,
+        stepResultDetails
       );
       if (testCseseWithSteps.length > 0) testCasesList = [...testCasesList, ...testCseseWithSteps];
     }
@@ -121,7 +123,8 @@ export default class TestDataProvider {
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
     includeBugs: boolean,
-    includeSeverity: boolean
+    includeSeverity: boolean,
+    stepResultDetails?: any[]
   ): Promise<Array<any>> {
     let url = this.orgUrl + project + '/_workitems/edit/';
     let testCasesUrlList: Array<any> = new Array<any>();
@@ -130,9 +133,16 @@ export default class TestDataProvider {
       if (!testCases) {
         throw new Error('test cases were not found');
       }
+
       for (let i = 0; i < testCases.count; i++) {
         try {
-          let newurl = testCases.value[i].testCase.url + '?$expand=All';
+          let stepDetailObject =
+            stepResultDetails?.find((result) => result.testId === Number(testCases.value[i].testCase.id)) ||
+            undefined;
+
+          let newurl = !stepDetailObject?.testCaseRevision
+            ? testCases.value[i].testCase.url + '?$expand=All'
+            : `${testCases.value[i].testCase.url}/revisions/${stepDetailObject.testCaseRevision}?$expand=All`;
           let test: any = await TFSServices.getItemContent(newurl, this.token);
           let testCase: TestCase = new TestCase();
 
