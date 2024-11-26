@@ -131,8 +131,7 @@ export default class TicketsDataProvider {
         throw new Error('No related work items were found');
       }
 
-      const baseSortedSourceColumnsMap: Map<string, string> = new Map();
-      const baseSortedTargetsColumnsMap: Map<string, string> = new Map();
+      const columnsToShowMap: Map<string, string> = new Map();
 
       const columnSourceMap: Map<string, string> = new Map();
       const columnTargetsMap: Map<string, string> = new Map();
@@ -142,11 +141,9 @@ export default class TicketsDataProvider {
       columns.forEach((column: any) => {
         const { referenceName, name } = column;
         if (name === 'CustomerRequirementId') {
-          baseSortedSourceColumnsMap.set(referenceName, 'Customer ID');
-          baseSortedTargetsColumnsMap.set(referenceName, 'Customer ID');
+          columnsToShowMap.set(referenceName, 'Customer ID');
         } else {
-          baseSortedSourceColumnsMap.set(referenceName, name);
-          baseSortedTargetsColumnsMap.set(referenceName, name);
+          columnsToShowMap.set(referenceName, name);
         }
       });
 
@@ -154,14 +151,10 @@ export default class TicketsDataProvider {
       const sourceTargetsMap: Map<any, any[]> = new Map();
       const lookupMap: Map<number, any> = new Map();
       for (const relation of workItemRelations) {
+        //if relation.Source is null and target has a valid value then the target is the source
         if (!relation.source) {
           // Root link
-          const wi: any = await this.fetchWIByRelation(
-            relation,
-            baseSortedSourceColumnsMap,
-            columnSourceMap,
-            projectName
-          );
+          const wi: any = await this.fetchWIByRelation(relation, columnsToShowMap, columnSourceMap);
           if (!lookupMap.has(wi.id)) {
             sourceTargetsMap.set(wi, []);
             lookupMap.set(wi.id, wi);
@@ -179,18 +172,12 @@ export default class TicketsDataProvider {
           throw new Error('Source relation has no mapping');
         }
 
-        const targetWi: any = await this.fetchWIByRelation(
-          relation,
-          baseSortedTargetsColumnsMap,
-          columnTargetsMap,
-          projectName
-        );
+        const targetWi: any = await this.fetchWIByRelation(relation, columnsToShowMap, columnTargetsMap);
         const targets: any = sourceTargetsMap.get(sourceRelation) || [];
         targets.push(targetWi);
         sourceTargetsMap.set(sourceRelation, targets);
       }
-      baseSortedSourceColumnsMap.clear();
-      baseSortedTargetsColumnsMap.clear();
+      columnsToShowMap.clear();
       return {
         sourceTargetsMap,
         sortingSourceColumnsMap: columnSourceMap,
@@ -204,25 +191,15 @@ export default class TicketsDataProvider {
   private async fetchWIByRelation(
     relation: any,
     columnMap: Map<string, string>,
-    resultedRefNameMap: Map<string, string>,
-    projectName: string
+    resultedRefNameMap: Map<string, string>
   ) {
     const url = `${relation.target.url}`;
     const wi: any = await TFSServices.getItemContent(url, this.token);
     if (!wi) {
       throw new Error(`WI ${relation.target.id} not found`);
     }
-    const baseFieldUrl = `${this.orgUrl}${projectName}/_apis/wit/workitemtypes/${wi.fields['System.WorkItemType']}`;
-    const { fields: fieldsData }: any = await TFSServices.getItemContent(baseFieldUrl, this.token);
-    const refNamesArray = fieldsData.map((field: any) => field.referenceName);
-    const refNamesSet = new Set(refNamesArray);
-    for (const key of columnMap.keys()) {
-      if (!refNamesSet.has(key)) {
-        columnMap.delete(key);
-      }
-    }
-    this.filterFieldsByColumns(wi, columnMap, resultedRefNameMap);
 
+    this.filterFieldsByColumns(wi, columnMap, resultedRefNameMap);
     return wi;
   }
 
