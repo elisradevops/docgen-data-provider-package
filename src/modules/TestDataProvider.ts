@@ -91,8 +91,10 @@ export default class TestDataProvider {
     includeBugs: boolean,
     includeSeverity: boolean,
     stepResultDetails?: any[]
-  ): Promise<Array<any>> {
+  ): Promise<any> {
     let testCasesList: Array<any> = new Array<any>();
+    const requirementToTestCaseTraceMap: Map<string, string[]> = new Map();
+    const testCaseToRequirementsTraceMap: Map<string, string[]> = new Map();
     let suitesTestCasesList: Array<suiteData> = await this.GetTestSuiteById(
       project,
       planId,
@@ -109,11 +111,15 @@ export default class TestDataProvider {
         CustomerRequirementId,
         includeBugs,
         includeSeverity,
+        requirementToTestCaseTraceMap,
+        testCaseToRequirementsTraceMap,
         stepResultDetails
       );
+
       if (testCseseWithSteps.length > 0) testCasesList = [...testCasesList, ...testCseseWithSteps];
     }
-    return testCasesList;
+
+    return { testCasesList, requirementToTestCaseTraceMap, testCaseToRequirementsTraceMap };
   }
 
   async StructureTestCase(
@@ -124,6 +130,8 @@ export default class TestDataProvider {
     CustomerRequirementId: boolean,
     includeBugs: boolean,
     includeSeverity: boolean,
+    requirementToTestCaseTraceMap: Map<string, string[]>,
+    testCaseToRequirementsTraceMap: Map<string, string[]>,
     stepResultDetails?: any[]
   ): Promise<Array<any>> {
     let url = this.orgUrl + project + '/_workitems/edit/';
@@ -157,22 +165,38 @@ export default class TestDataProvider {
             let steps: Array<TestSteps> = this.ParseSteps(test.fields['Microsoft.VSTS.TCM.Steps']);
             testCase.steps = steps;
           }
-          if ((includeBugs || includeRequirements) && test.relations) {
+          if (test.relations) {
             for (const relation of test.relations) {
               // Only proceed if the URL contains 'workItems'
               if (relation.url.includes('/workItems/')) {
                 try {
                   let relatedItemContent: any = await TFSServices.getItemContent(relation.url, this.token);
                   // Check if the WorkItemType is "Requirement" before adding to relations
-                  if (
-                    includeRequirements &&
-                    relatedItemContent.fields['System.WorkItemType'] === 'Requirement'
-                  ) {
+                  if (relatedItemContent.fields['System.WorkItemType'] === 'Requirement') {
                     const newRequirementRelation = this.createNewRequirement(
                       CustomerRequirementId,
                       relatedItemContent
                     );
-                    testCase.relations.push(newRequirementRelation);
+
+                    const stringifiedTestCase = JSON.stringify({
+                      id: testCase.id,
+                      title: testCase.title,
+                    });
+                    const stringifiedRequirement = JSON.stringify(newRequirementRelation);
+
+                    // Add the test case to the requirement-to-test-case trace map
+                    this.addToMap(requirementToTestCaseTraceMap, stringifiedRequirement, stringifiedTestCase);
+
+                    // Add the requirement to the test-case-to-requirements trace map
+                    this.addToMap(
+                      testCaseToRequirementsTraceMap,
+                      stringifiedTestCase,
+                      stringifiedRequirement
+                    );
+
+                    if (includeRequirements) {
+                      testCase.relations.push(newRequirementRelation);
+                    }
                   }
 
                   // Check if the WorkItemType is "Requirement" before adding to relations
@@ -401,4 +425,11 @@ export default class TestDataProvider {
     let res = await TFSServices.postRequest(url, this.token, 'Post', data, null);
     return res;
   }
+
+  private addToMap = (map: Map<string, string[]>, key: string, value: string) => {
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key)?.push(value);
+  };
 }
