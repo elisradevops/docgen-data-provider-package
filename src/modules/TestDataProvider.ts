@@ -10,14 +10,17 @@ import { TestCase } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 
 import logger from '../utils/logger';
+import TestStepParserHelper from '../utils/testStepParserHelper';
 
 export default class TestDataProvider {
   orgUrl: string = '';
   token: string = '';
+  private testStepParserHelper: TestStepParserHelper;
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
+    this.testStepParserHelper = new TestStepParserHelper(orgUrl, token);
   }
 
   async GetTestSuiteByTestCase(testCaseId: string): Promise<any> {
@@ -90,7 +93,7 @@ export default class TestDataProvider {
     CustomerRequirementId: boolean,
     includeBugs: boolean,
     includeSeverity: boolean,
-    stepResultDetails?: any[]
+    stepResultDetailsMap?: Map<string, any>
   ): Promise<any> {
     let testCasesList: Array<any> = new Array<any>();
     const requirementToTestCaseTraceMap: Map<string, string[]> = new Map();
@@ -113,7 +116,7 @@ export default class TestDataProvider {
         includeSeverity,
         requirementToTestCaseTraceMap,
         testCaseToRequirementsTraceMap,
-        stepResultDetails
+        stepResultDetailsMap
       );
 
       if (testCseseWithSteps.length > 0) testCasesList = [...testCasesList, ...testCseseWithSteps];
@@ -132,7 +135,7 @@ export default class TestDataProvider {
     includeSeverity: boolean,
     requirementToTestCaseTraceMap: Map<string, string[]>,
     testCaseToRequirementsTraceMap: Map<string, string[]>,
-    stepResultDetails?: any[]
+    stepResultDetailsMap?: Map<string, any>
   ): Promise<Array<any>> {
     let url = this.orgUrl + project + '/_workitems/edit/';
     let testCasesUrlList: Array<any> = new Array<any>();
@@ -145,8 +148,7 @@ export default class TestDataProvider {
       for (let i = 0; i < testCases.count; i++) {
         try {
           let stepDetailObject =
-            stepResultDetails?.find((result) => result.testId === Number(testCases.value[i].testCase.id)) ||
-            undefined;
+            stepResultDetailsMap?.get(testCases.value[i].testCase.id.toString()) || undefined;
 
           let newurl = !stepDetailObject?.testCaseRevision
             ? testCases.value[i].testCase.url + '?$expand=All'
@@ -161,9 +163,16 @@ export default class TestDataProvider {
           //testCase.steps = test.fields["Microsoft.VSTS.TCM.Steps"];
           testCase.id = test.id;
           testCase.suit = suite.id;
-          if (test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
-            let steps: Array<TestSteps> = this.ParseSteps(test.fields['Microsoft.VSTS.TCM.Steps']);
+
+          if (!stepDetailObject && test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
+            let steps = await this.testStepParserHelper.parseTestSteps(
+              test.fields['Microsoft.VSTS.TCM.Steps'],
+              new Map<number, number>()
+            );
             testCase.steps = steps;
+            //In case its already parsed during the STR
+          } else if (stepDetailObject) {
+            testCase.steps = stepDetailObject.stepList;
           }
           if (test.relations) {
             for (const relation of test.relations) {

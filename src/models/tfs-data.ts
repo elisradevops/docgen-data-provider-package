@@ -165,7 +165,8 @@ export function createBugRelation(id: string, title: string, severity?: string):
 }
 
 export class TestSteps {
-  stepId: number;
-  action: String;
-  expected: String;
+  stepId: string;
+  stepPosition: string;
+  action: string;
+  expected: string;
 }

@@ -1,16 +1,17 @@
 import { TFSServices } from '../helpers/tfs';
-import { TestSteps } from '../models/tfs-data';
+import { TestSteps, Workitem } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 import logger from '../utils/logger';
-import { error, log } from 'console';
+import TestStepParserHelper from '../utils/testStepParserHelper';
 
 export default class ResultDataProvider {
   orgUrl: string = '';
   token: string = '';
-
+  private testStepParserHelper: TestStepParserHelper;
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
+    this.testStepParserHelper = new TestStepParserHelper(orgUrl, token);
   }
 
   /**
@@ -199,34 +200,6 @@ export default class ResultDataProvider {
   }
 
   /**
-   * Parses test steps from XML format into a structured array.
-   */
-  private parseTestSteps(xmlSteps: string): { stepsList: TestSteps[] } {
-    const stepsList: TestSteps[] = [];
-
-    xml2js.parseString(xmlSteps, { explicitArray: false }, (err, result) => {
-      if (err) {
-        logger.warn('Failed to parse XML test steps.');
-        return;
-      }
-
-      if (result.steps === undefined || parseInt(result.steps.$.last) === 0) {
-        return;
-      }
-      const stepsArray = Array.isArray(result.steps?.step) ? result.steps.step : [result.steps?.step];
-      for (let i = 0; i < stepsArray.length; i++) {
-        const stepObj = stepsArray[i];
-        const step = new TestSteps();
-        step.stepId = Number(stepObj.$.id);
-        step.action = stepObj.parameterizedString?.[0]?._ || '';
-        step.expected = stepObj.parameterizedString?.[1]?._ || '';
-        stepsList.push(step);
-      }
-    });
-    return { stepsList };
-  }
-
-  /**
    * Aligns test steps with their corresponding iterations.
    */
   private alignStepsWithIterations(testData: any[], iterations: any[]): any[] {
@@ -240,9 +213,6 @@ export default class ResultDataProvider {
         const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
         if (!testCase) continue;
         const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id);
-
-        logger.debug(`parsing data for test case Id ${point.testCaseId}`);
-
         if (testCase.workItem.workItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
@@ -263,7 +233,7 @@ export default class ResultDataProvider {
               testCaseRevision: testCastObj.testCaseRevision,
               testName: point.testCaseName,
               stepIdentifier: stepIdentifier,
-              stepNo: i + 1,
+              stepNo: actionResults[i].stepPosition,
               stepAction: actionResults[i].action,
               stepExpected: actionResults[i].expected,
               stepStatus:
@@ -275,31 +245,6 @@ export default class ResultDataProvider {
               stepComments: actionResults[i].errorMessage || '',
             };
 
-            detailedResults.push(resultObj);
-          }
-        } else {
-          const { stepsList: steps } = this.parseTestSteps(
-            testCase.workItem.workItemFields[0]['Microsoft.VSTS.TCM.Steps']
-          );
-
-          if (steps.length === 0) {
-            logger.warn(`No steps were found for WI ${testCase.workItem?.id}`);
-            continue;
-          }
-          //In case of not tested
-          logger.debug(`Test case ${point.testCaseId} does not have a test result`);
-          for (let i = 0; i < steps.length; i++) {
-            const resultObj = {
-              testId: point.testCaseId,
-              testName: point.testCaseName,
-              stepIdentifier: steps[i].stepId,
-              testCaseRevision: undefined,
-              stepNo: i + 1,
-              stepAction: steps[i].action,
-              stepExpected: steps[i].expected,
-              stepStatus: 'Not Run',
-              stepComments: 'No Result',
-            };
             detailedResults.push(resultObj);
           }
         }
@@ -374,22 +319,57 @@ export default class ResultDataProvider {
     return results;
   }
 
+  //Sorting step positions
+  private compareActionResults = (a: string, b: string) => {
+    const aParts = a.split('.').map(Number);
+    const bParts = b.split('.').map(Number);
+    const maxLength = Math.max(aParts.length, bParts.length);
+
+    for (let i = 0; i < maxLength; i++) {
+      const aNum = aParts[i] || 0; // Default to 0 if undefined
+      const bNum = bParts[i] || 0;
+
+      if (aNum > bNum) return 1;
+      if (aNum < bNum) return -1;
+      // If equal, continue to next segment
+    }
+
+    return 0; // Versions are equal
+  };
+
   /**
    * Fetches result Data data for a specific test point.
    */
   private async fetchResultData(projectName: string, testSuiteId: string, point: any) {
     const { lastRunId, lastResultId } = point;
     const resultData = await this.fetchResult(projectName, lastRunId.toString(), lastResultId.toString());
-    logger.debug(
-      `resultData is ${resultData ? 'available' : 'unavailable'} for run ${lastRunId} result ${lastResultId} `
-    );
+
     const iteration =
       resultData.iterationDetails.length > 0
         ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
         : undefined;
 
     if (resultData.stepsResultXml && iteration) {
-      const { stepsList } = this.parseTestSteps(resultData.stepsResultXml);
+      const actionResultsWithSharedModels = iteration.actionResults.filter(
+        (result: any) => result.sharedStepModel
+      );
+      const actionResultsWithNoSharedModels = iteration.actionResults.filter(
+        (result: any) => !result.sharedStepModel
+      );
+      const sharedStepIdToRevisionLookupMap: Map<number, number> = new Map();
+
+      if (actionResultsWithSharedModels?.length > 0) {
+        actionResultsWithSharedModels.forEach((actionResult: any) => {
+          const { sharedStepModel } = actionResult;
+          sharedStepIdToRevisionLookupMap.set(Number(sharedStepModel.id), Number(sharedStepModel.revision));
+        });
+      }
+      const stepsList = await this.testStepParserHelper.parseTestSteps(
+        resultData.stepsResultXml,
+        sharedStepIdToRevisionLookupMap
+      );
+
+      sharedStepIdToRevisionLookupMap.clear();
 
       const stepMap = new Map<string, any>();
       for (const step of stepsList) {
@@ -397,12 +377,22 @@ export default class ResultDataProvider {
       }
 
       for (const actionResult of iteration.actionResults) {
+        //If the actions results holds a sharedStepModel then ignore it and continue
+        if (actionResult.sharedStepModel) {
+          continue;
+        }
+
         const step = stepMap.get(actionResult.stepIdentifier);
         if (step) {
+          actionResult.stepPosition = step.stepPosition;
           actionResult.action = step.action;
           actionResult.expected = step.expected;
         }
       }
+      //Sort by step position
+      iteration.actionResults = actionResultsWithNoSharedModels
+        .filter((result: any) => result.stepPosition)
+        .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
     }
     return resultData?.testCase
       ? {
@@ -749,19 +739,42 @@ export default class ResultDataProvider {
     }
   }
 
-  private mapStepResultsForExecutionAppendix(detailedResults: any[]): any {
-    return detailedResults?.length > 0
-      ? detailedResults.map((result) => {
-          return {
-            testId: result.testId,
-            testCaseRevision: result.testCaseRevision || undefined,
-            stepNo: result.stepNo,
-            stepIdentifier: result.stepIdentifier,
-            stepStatus: result.stepStatus,
-            stepComments: result.stepComments,
-          };
-        })
-      : [];
+  // private mapStepResultsForExecutionAppendix(detailedResults: any[]): any {
+  //   return detailedResults?.length > 0
+  //     ? detailedResults.map((result) => {
+  //         return {
+  //           testId: result.testId,
+  //           testCaseRevision: result.testCaseRevision || undefined,
+  //           stepNo: result.stepNo,
+  //           stepIdentifier: result.stepIdentifier,
+  //           stepStatus: result.stepStatus,
+  //           stepComments: result.stepComments,
+  //         };
+  //       })
+  //     : [];
+  // }
+
+  private mapStepResultsForExecutionAppendix(detailedResults: any[]): Map<string, any> {
+    let testCaseIdToStepsMap: Map<string, any> = new Map();
+    detailedResults.forEach((result) => {
+      const testCaseRevision = result.testCaseRevision;
+      if (!testCaseIdToStepsMap.has(result.testId.toString())) {
+        testCaseIdToStepsMap.set(result.testId.toString(), { testCaseRevision, stepList: [] });
+      }
+      const value = testCaseIdToStepsMap.get(result.testId.toString());
+      const { stepList } = value;
+      stepList.push({
+        stepPosition: result.stepNo,
+        stepIdentifier: result.stepIdentifier,
+        action: result.stepAction,
+        expected: result.stepExpected,
+        stepStatus: result.stepStatus,
+        stepComments: result.stepComments,
+      });
+      testCaseIdToStepsMap.set(result.testId.toString(), { ...testCaseRevision, stepList: stepList });
+    });
+
+    return testCaseIdToStepsMap;
   }
 
   /**
