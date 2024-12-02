@@ -3,10 +3,10 @@ import { TestSteps, Workitem } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 import logger from '../utils/logger';
 import TestStepParserHelper from '../utils/testStepParserHelper';
-
 export default class ResultDataProvider {
   orgUrl: string = '';
   token: string = '';
+
   private testStepParserHelper: TestStepParserHelper;
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
@@ -415,56 +415,77 @@ export default class ResultDataProvider {
   /**
    * Fetches all the linked work items (WI) for the given test case.
    * @param project Project name
-   * @param testCaseId Test case ID number
+   * @param testItems Test cases
    * @returns Array of linked Work Items
    */
-  private async fetchLinkedWi(project: string, testCaseId: string): Promise<any[]> {
+  private async fetchLinkedWi(project: string, testItems: any[]): Promise<any[]> {
     try {
+      const summarizedItemMap: Map<number, any> = new Map();
+      const testIds = testItems.map((summeryItem) => {
+        summarizedItemMap.set(summeryItem.testId, { ...summeryItem, linkItems: [] });
+        return `${summeryItem.testId}`;
+      });
+      const testIdsString = testIds.join(',');
       // Construct URL to fetch linked work items
-      const getLinkedWiUrl = `${this.orgUrl}${project}/_apis/wit/workItems/${testCaseId}?$expand=relations`;
+      const getLinkedWisUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${testIdsString}&$expand=relations`;
 
       // Fetch linked work items
-      const { relations } = await TFSServices.getItemContent(getLinkedWiUrl, this.token);
+      const { value: workItems } = await TFSServices.getItemContent(getLinkedWisUrl, this.token);
 
-      // Ensure relations is an array
-      if (!Array.isArray(relations) || relations.length === 0) {
-        return [];
+      if (workItems.length > 0) {
+        for (const wi of workItems) {
+          const { relations } = wi;
+          // Ensure relations is an array
+          const item = summarizedItemMap.get(wi.id);
+          if (!item) {
+            continue;
+          }
+          if (!Array.isArray(relations) || relations.length === 0) {
+            continue;
+          }
+
+          const relationWorkItemsIds = relations
+            .filter((relation) => relation?.attributes?.name === 'Tests')
+            .map((relation) => relation.url.split('/').pop());
+
+          if (relationWorkItemsIds.length === 0) {
+            continue;
+          }
+
+          // Construct URL to fetch work item details
+          const relatedWIIdsString = relationWorkItemsIds.join(',');
+          const getRelatedWiDataUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${relatedWIIdsString}&$expand=1`;
+
+          // Fetch work item details
+          const { value: relatedWorkItems } = await TFSServices.getItemContent(
+            getRelatedWiDataUrl,
+            this.token
+          );
+
+          // Ensure workItems is an array
+          if (!Array.isArray(relatedWorkItems)) {
+            throw new Error('Unexpected format for work items data');
+          }
+
+          // Filter work items based on type and state
+          const filteredWi = relatedWorkItems.filter(({ fields }) => {
+            const workItemType = fields?.['System.WorkItemType'];
+            const state = fields?.['System.State'];
+            return (
+              (workItemType === 'Change Request' || workItemType === 'Bug') &&
+              state !== 'Closed' &&
+              state !== 'Resolved'
+            );
+          });
+
+          const mappedFilteredWi = filteredWi.length > 0 ? this.MapLinkedWorkItem(filteredWi, project) : [];
+          summarizedItemMap.set(item.id, { ...item, linkItems: mappedFilteredWi });
+        }
       }
 
-      // Filter relations by 'Tests' attribute and extract work item IDs
-      const workItemIds = relations
-        .filter((relation) => relation?.attributes?.name === 'Tests')
-        .map((relation) => relation.url.split('/').pop());
-
-      if (workItemIds.length === 0) {
-        return [];
-      }
-
-      // Construct URL to fetch work item details
-      const idsString = workItemIds.join(',');
-      const getWiDataUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${idsString}&$expand=1`;
-
-      // Fetch work item details
-      const { value: workItems } = await TFSServices.getItemContent(getWiDataUrl, this.token);
-
-      // Ensure workItems is an array
-      if (!Array.isArray(workItems)) {
-        throw new Error('Unexpected format for work items data');
-      }
-
-      // Filter work items based on type and state
-      const filteredWi = workItems.filter(({ fields }) => {
-        const workItemType = fields?.['System.WorkItemType'];
-        const state = fields?.['System.State'];
-        return (
-          (workItemType === 'Change Request' || workItemType === 'Bug') &&
-          state !== 'Closed' &&
-          state !== 'Resolved'
-        );
-      });
+      return [...summarizedItemMap.values()];
 
       // Return mapped work items if any exist
-      return filteredWi.length > 0 ? this.MapLinkedWorkItem(filteredWi, project) : [];
     } catch (error) {
       logger.error('Error fetching linked work items:', error);
       return []; // Return an empty array or handle it as needed
@@ -496,27 +517,13 @@ export default class ResultDataProvider {
    */
 
   private async fetchOpenPcrData(testItems: any[], projectName: string, combinedResults: any[]) {
-    const linkedWorkItemsPromises = testItems.map((summaryItem) =>
-      this.fetchLinkedWi(projectName, summaryItem.testId)
-        .then((linkItems) => ({
-          ...summaryItem,
-          linkItems,
-        }))
-        .catch((error: any) => {
-          logger.error(`Error occurred for testCase ${summaryItem.testId}: ${error.message}`);
-          return { ...summaryItem, linkItems: [] };
-        })
-    );
-
-    const linkedWorkItems = await Promise.all(linkedWorkItemsPromises);
-
+    const linkedWorkItems = await this.fetchLinkedWi(projectName, testItems);
     const flatOpenPcrsItems = linkedWorkItems
       .filter((item) => item.linkItems.length > 0)
       .flatMap((item) => {
         const { linkItems, ...restItem } = item;
         return linkItems.map((linkedItem: any) => ({ ...restItem, ...linkedItem }));
       });
-
     if (flatOpenPcrsItems?.length > 0) {
       // Add openPCR to combined results
       combinedResults.push({
