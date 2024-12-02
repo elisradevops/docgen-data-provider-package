@@ -104,7 +104,9 @@ export default class TicketsDataProvider {
       if (path == '')
         url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all`;
       else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
+      logger.debug(`share query URL ${url}`);
       let queries: any = await TFSServices.getItemContent(url, this.token);
+      logger.debug(`share queries ${JSON.stringify(queries)}`);
 
       const { tree1: reqTestTree, tree2: testReqTree } = this.structureQueries(queries);
       return { reqTestTree, testReqTree };
