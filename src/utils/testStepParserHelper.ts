@@ -18,6 +18,7 @@ export default class TestStepParserHelper {
     step.stepPosition = stepPosition;
     step.action = stepNode.parameterizedString?.[0]?._ || '';
     step.expected = stepNode.parameterizedString?.[1]?._ || '';
+    step.isSharedStepTitle = false;
     return step;
   }
 
@@ -35,16 +36,23 @@ export default class TestStepParserHelper {
         ? `${this.orgUrl}/_apis/wit/workitems/${sharedStepId}/revisions/${revision}`
         : `${this.orgUrl}/_apis/wit/workitems/${sharedStepId}`;
       const sharedStepWI = await TFSServices.getItemContent(wiUrl, this.token);
-
       const stepsXML = sharedStepWI?.fields['Microsoft.VSTS.TCM.Steps'] || null;
-      if (stepsXML) {
+      const sharedStepTitle = sharedStepWI?.fields['System.Title'] || null;
+      if (stepsXML && sharedStepTitle) {
         const stepsList = await this.parseTestSteps(
           stepsXML,
           sharedStepIdToRevisionLookupMap,
           `${parentStepPosition}.`,
           parentStepId
         );
-        sharedStepsList = stepsList;
+        const titleObj = {
+          stepId: parentStepId,
+          stepPosition: parentStepPosition,
+          action: `<b>${sharedStepTitle}<b/>`,
+          expected: '',
+          isSharedStepTitle: true,
+        };
+        sharedStepsList = [titleObj, ...stepsList];
       }
       return sharedStepsList;
     } catch (err: any) {

@@ -169,4 +169,5 @@ export class TestSteps {
   stepPosition: string;
   action: string;
   expected: string;
+  isSharedStepTitle: boolean;
 }

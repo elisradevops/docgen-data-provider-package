@@ -199,6 +199,18 @@ export default class ResultDataProvider {
     }
   }
 
+  private setRunStatus(actionResult: any) {
+    if (actionResult.outcome === 'Unspecified' && actionResult.isSharedStepTitle) {
+      return '';
+    }
+
+    return actionResult.outcome === 'Unspecified'
+      ? 'Not Run'
+      : actionResult.outcome !== 'Not Run'
+      ? actionResult.outcome
+      : '';
+  }
+
   /**
    * Aligns test steps with their corresponding iterations.
    */
@@ -236,12 +248,8 @@ export default class ResultDataProvider {
               stepNo: actionResults[i].stepPosition,
               stepAction: actionResults[i].action,
               stepExpected: actionResults[i].expected,
-              stepStatus:
-                actionResults[i].outcome === 'Unspecified'
-                  ? 'Not Run'
-                  : actionResults[i].outcome !== 'Not Run'
-                  ? actionResults[i].outcome
-                  : '',
+              isSharedStepTitle: actionResults[i].isSharedStepTitle,
+              stepStatus: this.setRunStatus(actionResults[i]),
               stepComments: actionResults[i].errorMessage || '',
             };
 
@@ -353,9 +361,7 @@ export default class ResultDataProvider {
       const actionResultsWithSharedModels = iteration.actionResults.filter(
         (result: any) => result.sharedStepModel
       );
-      const actionResultsWithNoSharedModels = iteration.actionResults.filter(
-        (result: any) => !result.sharedStepModel
-      );
+
       const sharedStepIdToRevisionLookupMap: Map<number, number> = new Map();
 
       if (actionResultsWithSharedModels?.length > 0) {
@@ -371,26 +377,22 @@ export default class ResultDataProvider {
 
       sharedStepIdToRevisionLookupMap.clear();
 
-      const stepMap = new Map<string, any>();
+      const stepMap = new Map<string, TestSteps>();
       for (const step of stepsList) {
         stepMap.set(step.stepId.toString(), step);
       }
 
       for (const actionResult of iteration.actionResults) {
-        //If the actions results holds a sharedStepModel then ignore it and continue
-        if (actionResult.sharedStepModel) {
-          continue;
-        }
-
         const step = stepMap.get(actionResult.stepIdentifier);
         if (step) {
           actionResult.stepPosition = step.stepPosition;
           actionResult.action = step.action;
           actionResult.expected = step.expected;
+          actionResult.isSharedStepTitle = step.isSharedStepTitle;
         }
       }
       //Sort by step position
-      iteration.actionResults = actionResultsWithNoSharedModels
+      iteration.actionResults = iteration.actionResults
         .filter((result: any) => result.stepPosition)
         .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
     }
@@ -777,6 +779,7 @@ export default class ResultDataProvider {
         expected: result.stepExpected,
         stepStatus: result.stepStatus,
         stepComments: result.stepComments,
+        isSharedStepTitle: result.isSharedStepTitle,
       });
       testCaseIdToStepsMap.set(result.testId.toString(), { ...testCaseRevision, stepList: stepList });
     });
