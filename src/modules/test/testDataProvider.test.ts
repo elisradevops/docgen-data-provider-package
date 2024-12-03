@@ -27,8 +27,6 @@ describe('Test module - tests', () => {
       '546',
       true,
       true,
-      true,
-      true,
       true
     );
     expect(attachList.length > 0).toBeDefined();
@@ -45,8 +43,6 @@ describe('Test module - tests', () => {
       'tests',
       '540',
       '549',
-      true,
-      true,
       true,
       true,
       true
