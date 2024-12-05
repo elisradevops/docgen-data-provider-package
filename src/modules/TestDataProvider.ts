@@ -91,8 +91,6 @@ export default class TestDataProvider {
     recursiv: boolean,
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
-    includeBugs: boolean,
-    includeSeverity: boolean,
     stepResultDetailsMap?: Map<string, any>
   ): Promise<any> {
     let testCasesList: Array<any> = new Array<any>();
@@ -112,8 +110,6 @@ export default class TestDataProvider {
         suitesTestCasesList[i],
         includeRequirements,
         CustomerRequirementId,
-        includeBugs,
-        includeSeverity,
         requirementToTestCaseTraceMap,
         testCaseToRequirementsTraceMap,
         stepResultDetailsMap
@@ -131,8 +127,6 @@ export default class TestDataProvider {
     suite: suiteData,
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
-    includeBugs: boolean,
-    includeSeverity: boolean,
     requirementToTestCaseTraceMap: Map<string, string[]>,
     testCaseToRequirementsTraceMap: Map<string, string[]>,
     stepResultDetailsMap?: Map<string, any>
@@ -207,12 +201,6 @@ export default class TestDataProvider {
                       testCase.relations.push(newRequirementRelation);
                     }
                   }
-
-                  // Check if the WorkItemType is "Requirement" before adding to relations
-                  if (includeBugs && relatedItemContent.fields['System.WorkItemType'] === 'Bug') {
-                    const newBugRelation = this.createBugRelation(includeSeverity, relatedItemContent);
-                    testCase.relations.push(newBugRelation);
-                  }
                 } catch (fetchError) {
                   // Log error silently or handle as needed
                   console.error('Failed to fetch relation content', fetchError);
@@ -233,21 +221,6 @@ export default class TestDataProvider {
     }
 
     return testCasesUrlList;
-  }
-
-  private createBugRelation(includeSeverity: boolean, relatedItemContent: any) {
-    let severity = undefined;
-    // Check if CustomerRequirementId is true and set customerId
-    if (includeSeverity) {
-      // Add severity here
-      severity = relatedItemContent.fields['Microsoft.VSTS.Common.Severity'];
-    }
-    const newBugRelation = createBugRelation(
-      relatedItemContent.id,
-      relatedItemContent.fields['System.Title'],
-      severity
-    );
-    return newBugRelation;
   }
 
   private createNewRequirement(CustomerRequirementId: boolean, relatedItemContent: any) {
