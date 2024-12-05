@@ -104,14 +104,12 @@ export default class TicketsDataProvider {
       if (path == '')
         url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all`;
       else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
-      logger.debug(`share query URL ${url}`);
       let queries: any = await TFSServices.getItemContent(url, this.token);
-      logger.debug(`share queries ${JSON.stringify(queries)}`);
-
-      const { tree1: reqTestTree, tree2: testReqTree } = this.structureQueries(queries);
+      const { tree1: reqTestTree, tree2: testReqTree } = await this.structureQueries(queries);
       return { reqTestTree, testReqTree };
     } catch (err: any) {
       logger.error(err.message);
+      logger.error(`Error stack trace:  ${JSON.stringify(err.stack)}`);
     }
   }
 
@@ -443,71 +441,90 @@ export default class TicketsDataProvider {
     return res;
   } //CreateNewWorkItem
 
-  private structureQueries(rootQuery: any, parentId: any = null): any {
-    if (!rootQuery.hasChildren) {
-      if (!rootQuery.isFolder && rootQuery.queryType === 'oneHop') {
-        const wiql = rootQuery.wiql;
-        let tree1Node = null;
-        let tree2Node = null;
+  private async structureQueries(rootQuery: any, parentId: any = null): Promise<any> {
+    try {
+      if (!rootQuery.hasChildren) {
+        if (!rootQuery.isFolder && rootQuery.queryType === 'oneHop') {
+          const wiql = rootQuery.wiql;
+          let tree1Node = null;
+          let tree2Node = null;
 
-        if (this.matchesReqTestCondition(wiql)) {
-          tree1Node = {
-            id: rootQuery.id,
-            pId: parentId,
-            value: rootQuery.name,
-            title: rootQuery.name,
-            queryType: rootQuery.queryType,
-            wiql: rootQuery._links.wiql ?? undefined,
-            isValidQuery: true,
-          };
+          if (this.matchesReqTestCondition(wiql)) {
+            tree1Node = {
+              id: rootQuery.id,
+              pId: parentId,
+              value: rootQuery.name,
+              title: rootQuery.name,
+              queryType: rootQuery.queryType,
+              wiql: rootQuery._links.wiql ?? undefined,
+              isValidQuery: true,
+            };
+          }
+          if (this.matchesTestReqCondition(wiql)) {
+            tree2Node = {
+              id: rootQuery.id,
+              pId: parentId,
+              value: rootQuery.name,
+              title: rootQuery.name,
+              queryType: rootQuery.queryType,
+              wiql: rootQuery._links.wiql ?? undefined,
+              isValidQuery: true,
+            };
+          }
+          return { tree1: tree1Node, tree2: tree2Node };
+        } else {
+          return { tree1: null, tree2: null };
         }
-        if (this.matchesTestReqCondition(wiql)) {
-          tree2Node = {
-            id: rootQuery.id,
-            pId: parentId,
-            value: rootQuery.name,
-            title: rootQuery.name,
-            queryType: rootQuery.queryType,
-            wiql: rootQuery._links.wiql ?? undefined,
-            isValidQuery: true,
-          };
-        }
-        return { tree1: tree1Node, tree2: tree2Node };
-      } else {
-        return { tree1: null, tree2: null };
       }
+
+      if (!rootQuery.children) {
+        const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
+        const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
+        return currentQuery
+          ? await this.structureQueries(currentQuery, currentQuery.id)
+          : { tree1: null, tree2: null };
+      }
+
+      // Process children recursively
+      const childResults = await Promise.all(
+        rootQuery.children.map((child: any) => this.structureQueries(child, rootQuery.id))
+      );
+
+      // Build tree1
+      const tree1Children = childResults.map((res: any) => res.tree1).filter((child: any) => child !== null);
+      const tree1Node =
+        tree1Children.length > 0
+          ? {
+              id: rootQuery.id,
+              pId: parentId,
+              value: rootQuery.name,
+              title: rootQuery.name,
+              children: tree1Children,
+            }
+          : null;
+
+      // Build tree2
+      const tree2Children = childResults.map((res: any) => res.tree2).filter((child: any) => child !== null);
+      const tree2Node =
+        tree2Children.length > 0
+          ? {
+              id: rootQuery.id,
+              value: rootQuery.name,
+              pId: parentId,
+              title: rootQuery.name,
+              children: tree2Children,
+            }
+          : null;
+
+      return { tree1: tree1Node, tree2: tree2Node };
+    } catch (err: any) {
+      logger.error(
+        `Error occurred while constructing the query list ${err.message} with query ${JSON.stringify(
+          rootQuery
+        )}`
+      );
+      logger.error(`Error stack ${err.message}`);
     }
-
-    // Process children recursively
-    const childResults = rootQuery.children.map((child: any) => this.structureQueries(child, rootQuery.id));
-
-    // Build tree1
-    const tree1Children = childResults.map((res: any) => res.tree1).filter((child: any) => child !== null);
-    const tree1Node =
-      tree1Children.length > 0
-        ? {
-            id: rootQuery.id,
-            pId: parentId,
-            value: rootQuery.name,
-            title: rootQuery.name,
-            children: tree1Children,
-          }
-        : null;
-
-    // Build tree2
-    const tree2Children = childResults.map((res: any) => res.tree2).filter((child: any) => child !== null);
-    const tree2Node =
-      tree2Children.length > 0
-        ? {
-            id: rootQuery.id,
-            value: rootQuery.name,
-            pId: parentId,
-            title: rootQuery.name,
-            children: tree2Children,
-          }
-        : null;
-
-    return { tree1: tree1Node, tree2: tree2Node };
   }
 
   private matchesReqTestCondition(wiql: string): boolean {
