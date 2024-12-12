@@ -171,3 +171,54 @@ export class TestSteps {
   expected: string;
   isSharedStepTitle: boolean;
 }
+
+export interface GitVersionDescriptor {
+  version: string;
+  versionType: string;
+}
+
+export interface Pipeline {
+  id: number;
+  revision: number;
+  name: string;
+}
+
+export interface Repository {
+  id: string;
+  name: string;
+  url: string;
+}
+
+export interface ResourceRepository {
+  repoName: string;
+  repoSha1: string;
+  url: string;
+}
+
+export interface Link {
+  href: string;
+}
+
+export interface PipelineLinks {
+  self: Link;
+  web: Link;
+  'pipeline.web': Link;
+  pipeline: Link;
+}
+
+export interface PipelineResources {
+  repositories: any;
+}
+
+export interface PipelineRun {
+  _links: PipelineLinks;
+  pipeline: Pipeline;
+  state: string;
+  result: string;
+  createdDate: string;
+  finishedDate: string;
+  url: string;
+  resources: PipelineResources;
+  id: number;
+  name: string;
+}
