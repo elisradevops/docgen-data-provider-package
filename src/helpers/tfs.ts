@@ -62,7 +62,7 @@ export class TFSServices {
     pat: string,
     requestMethod: string = 'post',
     data: any,
-    customHeaders: any = {}
+    customHeaders: any = { headers: { 'Content-Type': 'application/json' } }
   ): Promise<any> {
     let config: any = {
       headers: customHeaders,
