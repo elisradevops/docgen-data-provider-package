@@ -222,3 +222,9 @@ export interface PipelineRun {
   id: number;
   name: string;
 }
+
+export interface Artifact {
+  alias: string;
+  isPrimary: boolean;
+  type: string;
+}

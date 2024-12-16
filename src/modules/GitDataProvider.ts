@@ -366,7 +366,7 @@ export default class GitDataProvider {
         includeWorkItems: true,
       };
 
-      let url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/commitsBatch?api-version=5.0&$skip=${skipping}&$top=${chunkSize}`;
+      let url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/commitsBatch?api-version=6.0&$skip=${skipping}&$top=${chunkSize}`;
       let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
       let commits = commitsResponse.data;
       while (commits.count > 0) {

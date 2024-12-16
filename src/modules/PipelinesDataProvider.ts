@@ -151,7 +151,9 @@ export default class PipelinesDataProvider {
 
   async GetReleaseByReleaseId(projectName: string, releaseId: number): Promise<any> {
     let url = `${this.orgUrl}${projectName}/_apis/release/releases/${releaseId}`;
-    url = url.replace('dev.azure.com', 'vsrm.dev.azure.com');
+    if (url.startsWith('https://dev.azure.com')) {
+      url = url.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com');
+    }
     return TFSServices.getItemContent(url, this.token, 'get', null, null);
   }
 
@@ -168,8 +170,10 @@ export default class PipelinesDataProvider {
   }
 
   async GetReleaseHistory(projectName: string, definitionId: string) {
-    let url: string = `${this.orgUrl}${projectName}/_apis/release/releases?definitionId=${definitionId}&$top=2000`;
-    url = url.replace('dev.azure.com', 'vsrm.dev.azure.com');
+    let url: string = `${this.orgUrl}${projectName}/_apis/release/releases?definitionId=${definitionId}&$top=200`;
+    if (url.startsWith('https://dev.azure.com')) {
+      url = url.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com');
+    }
     let res: any = await TFSServices.getItemContent(url, this.token, 'get', null, null);
     return res;
   }
@@ -182,7 +186,9 @@ export default class PipelinesDataProvider {
 
   async GetAllReleaseDefenitions(projectName: string) {
     let url: string = `${this.orgUrl}${projectName}/_apis/release/definitions?$top=2000`;
-    url = url.replace('dev.azure.com', 'vsrm.dev.azure.com');
+    if (url.startsWith('https://dev.azure.com')) {
+      url = url.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com');
+    }
     let res: any = await TFSServices.getItemContent(url, this.token, 'get', null, null);
     return res;
   }

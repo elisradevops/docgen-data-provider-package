@@ -57,6 +57,33 @@ export class TFSServices {
     return json;
   }
 
+  public static async getJfrogRequest(url: string, header?: any) {
+    let config: any = {
+      method: 'GET',
+    };
+    if (header) {
+      config['headers'] = header;
+    }
+
+    let json;
+    try {
+      let result = await axios(url, config);
+      json = JSON.parse(JSON.stringify(result.data));
+    } catch (e: any) {
+      if (e.response) {
+        // Log detailed error information including the URL
+        logger.error(`Error making request Jfrog at ${url}: ${e.message}`);
+        logger.error(`Status: ${e.response.status}`);
+        logger.error(`Response Data: ${JSON.stringify(e.response.data)}`);
+      } else {
+        // Handle other errors (network, etc.)
+        logger.error(`Error making request to Jfrog at ${url}: ${e.message}`);
+      }
+      throw e;
+    }
+    return json;
+  }
+
   public static async postRequest(
     url: string,
     pat: string,
