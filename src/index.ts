@@ -6,15 +6,17 @@ import TestDataProvider from './modules/TestDataProvider';
 
 import logger from './utils/logger';
 import ResultDataProvider from './modules/ResultDataProvider';
+import JfrogDataProvider from './modules/JfrogDataProvider';
 
 export default class DgDataProviderAzureDevOps {
   orgUrl: string = '';
   token: string = '';
   apiVersion: string;
-
-  constructor(orgUrl: string, token: string, apiVersion?: string) {
+  jfrogToken?: string;
+  constructor(orgUrl: string, token: string, apiVersion?: string, jfrogToken?: string) {
     this.orgUrl = orgUrl;
     this.token = token;
+    this.jfrogToken = jfrogToken;
     logger.info(`azure devops data provider initilized`);
   }
 
@@ -36,5 +38,9 @@ export default class DgDataProviderAzureDevOps {
 
   async getResultDataProvider(): Promise<ResultDataProvider> {
     return new ResultDataProvider(this.orgUrl, this.token);
+  }
+
+  async getJfrogDateProvider(): Promise<JfrogDataProvider> {
+    return new JfrogDataProvider(this.orgUrl, this.token, this.jfrogToken || '');
   }
 } //class
