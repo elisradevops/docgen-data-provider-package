@@ -20,33 +20,33 @@ export default class JfrogDataProvider {
     return serviceConnectionResponse.url;
   }
 
-  async getCiDataFromJfrog(jfrogUrl: string, buildName: string, buildVersion: string) {
+  async getCiDataFromJfrog(jfrogUrl: string, buildName: string, buildVersion: string): Promise<string> {
     let jfrogHeader: any = {};
-    if (this.jfrogToken !== '') {
-      jfrogHeader['Authorization'] = `Bearer ${this.jfrogToken}`;
-    }
-
-    if (!buildName.startsWith('/')) {
-      const currentBuildName = buildName;
-      buildName = '/' + currentBuildName;
-    }
-
-    if (!buildVersion.startsWith('/')) {
-      const currentBuildVersion = buildVersion;
-      buildVersion = '/' + currentBuildVersion;
-    }
-    let getCiRequestUrl = `${jfrogUrl}/api/build${buildName}${buildVersion}`;
-    logger.info(`Querying Jfrog using url ${getCiRequestUrl}`);
-
     try {
+      if (this.jfrogToken !== '') {
+        jfrogHeader['Authorization'] = `Bearer ${this.jfrogToken}`;
+      }
+      if (!buildName.startsWith('/')) {
+        const currentBuildName = buildName;
+        buildName = '/' + currentBuildName;
+      }
+
+      if (!buildVersion.startsWith('/')) {
+        const currentBuildVersion = buildVersion;
+        buildVersion = '/' + currentBuildVersion;
+      }
+      let getCiRequestUrl = `${jfrogUrl}/api/build${buildName}${buildVersion}`;
+      logger.info(`Querying Jfrog using url ${getCiRequestUrl}`);
+
       const getCiResponse =
         this.jfrogToken !== ''
           ? await TFSServices.getJfrogRequest(getCiRequestUrl, jfrogHeader)
           : await TFSServices.getJfrogRequest(getCiRequestUrl);
       logger.debug(`CI Url from JFROG: ${getCiResponse.buildInfo.url}`);
+      return getCiResponse.buildInfo.url;
     } catch (err: any) {
-      logger.error('Error occurred during querying JFrog using');
+      logger.error(`Error occurred during querying JFrog using: ${err.message}`);
+      return '';
     }
-    return '';
   }
 }
