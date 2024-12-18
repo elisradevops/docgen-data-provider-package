@@ -40,7 +40,7 @@ export default class DgDataProviderAzureDevOps {
     return new ResultDataProvider(this.orgUrl, this.token);
   }
 
-  async getJfrogDateProvider(): Promise<JfrogDataProvider> {
+  async getJfrogDataProvider(): Promise<JfrogDataProvider> {
     return new JfrogDataProvider(this.orgUrl, this.token, this.jfrogToken || '');
   }
 } //class
