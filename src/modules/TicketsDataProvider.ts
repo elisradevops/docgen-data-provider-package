@@ -1,5 +1,5 @@
 import { TFSServices } from '../helpers/tfs';
-import { Workitem } from '../models/tfs-data';
+import { Workitem, QueryTree } from '../models/tfs-data';
 import { Helper, suiteData, Links, Trace, Relations } from '../helpers/helper';
 import { Query, TestSteps } from '../models/tfs-data';
 import { QueryType } from '../models/tfs-data';
@@ -98,58 +98,94 @@ export default class TicketsDataProvider {
     return linkList;
   }
   // gets queries recursiv
-  async GetSharedQueries(project: string, path: string): Promise<any> {
+  async GetSharedQueries(project: string, path: string, docType: string = ''): Promise<any> {
     let url;
     try {
       if (path == '')
         url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all`;
       else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
-      const { tree1: reqTestTree, tree2: testReqTree } = await this.structureQueries(queries);
-      return { reqTestTree, testReqTree };
+      logger.debug(`doctype: ${docType}`);
+      switch (docType) {
+        case 'STD':
+          return await this.fetchOneHopQueriesForStr(queries);
+        case 'SVD':
+          return await this.fetchAnyQueries(queries);
+        default:
+          break;
+      }
     } catch (err: any) {
       logger.error(err.message);
       logger.error(`Error stack trace:  ${JSON.stringify(err.stack)}`);
     }
   }
 
-  async GetQueryResultsFromWiqlHref(projectName: string, wiqlHref: string = ''): Promise<any> {
+  private async fetchOneHopQueriesForStr(queries: any) {
+    const { tree1: reqTestTree, tree2: testReqTree } = await this.structureReqTestQueries(queries);
+    return { reqTestTree, testReqTree };
+  }
+  private async fetchAnyQueries(queries: any) {
+    const { tree1: systemOverviewQueryTree } = await this.structureAllQueryPath(queries);
+    //TODO:insert here the known bugs tree from the queries (similar to req-test)
+    const knownBugsTree = {};
+    return { systemOverviewQueryTree };
+  }
+
+  async GetQueryResultsFromWiql(wiqlHref: string = '', displayAsTable: boolean = false): Promise<any> {
     try {
       if (!wiqlHref) {
         throw new Error('Incorrect WIQL Link');
       }
-
       // Remember to add customer id if needed
-      const queryResult: any = await TFSServices.getItemContent(wiqlHref, this.token);
+      const queryResult: QueryTree = await TFSServices.getItemContent(wiqlHref, this.token);
       if (!queryResult) {
         throw new Error('Query result failed');
       }
 
-      const { columns, workItemRelations } = queryResult;
-
-      if (workItemRelations.length === 0) {
-        throw new Error('No related work items were found');
+      switch (queryResult.queryType) {
+        case QueryType.OneHop:
+          return displayAsTable
+            ? await this.parseDirectLinkedQueryResultForTableFormat(queryResult)
+            : await this.parseTreeQueryResult(queryResult);
+        case QueryType.Tree:
+          return await this.parseTreeQueryResult(queryResult);
+        case QueryType.Flat:
+          return await this.parseFlatQueryResult(queryResult);
+        default:
+          break;
       }
+    } catch (err: any) {
+      logger.error(`Could not fetch query results for ${wiqlHref}: ${err.message}`);
+    }
+  }
 
-      const columnsToShowMap: Map<string, string> = new Map();
+  private async parseDirectLinkedQueryResultForTableFormat(queryResult: QueryTree) {
+    const { columns, workItemRelations } = queryResult;
 
-      const columnSourceMap: Map<string, string> = new Map();
-      const columnTargetsMap: Map<string, string> = new Map();
+    if (workItemRelations?.length === 0) {
+      throw new Error('No related work items were found');
+    }
 
-      //The map is copied because there are different fields for each WI type,
-      //Need to consider both ways (Req->Test; Test->Req)
-      columns.forEach((column: any) => {
-        const { referenceName, name } = column;
-        if (name === 'CustomerRequirementId') {
-          columnsToShowMap.set(referenceName, 'Customer ID');
-        } else {
-          columnsToShowMap.set(referenceName, name);
-        }
-      });
+    const columnsToShowMap: Map<string, string> = new Map();
 
-      // Initialize maps
-      const sourceTargetsMap: Map<any, any[]> = new Map();
-      const lookupMap: Map<number, any> = new Map();
+    const columnSourceMap: Map<string, string> = new Map();
+    const columnTargetsMap: Map<string, string> = new Map();
+
+    //The map is copied because there are different fields for each WI type,
+    //Need to consider both ways (Req->Test; Test->Req)
+    columns.forEach((column: any) => {
+      const { referenceName, name } = column;
+      if (name === 'CustomerRequirementId') {
+        columnsToShowMap.set(referenceName, 'Customer ID');
+      } else {
+        columnsToShowMap.set(referenceName, name);
+      }
+    });
+
+    // Initialize maps
+    const sourceTargetsMap: Map<any, any[]> = new Map();
+    const lookupMap: Map<number, any> = new Map();
+    if (workItemRelations) {
       for (const relation of workItemRelations) {
         //if relation.Source is null and target has a valid value then the target is the source
         if (!relation.source) {
@@ -177,14 +213,96 @@ export default class TicketsDataProvider {
         targets.push(targetWi);
         sourceTargetsMap.set(sourceRelation, targets);
       }
-      columnsToShowMap.clear();
-      return {
-        sourceTargetsMap,
-        sortingSourceColumnsMap: columnSourceMap,
-        sortingTargetsColumnsMap: columnTargetsMap,
-      };
-    } catch (err: any) {
-      logger.error(err.message);
+    }
+
+    columnsToShowMap.clear();
+    return {
+      sourceTargetsMap,
+      sortingSourceColumnsMap: columnSourceMap,
+      sortingTargetsColumnsMap: columnTargetsMap,
+    };
+  }
+
+  private async parseTreeQueryResult(queryResult: QueryTree) {
+    const { workItemRelations } = queryResult;
+    if (!workItemRelations) {
+      logger.warn(`No work items were found for this requested query`);
+      return null;
+    }
+
+    try {
+      // Step 1: Identify roots and prepare a map of all nodes
+      const allItems: any = {};
+      const roots = [];
+      for (const relation of workItemRelations) {
+        const target = relation.target;
+        // Initialize the node if it doesn't exist yet
+        if (!allItems[target.id]) {
+          await this.initTreeQueryResultItem(target, allItems);
+        }
+
+        if (relation.rel === null && relation.source === null) {
+          roots.push(allItems[target.id]);
+        } else if (relation.source) {
+          // This means target is a child of source
+          const parentId = relation.source.id;
+          if (!allItems[parentId]) {
+            const source = relation.source;
+            await this.initTreeQueryResultItem(source, allItems);
+          }
+          // Add the target as a child of the parent
+          allItems[parentId].children.push(allItems[target.id]);
+        }
+      }
+
+      return roots;
+    } catch (error: any) {
+      logger.error(`could not parse requested tree query: ${error.message}`);
+    }
+  }
+
+  private async initTreeQueryResultItem(item: any, allItems: any) {
+    const urlWi = `${item.url}?fields=System.Description,System.Title,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom`;
+    const wi = await TFSServices.getItemContent(urlWi, this.token);
+    // need to fetch the WI with only the the title, the web URL and the description
+    allItems[item.id] = {
+      id: item.id,
+      title: wi.fields['System.Title'] || '',
+      description: wi.fields['Microsoft.VSTS.CMMI.Symptom'] ?? wi.fields['System.Description'] ?? '',
+      htmlUrl: wi._links.html.href,
+      children: [],
+    };
+  }
+
+  private async initFlatQueryResultItem(item: any, workItemMap: Map<number, any>) {
+    const urlWi = `${item.url}?fields=System.Description,System.Title,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom`;
+    const wi = await TFSServices.getItemContent(urlWi, this.token);
+    // need to fetch the WI with only the the title, the web URL and the description
+    workItemMap.set(item.id, {
+      id: item.id,
+      title: wi.fields['System.Title'] || '',
+      description: wi.fields['Microsoft.VSTS.CMMI.Symptom'] ?? wi.fields['System.Description'] ?? '',
+      htmlUrl: wi._links.html.href,
+    });
+  }
+
+  private async parseFlatQueryResult(queryResult: QueryTree) {
+    const { workItems } = queryResult;
+    if (!workItems) {
+      logger.warn(`No work items were found for this requested query`);
+      return null;
+    }
+
+    try {
+      const workItemsResultMap: Map<number, any> = new Map();
+      for (const wi of workItems) {
+        if (!workItemsResultMap.has(wi.id)) {
+          await this.initFlatQueryResultItem(wi, workItemsResultMap);
+        }
+      }
+      return [...workItemsResultMap.values()];
+    } catch (error: any) {
+      logger.error(`could not parse requested flat query: ${error.message}`);
     }
   }
 
@@ -441,7 +559,64 @@ export default class TicketsDataProvider {
     return res;
   } //CreateNewWorkItem
 
-  private async structureQueries(rootQuery: any, parentId: any = null): Promise<any> {
+  private async structureAllQueryPath(rootQuery: any, parentId: any = null): Promise<any> {
+    try {
+      if (!rootQuery.hasChildren) {
+        if (!rootQuery.isFolder) {
+          let treeNode = {
+            id: rootQuery.id,
+            pId: parentId,
+            value: rootQuery.name,
+            title: rootQuery.name,
+            queryType: rootQuery.queryType,
+            wiql: rootQuery._links.wiql ?? undefined,
+            isValidQuery: true,
+          };
+
+          return { tree1: treeNode, tree2: null };
+        } else {
+          return { tree1: null, tree2: null };
+        }
+      }
+
+      if (!rootQuery.children) {
+        const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
+        const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
+        return currentQuery
+          ? await this.structureAllQueryPath(currentQuery, currentQuery.id)
+          : { tree1: null, tree2: null };
+      }
+
+      // Process children recursively
+      const childResults = await Promise.all(
+        rootQuery.children.map((child: any) => this.structureAllQueryPath(child, rootQuery.id))
+      );
+
+      // Build tree
+      const treeChildren = childResults.map((res: any) => res.tree1).filter((child: any) => child !== null);
+      const treeNode =
+        treeChildren.length > 0
+          ? {
+              id: rootQuery.id,
+              pId: parentId,
+              value: rootQuery.name,
+              title: rootQuery.name,
+              children: treeChildren,
+            }
+          : null;
+
+      return { tree1: treeNode, tree2: null };
+    } catch (err: any) {
+      logger.error(
+        `Error occurred while constructing the query list ${err.message} with query ${JSON.stringify(
+          rootQuery
+        )}`
+      );
+      logger.error(`Error stack ${err.message}`);
+    }
+  }
+
+  private async structureReqTestQueries(rootQuery: any, parentId: any = null): Promise<any> {
     try {
       if (!rootQuery.hasChildren) {
         if (!rootQuery.isFolder && rootQuery.queryType === 'oneHop') {
@@ -481,13 +656,13 @@ export default class TicketsDataProvider {
         const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
         const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
         return currentQuery
-          ? await this.structureQueries(currentQuery, currentQuery.id)
+          ? await this.structureReqTestQueries(currentQuery, currentQuery.id)
           : { tree1: null, tree2: null };
       }
 
       // Process children recursively
       const childResults = await Promise.all(
-        rootQuery.children.map((child: any) => this.structureQueries(child, rootQuery.id))
+        rootQuery.children.map((child: any) => this.structureReqTestQueries(child, rootQuery.id))
       );
 
       // Build tree1

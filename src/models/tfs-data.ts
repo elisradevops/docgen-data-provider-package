@@ -11,13 +11,14 @@ export class Query {
   //sortColumns: Sortcolumn[]  =new Array<Sortcolumn>()
   workItems: Workitem[] = new Array<Workitem>();
 }
-class QueryTree {
+export class QueryTree {
   queryType: QueryType;
   queryResultType: QueryResultType;
-  asOf: Date;
-  columns: Column[] = new Array<Column>();
-  //sortColumns: Sortcolumn[]  =new Array<Sortcolumn>()
-  workItems: Workitemrelation[] = new Array<Workitemrelation>();
+  asOf: string;
+  columns: Column[];
+  sortColumns?: SortColumn[];
+  workItems?: WorkItemForQuery[];
+  workItemRelations?: WorkItemRelation[];
 }
 
 export class Column {
@@ -26,7 +27,7 @@ export class Column {
   url: string;
 }
 
-class Sortcolumn {
+class SortColumn {
   field: Field;
   descending: boolean;
 }
@@ -60,14 +61,19 @@ export enum QueryType {
   OneHop = 'oneHop',
 }
 
-class Workitemrelation {
+class WorkItemForQuery {
+  id: number;
+  url: string;
+}
+
+class WorkItemRelation {
   rel: string;
   source: Source;
   target: Target;
 }
 
 class Workrelation {
-  relation: Workitemrelation;
+  relation: WorkItemRelation;
   value: value;
 }
 
