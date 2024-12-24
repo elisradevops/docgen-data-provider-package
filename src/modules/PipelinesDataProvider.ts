@@ -163,7 +163,9 @@ export default class PipelinesDataProvider {
     //Filter successful builds only
     let { value } = res;
     if (value) {
-      const successfulRunHistory = value.filter((run: any) => run.result === 'succeeded');
+      const successfulRunHistory = value.filter(
+        (run: any) => run.result !== 'failed' || run.result !== 'canceled'
+      );
       return { count: successfulRunHistory.length, value: successfulRunHistory };
     }
     return res;
