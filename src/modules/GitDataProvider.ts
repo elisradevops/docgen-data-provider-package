@@ -201,7 +201,13 @@ export default class GitDataProvider {
     return linkedItemsArray;
   } //GetCommitForPipeline
 
-  async getItemsForPipelineRange(projectName: string, extendedCommits: any[], targetRepo: any) {
+  //
+  async getItemsForPipelineRange(
+    projectName: string,
+    extendedCommits: any[],
+    targetRepo: any,
+    addedWorkItemByIdSet: Set<number>
+  ) {
     let commitChangesArray: any[] = [];
     try {
       if (extendedCommits?.length === 0) {
@@ -224,7 +230,10 @@ export default class GitDataProvider {
         for (const wi of commit.workItems) {
           const populatedWorkItem = await this.ticketsDataProvider.GetWorkItem(projectName, wi.id);
           let changeSet: any = { workItem: populatedWorkItem, commit: commit, targetRepo };
-          commitChangesArray.push(changeSet);
+          if (!addedWorkItemByIdSet.has(wi.id)) {
+            addedWorkItemByIdSet.add(wi.id);
+            commitChangesArray.push(changeSet);
+          }
         }
       }
 
