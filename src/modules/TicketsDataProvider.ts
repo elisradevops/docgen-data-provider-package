@@ -125,10 +125,10 @@ export default class TicketsDataProvider {
     return { reqTestTree, testReqTree };
   }
   private async fetchAnyQueries(queries: any) {
-    const { tree1: systemOverviewQueryTree } = await this.structureAllQueryPath(queries);
-    //TODO:insert here the known bugs tree from the queries (similar to req-test)
-    const knownBugsTree = {};
-    return { systemOverviewQueryTree };
+    const { tree1: systemOverviewQueryTree, tree2: knownBugsQueryTree } = await this.structureAllQueryPath(
+      queries
+    );
+    return { systemOverviewQueryTree, knownBugsQueryTree };
   }
 
   async GetQueryResultsFromWiql(wiqlHref: string = '', displayAsTable: boolean = false): Promise<any> {
@@ -150,7 +150,9 @@ export default class TicketsDataProvider {
         case QueryType.Tree:
           return await this.parseTreeQueryResult(queryResult);
         case QueryType.Flat:
-          return await this.parseFlatQueryResult(queryResult);
+          return displayAsTable
+            ? await this.parseFlatQueryResultForTableFormat(queryResult)
+            : await this.parseFlatQueryResult(queryResult);
         default:
           break;
       }
@@ -190,7 +192,7 @@ export default class TicketsDataProvider {
         //if relation.Source is null and target has a valid value then the target is the source
         if (!relation.source) {
           // Root link
-          const wi: any = await this.fetchWIByRelation(relation, columnsToShowMap, columnSourceMap);
+          const wi: any = await this.fetchWIForQueryResult(relation, columnsToShowMap, columnSourceMap, true);
           if (!lookupMap.has(wi.id)) {
             sourceTargetsMap.set(wi, []);
             lookupMap.set(wi.id, wi);
@@ -208,7 +210,12 @@ export default class TicketsDataProvider {
           throw new Error('Source relation has no mapping');
         }
 
-        const targetWi: any = await this.fetchWIByRelation(relation, columnsToShowMap, columnTargetsMap);
+        const targetWi: any = await this.fetchWIForQueryResult(
+          relation,
+          columnsToShowMap,
+          columnTargetsMap,
+          true
+        );
         const targets: any = sourceTargetsMap.get(sourceRelation) || [];
         targets.push(targetWi);
         sourceTargetsMap.set(sourceRelation, targets);
@@ -220,6 +227,48 @@ export default class TicketsDataProvider {
       sourceTargetsMap,
       sortingSourceColumnsMap: columnSourceMap,
       sortingTargetsColumnsMap: columnTargetsMap,
+    };
+  }
+
+  private async parseFlatQueryResultForTableFormat(queryResult: QueryTree) {
+    const { columns, workItems } = queryResult;
+
+    if (workItems?.length === 0) {
+      throw new Error('No work items were found');
+    }
+
+    const columnsToShowMap: Map<string, string> = new Map();
+
+    const fieldsToIncludeMap: Map<string, string> = new Map();
+
+    //The map is copied because there are different fields for each WI type,
+    columns.forEach((column: any) => {
+      const { referenceName, name } = column;
+      if (name === 'CustomerRequirementId') {
+        columnsToShowMap.set(referenceName, 'Customer ID');
+      } else {
+        columnsToShowMap.set(referenceName, name);
+      }
+    });
+
+    // Initialize maps
+    const wiSet: Set<any> = new Set();
+    if (workItems) {
+      for (const workItem of workItems) {
+        const wi: any = await this.fetchWIForQueryResult(
+          workItem,
+          columnsToShowMap,
+          fieldsToIncludeMap,
+          false
+        );
+        wiSet.add(wi);
+      }
+    }
+
+    columnsToShowMap.clear();
+    return {
+      fetchedWorkItems: [...wiSet],
+      fieldsToIncludeMap,
     };
   }
 
@@ -306,15 +355,16 @@ export default class TicketsDataProvider {
     }
   }
 
-  private async fetchWIByRelation(
-    relation: any,
+  private async fetchWIForQueryResult(
+    receivedObject: any,
     columnMap: Map<string, string>,
-    resultedRefNameMap: Map<string, string>
+    resultedRefNameMap: Map<string, string>,
+    isRelation: boolean
   ) {
-    const url = `${relation.target.url}`;
+    const url = isRelation ? `${receivedObject.target.url}` : `${receivedObject.url}`;
     const wi: any = await TFSServices.getItemContent(url, this.token);
     if (!wi) {
-      throw new Error(`WI ${relation.target.id} not found`);
+      throw new Error(`WI ${isRelation ? receivedObject.target.id : receivedObject.id} not found`);
     }
 
     this.filterFieldsByColumns(wi, columnMap, resultedRefNameMap);
@@ -563,7 +613,21 @@ export default class TicketsDataProvider {
     try {
       if (!rootQuery.hasChildren) {
         if (!rootQuery.isFolder) {
-          let treeNode = {
+          let sysOverviewNode = null;
+          let knownBugsNode = null;
+          if (rootQuery.queryType === 'flat' && this.matchesBugCondition(rootQuery.wiql)) {
+            //Add this to the known bugs query tree
+            knownBugsNode = {
+              id: rootQuery.id,
+              pId: parentId,
+              value: rootQuery.name,
+              title: rootQuery.name,
+              queryType: rootQuery.queryType,
+              wiql: rootQuery._links.wiql ?? undefined,
+              isValidQuery: true,
+            };
+          }
+          sysOverviewNode = {
             id: rootQuery.id,
             pId: parentId,
             value: rootQuery.name,
@@ -573,7 +637,7 @@ export default class TicketsDataProvider {
             isValidQuery: true,
           };
 
-          return { tree1: treeNode, tree2: null };
+          return { tree1: sysOverviewNode, tree2: knownBugsNode };
         } else {
           return { tree1: null, tree2: null };
         }
@@ -593,19 +657,35 @@ export default class TicketsDataProvider {
       );
 
       // Build tree
-      const treeChildren = childResults.map((res: any) => res.tree1).filter((child: any) => child !== null);
-      const treeNode =
-        treeChildren.length > 0
+      const sysOverviewNodeTreeChildren = childResults
+        .map((res: any) => res.tree1)
+        .filter((child: any) => child !== null);
+      const sysOverviewNode =
+        sysOverviewNodeTreeChildren.length > 0
           ? {
               id: rootQuery.id,
               pId: parentId,
               value: rootQuery.name,
               title: rootQuery.name,
-              children: treeChildren,
+              children: sysOverviewNodeTreeChildren,
             }
           : null;
 
-      return { tree1: treeNode, tree2: null };
+      const knownBugsTreeChildren = childResults
+        .map((res: any) => res.tree2)
+        .filter((child: any) => child !== null);
+      const knownBugs =
+        knownBugsTreeChildren.length > 0
+          ? {
+              id: rootQuery.id,
+              pId: parentId,
+              value: rootQuery.name,
+              title: rootQuery.name,
+              children: knownBugsTreeChildren,
+            }
+          : null;
+
+      return { tree1: sysOverviewNode, tree2: knownBugs };
     } catch (err: any) {
       logger.error(
         `Error occurred while constructing the query list ${err.message} with query ${JSON.stringify(
@@ -714,6 +794,10 @@ export default class TicketsDataProvider {
       wiql.includes("Source.[System.WorkItemType] = 'Test Case'") &&
       wiql.includes("Target.[System.WorkItemType] = 'Requirement'")
     );
+  }
+
+  private matchesBugCondition(wiql: string): boolean {
+    return wiql.includes(`[System.WorkItemType] = 'Bug'`);
   }
 
   private filterFieldsByColumns(
