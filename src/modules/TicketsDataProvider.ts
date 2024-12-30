@@ -97,7 +97,13 @@ export default class TicketsDataProvider {
     }
     return linkList;
   }
-  // gets queries recursiv
+  /**
+   * Getting shared queries
+   * @param project project name
+   * @param path query path
+   * @param docType document type
+   * @returns
+   */
   async GetSharedQueries(project: string, path: string, docType: string = ''): Promise<any> {
     let url;
     try {
@@ -108,7 +114,9 @@ export default class TicketsDataProvider {
       logger.debug(`doctype: ${docType}`);
       switch (docType) {
         case 'STD':
-          return await this.fetchOneHopQueriesForStr(queries);
+          return await this.fetchLinkedQueries(queries, false);
+        case 'STR':
+          return await this.fetchLinkedQueries(queries, true);
         case 'SVD':
           return await this.fetchAnyQueries(queries);
         default:
@@ -120,8 +128,17 @@ export default class TicketsDataProvider {
     }
   }
 
-  private async fetchOneHopQueriesForStr(queries: any) {
-    const { tree1: reqTestTree, tree2: testReqTree } = await this.structureReqTestQueries(queries);
+  /**
+   * fetches linked queries
+   * @param queries fetched queries
+   * @param onlyTestReq get only test req
+   * @returns ReqTestTree and TestReqTree
+   */
+  private async fetchLinkedQueries(queries: any, onlyTestReq: boolean = false) {
+    const { tree1: reqTestTree, tree2: testReqTree } = await this.structureReqTestQueries(
+      queries,
+      onlyTestReq
+    );
     return { reqTestTree, testReqTree };
   }
   private async fetchAnyQueries(queries: any) {
@@ -131,7 +148,11 @@ export default class TicketsDataProvider {
     return { systemOverviewQueryTree, knownBugsQueryTree };
   }
 
-  async GetQueryResultsFromWiql(wiqlHref: string = '', displayAsTable: boolean = false): Promise<any> {
+  async GetQueryResultsFromWiql(
+    wiqlHref: string = '',
+    displayAsTable: boolean = false,
+    testCaseToRequirementMap: Map<number, Set<any>>
+  ): Promise<any> {
     try {
       if (!wiqlHref) {
         throw new Error('Incorrect WIQL Link');
@@ -145,7 +166,7 @@ export default class TicketsDataProvider {
       switch (queryResult.queryType) {
         case QueryType.OneHop:
           return displayAsTable
-            ? await this.parseDirectLinkedQueryResultForTableFormat(queryResult)
+            ? await this.parseDirectLinkedQueryResultForTableFormat(queryResult, testCaseToRequirementMap)
             : await this.parseTreeQueryResult(queryResult);
         case QueryType.Tree:
           return await this.parseTreeQueryResult(queryResult);
@@ -161,7 +182,10 @@ export default class TicketsDataProvider {
     }
   }
 
-  private async parseDirectLinkedQueryResultForTableFormat(queryResult: QueryTree) {
+  private async parseDirectLinkedQueryResultForTableFormat(
+    queryResult: QueryTree,
+    testCaseToRequirementMap: Map<number, Set<any>>
+  ) {
     const { columns, workItemRelations } = queryResult;
 
     if (workItemRelations?.length === 0) {
@@ -205,8 +229,8 @@ export default class TicketsDataProvider {
         }
 
         // Get relation source from lookup
-        const sourceRelation = lookupMap.get(relation.source.id);
-        if (!sourceRelation) {
+        const sourceWorkItem = lookupMap.get(relation.source.id);
+        if (!sourceWorkItem) {
           throw new Error('Source relation has no mapping');
         }
 
@@ -216,9 +240,14 @@ export default class TicketsDataProvider {
           columnTargetsMap,
           true
         );
-        const targets: any = sourceTargetsMap.get(sourceRelation) || [];
+        //In case if source is a test case
+        this.mapTestCaseToRequirement(sourceWorkItem, testCaseToRequirementMap, targetWi);
+
+        //In case of target is a test case
+        this.mapTestCaseToRequirement(targetWi, testCaseToRequirementMap, sourceWorkItem);
+        const targets: any = sourceTargetsMap.get(sourceWorkItem) || [];
         targets.push(targetWi);
-        sourceTargetsMap.set(sourceRelation, targets);
+        sourceTargetsMap.set(sourceWorkItem, targets);
       }
     }
 
@@ -228,6 +257,27 @@ export default class TicketsDataProvider {
       sortingSourceColumnsMap: columnSourceMap,
       sortingTargetsColumnsMap: columnTargetsMap,
     };
+  }
+
+  private mapTestCaseToRequirement(
+    testCaseItem: any,
+    testCaseToRequirementMap: Map<number, Set<any>>,
+    RequirementWi: any
+  ) {
+    if (testCaseItem.fields['System.WorkItemType'] == 'Test Case') {
+      if (!testCaseToRequirementMap.has(testCaseItem.id)) {
+        testCaseToRequirementMap.set(testCaseItem.id, new Set());
+      }
+      const requirementSet = testCaseToRequirementMap.get(testCaseItem.id);
+      if (requirementSet) {
+        // Check if there's already an item with the same ID
+        const alreadyExists = [...requirementSet].some((reqItem) => reqItem.id === RequirementWi.id);
+
+        if (!alreadyExists) {
+          requirementSet.add(RequirementWi);
+        }
+      }
+    }
   }
 
   private async parseFlatQueryResultForTableFormat(queryResult: QueryTree) {
@@ -539,6 +589,7 @@ export default class TicketsDataProvider {
     return queryResult;
   }
 
+  //Build columns
   BuildColumns(results: any, queryResult: Query) {
     for (var i = 0; i < results.columns.length; i++) {
       queryResult.columns[i] = new Column();
@@ -592,12 +643,14 @@ export default class TicketsDataProvider {
     }
   }
 
+  //Get work item attachments
   async GetWorkitemAttachmentsJSONData(project: string, attachmentId: string) {
     let wiuRL = `${this.orgUrl}${project}/_apis/wit/attachments/${attachmentId}`;
     let attachment = await TFSServices.getItemContent(wiuRL, this.token);
     return attachment;
   }
 
+  //Update work item
   async UpdateWorkItem(projectName: string, wiBody: any, workItemId: number, byPass: boolean) {
     let res: any;
     let url: string = `${this.orgUrl}${projectName}/_apis/wit/workitems/${workItemId}?bypassRules=${String(
@@ -696,15 +749,22 @@ export default class TicketsDataProvider {
     }
   }
 
-  private async structureReqTestQueries(rootQuery: any, parentId: any = null): Promise<any> {
+  /**
+   * Recursively structures the query list for the requirement to test case and test case to requirement queries
+   */
+  private async structureReqTestQueries(
+    rootQuery: any,
+    onlyTestReq: boolean,
+    parentId: any = null
+  ): Promise<any> {
     try {
       if (!rootQuery.hasChildren) {
         if (!rootQuery.isFolder && rootQuery.queryType === 'oneHop') {
           const wiql = rootQuery.wiql;
           let tree1Node = null;
           let tree2Node = null;
-
-          if (this.matchesReqTestCondition(wiql)) {
+          // Check if the query is a requirement to test case query
+          if (!onlyTestReq && this.matchesReqTestCondition(wiql)) {
             tree1Node = {
               id: rootQuery.id,
               pId: parentId,
@@ -731,18 +791,18 @@ export default class TicketsDataProvider {
           return { tree1: null, tree2: null };
         }
       }
-
+      // If the query has children, but they are not loaded, fetch them
       if (!rootQuery.children) {
         const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
         const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
         return currentQuery
-          ? await this.structureReqTestQueries(currentQuery, currentQuery.id)
+          ? await this.structureReqTestQueries(currentQuery, onlyTestReq, currentQuery.id)
           : { tree1: null, tree2: null };
       }
 
       // Process children recursively
       const childResults = await Promise.all(
-        rootQuery.children.map((child: any) => this.structureReqTestQueries(child, rootQuery.id))
+        rootQuery.children.map((child: any) => this.structureReqTestQueries(child, onlyTestReq, rootQuery.id))
       );
 
       // Build tree1
@@ -782,6 +842,7 @@ export default class TicketsDataProvider {
     }
   }
 
+  // check if the query is a requirement to test case query
   private matchesReqTestCondition(wiql: string): boolean {
     return (
       wiql.includes("Source.[System.WorkItemType] = 'Requirement'") &&
@@ -789,6 +850,7 @@ export default class TicketsDataProvider {
     );
   }
 
+  // check if the query is a test case to requirement query
   private matchesTestReqCondition(wiql: string): boolean {
     return (
       wiql.includes("Source.[System.WorkItemType] = 'Test Case'") &&
@@ -796,10 +858,12 @@ export default class TicketsDataProvider {
     );
   }
 
+  // check if the query is a bug query
   private matchesBugCondition(wiql: string): boolean {
     return wiql.includes(`[System.WorkItemType] = 'Bug'`);
   }
 
+  // Filter the fields based on the columns to filter map
   private filterFieldsByColumns(
     item: any,
     columnsToFilterMap: Map<string, string>,
