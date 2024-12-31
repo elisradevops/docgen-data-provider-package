@@ -214,6 +214,7 @@ export interface PipelineLinks {
 
 export interface PipelineResources {
   repositories: any;
+  pipelines: any;
 }
 
 export interface PipelineRun {
