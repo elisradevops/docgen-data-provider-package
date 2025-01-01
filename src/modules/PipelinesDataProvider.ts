@@ -194,7 +194,7 @@ export default class PipelinesDataProvider {
     inPipeline: PipelineRun,
     gitDataProviderInstance: GitDataProvider
   ) {
-    const resourceRepositories: Set<any> = new Set();
+    const resourceRepositories: Map<number, any> = new Map();
 
     if (!inPipeline.resources.repositories) {
       return resourceRepositories;
@@ -213,11 +213,11 @@ export default class PipelinesDataProvider {
         repoSha1: resourceRepo.version,
         url: repo.url,
       };
-      if (!resourceRepositories.has(resourceRepository)) {
-        resourceRepositories.add(resourceRepository);
+      if (!resourceRepositories.has(Number(repoId))) {
+        resourceRepositories.set(Number(repoId), resourceRepository);
       }
     }
-    return [...resourceRepositories];
+    return [...resourceRepositories.values()];
   }
 
   /**

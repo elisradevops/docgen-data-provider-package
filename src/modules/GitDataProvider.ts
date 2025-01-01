@@ -203,7 +203,7 @@ export default class GitDataProvider {
 
   //
   async getItemsForPipelineRange(
-    projectName: string,
+    teamProject: string,
     extendedCommits: any[],
     targetRepo: any,
     addedWorkItemByIdSet: Set<number>
@@ -217,8 +217,10 @@ export default class GitDataProvider {
       if (targetRepo.url) {
         const repoData = await TFSServices.getItemContent(targetRepo.url, this.token);
         const repoWebUrl = repoData._links?.web.href;
+        const targetRepoProjectId = repoData.project?.id;
         if (repoWebUrl) {
           targetRepo['url'] = repoWebUrl;
+          targetRepo['projectId'] = targetRepoProjectId ?? teamProject;
         }
       }
       //Then extend the commit information with the related WIs
@@ -228,7 +230,10 @@ export default class GitDataProvider {
           throw new Error(`commit ${commit.commitId} does not have work items`);
         }
         for (const wi of commit.workItems) {
-          const populatedWorkItem = await this.ticketsDataProvider.GetWorkItem(projectName, wi.id);
+          const populatedWorkItem = await this.ticketsDataProvider.GetWorkItem(
+            targetRepo['projectId'],
+            wi.id
+          );
           let changeSet: any = { workItem: populatedWorkItem, commit: commit, targetRepo };
           if (!addedWorkItemByIdSet.has(wi.id)) {
             addedWorkItemByIdSet.add(wi.id);
@@ -358,8 +363,7 @@ export default class GitDataProvider {
   }
 
   async GetCommitBatch(
-    projectName: string,
-    repoID: string,
+    gitUrl: string,
     itemVersion: GitVersionDescriptor,
     compareVersion: GitVersionDescriptor
   ) {
@@ -375,7 +379,7 @@ export default class GitDataProvider {
         includeWorkItems: true,
       };
 
-      let url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
+      let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
       let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
       let commits = commitsResponse.data;
       while (commits.count > 0) {
@@ -406,7 +410,7 @@ export default class GitDataProvider {
         }
 
         skipping += chunkSize;
-        let url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
+        let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
         commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
         commits = commitsResponse.data;
       }
