@@ -31,6 +31,39 @@ export default class GitDataProvider {
     return jsonObject;
   } //GetJsonFileFromGitRepo
 
+  async GetFileFromGitRepo(
+    projectName: string,
+    repoId: string,
+    fileName: string,
+    version: GitVersionDescriptor
+  ) {
+    // get a single tag
+    let versionFix = '';
+    try {
+      versionFix = version.version.replace('/', '%2F').replace('#', '%23');
+    } catch {
+      versionFix = version.version;
+    }
+    try {
+      let url =
+        `${this.orgUrl}${projectName}/_apis/git/repositories/${repoId}/items` +
+        `?path=${fileName}&download=true&includeContent=true&recursionLevel=none` +
+        `&versionDescriptor.version=${versionFix}` +
+        `&versionDescriptor.versionType=${version.versionType}` +
+        `&api-version=5.1`;
+      let res = await TFSServices.getItemContent(url, this.token, 'get', {}, {}, false);
+      if (res && res.content) {
+        const fileContent = res.content;
+        // Assuming the file content is in plain text format
+        return fileContent;
+      }
+      return undefined;
+    } catch (err: any) {
+      logger.error(`File ${fileName} could not be read: ${err.message}`);
+      return undefined;
+    }
+  }
+
   async GetGitRepoFromPrId(pullRequestId: number) {
     let url = `${this.orgUrl}_apis/git/pullrequests/${pullRequestId}`;
     let res = await TFSServices.getItemContent(url, this.token, 'get');
@@ -389,18 +422,16 @@ export default class GitDataProvider {
               logger.debug(`commit number ${commitCounter + 1}`);
             }
 
-            if (commit.workItems?.length > 0) {
-              let extendedCommit: any = {};
+            let extendedCommit: any = {};
 
-              extendedCommit['commit'] = commit;
+            extendedCommit['commit'] = commit;
 
-              let committerName = commit.committer.name;
-              let commitDate = commit.committer.date.toString().slice(0, 10);
-              extendedCommit['committerName'] = committerName;
-              extendedCommit['commitDate'] = commitDate;
+            let committerName = commit.committer.name;
+            let commitDate = commit.committer.date.toString().slice(0, 10);
+            extendedCommit['committerName'] = committerName;
+            extendedCommit['commitDate'] = commitDate;
 
-              allCommitsExtended.push(extendedCommit);
-            }
+            allCommitsExtended.push(extendedCommit);
           } catch (err: any) {
             const errMsg = `Cannot fetch commit batch: ${err.message}`;
             throw new Error(errMsg);
@@ -418,5 +449,124 @@ export default class GitDataProvider {
       logger.error(error.message);
     }
     return allCommitsExtended;
+  }
+
+  async getSubmodulesData(
+    projectName: string,
+    repoId: string,
+    targetVersion: GitVersionDescriptor,
+    sourceVersion: GitVersionDescriptor,
+    allCommitsExtended: any[]
+  ) {
+    let submodules: any[] = [];
+    try {
+      const gitModulesFile = await this.GetFileFromGitRepo(projectName, repoId, '.gitmodules', targetVersion);
+      let gitRepoUrl = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoId}`;
+      if (!gitModulesFile) {
+        // No submodules found
+        return submodules;
+      }
+      const gitModulesFileLines = gitModulesFile.includes('\r\n')
+        ? gitModulesFile.split('\r\n')
+        : gitModulesFile.split('\n');
+
+      logger.info(`generating submodules data for ${repoId}`);
+
+      let gitSubRepoName = '';
+      let gitSubPointerPath = '';
+
+      for (const gitModuleLine of gitModulesFileLines) {
+        if (gitModuleLine.startsWith('[submodule')) {
+          gitSubRepoName = gitModuleLine
+            .replace('[submodule "', '')
+            .replace('"]', '')
+            .replace('/', '_')
+            .trim();
+          continue;
+        }
+        if (gitModuleLine.includes('path = ')) {
+          gitSubPointerPath = gitModuleLine.replace('path = ', '').trim();
+        }
+        if (!gitModuleLine.includes('url = ')) {
+          // If the line does not contain the URL, skip it
+          continue;
+        }
+
+        let gitSubRepoUrl = gitModuleLine.replace('url = ', '').trim();
+        if (gitSubRepoUrl.startsWith('../')) {
+          const relativePaths = gitSubRepoUrl.match(/\.\.\//g);
+          if (relativePaths.length > 0) {
+            let gitRepoUrlSplitted = gitRepoUrl.split('/');
+            let gitSubRepoUrlPrefix = gitRepoUrlSplitted
+              .slice(0, gitRepoUrlSplitted.length - relativePaths.length)
+              .join('/');
+            gitSubRepoUrl = gitSubRepoUrlPrefix + '/' + gitSubRepoUrl.replace('../', '');
+          }
+        }
+        let targetSha1 = await this.GetFileFromGitRepo(projectName, repoId, gitSubPointerPath, targetVersion);
+        let sourceSha1 = await this.GetFileFromGitRepo(projectName, repoId, gitSubPointerPath, sourceVersion);
+        if (!sourceSha1) {
+          for (
+            let checkCommitIndex = allCommitsExtended.length - 1;
+            checkCommitIndex > 0;
+            checkCommitIndex--
+          ) {
+            let checkCommit = null;
+            const { commit } = allCommitsExtended[checkCommitIndex];
+            if (commit) {
+              checkCommit = commit.commitId;
+            }
+            //In case of only commit object
+            else if (allCommitsExtended[checkCommitIndex].commitId) {
+              checkCommit = allCommitsExtended[checkCommitIndex].commitId;
+            }
+            if (!checkCommit) {
+              logger.warn(`commit not found for ${gitSubRepoName}`);
+              continue;
+            }
+            sourceSha1 = await this.GetFileFromGitRepo(projectName, repoId, gitSubPointerPath, {
+              ...sourceVersion,
+              version: checkCommit,
+            });
+            if (sourceSha1) {
+              //found
+              break;
+            }
+          }
+        }
+
+        if (!sourceSha1) {
+          logger.warn(
+            `${gitSubRepoName} pointer not exist in source version ${sourceVersion.versionType} ${sourceVersion.version} in repository ${gitRepoUrl}`
+          );
+          continue;
+        }
+
+        if (!targetSha1) {
+          logger.warn(
+            `${gitSubRepoName} pointer not exist in target version ${targetVersion.versionType} ${targetVersion.version} in repository ${gitRepoUrl}`
+          );
+          continue;
+        }
+        if (sourceSha1 === targetSha1) {
+          logger.warn(
+            `${gitSubRepoName} pointer is the same in source and target version in repository ${gitRepoUrl}`
+          );
+          continue;
+        }
+
+        let subModule = {
+          sourceSha1,
+          targetSha1,
+          gitSubRepoUrl,
+          gitSubRepoName,
+        };
+        submodules.push(subModule);
+      }
+    } catch (error: any) {
+      logger.error(`Error in getSubmodulesData: ${error.message}`);
+    } finally {
+      return submodules;
+    }
   }
 }
