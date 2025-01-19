@@ -24,7 +24,8 @@ export class TFSServices {
     pat: string,
     requestMethod: string = 'get',
     data: any = {},
-    customHeaders: any = {}
+    customHeaders: any = {},
+    printError: boolean = true
   ): Promise<any> {
     let config: any = {
       headers: customHeaders,
@@ -43,16 +44,18 @@ export class TFSServices {
       let result = await axios(url, config);
       json = JSON.parse(JSON.stringify(result.data));
     } catch (e: any) {
-      if (e.response) {
-        // Log detailed error information including the URL
-        logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
-        logger.error(`Status: ${e.response.status}`);
-        logger.error(`Response Data: ${JSON.stringify(e.response.data)}`);
-      } else {
-        // Handle other errors (network, etc.)
-        logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
+      if (printError) {
+        if (e.response) {
+          // Log detailed error information including the URL
+          logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
+          logger.error(`Status: ${e.response.status}`);
+          logger.error(`Response Data: ${JSON.stringify(e.response.data)}`);
+        } else {
+          // Handle other errors (network, etc.)
+          logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
+        }
+        throw e;
       }
-      throw e;
     }
     return json;
   }
