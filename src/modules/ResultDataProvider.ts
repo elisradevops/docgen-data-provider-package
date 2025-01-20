@@ -7,7 +7,7 @@ const pLimit = require('p-limit');
 export default class ResultDataProvider {
   orgUrl: string = '';
   token: string = '';
-  private limit = pLimit(100);
+  private limit = pLimit(10);
   private testStepParserHelper: TestStepParserHelper;
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
