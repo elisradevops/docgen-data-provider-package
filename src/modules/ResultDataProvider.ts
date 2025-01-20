@@ -3,10 +3,11 @@ import { TestSteps, Workitem } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 import logger from '../utils/logger';
 import TestStepParserHelper from '../utils/testStepParserHelper';
+const pLimit = require('p-limit');
 export default class ResultDataProvider {
   orgUrl: string = '';
   token: string = '';
-
+  private limit = pLimit(100);
   private testStepParserHelper: TestStepParserHelper;
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
@@ -279,20 +280,22 @@ export default class ResultDataProvider {
    */
   private async fetchTestData(suites: any[], projectName: string, testPlanId: string): Promise<any[]> {
     return await Promise.all(
-      suites.map(async (suite) => {
-        try {
-          const testPointsItems = await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId);
-          const testCasesItems = await this.fetchTestCasesBySuiteId(
-            projectName,
-            testPlanId,
-            suite.testSuiteId
-          );
-          return { ...suite, testPointsItems, testCasesItems };
-        } catch (error: any) {
-          logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
-          return suite; // Return the suite without the items if there's an error
-        }
-      })
+      suites.map((suite) =>
+        this.limit(async () => {
+          try {
+            const testPointsItems = await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId);
+            const testCasesItems = await this.fetchTestCasesBySuiteId(
+              projectName,
+              testPlanId,
+              suite.testSuiteId
+            );
+            return { ...suite, testPointsItems, testCasesItems };
+          } catch (error: any) {
+            logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
+            return suite;
+          }
+        })
+      )
     );
   }
 
@@ -637,25 +640,27 @@ export default class ResultDataProvider {
 
       // Prepare test data for summaries
       const testPointsPromises = suites.map((suite) =>
-        this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId)
-          .then((testPointsItems) => ({ ...suite, testPointsItems }))
-          .catch((error: any) => {
-            logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
-            return { ...suite, testPointsItems: [] };
-          })
+        this.limit(() =>
+          this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId)
+            .then((testPointsItems) => ({ ...suite, testPointsItems }))
+            .catch((error: any) => {
+              logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
+              return { ...suite, testPointsItems: [] };
+            })
+        )
       );
       const testPoints = await Promise.all(testPointsPromises);
 
       // 1. Calculate Test Group Result Summary
       const summarizedResults = testPoints
-        .filter((testPoint) => testPoint.testPointsItems && testPoint.testPointsItems.length > 0)
-        .map((testPoint) => {
+        .filter((testPoint: any) => testPoint.testPointsItems && testPoint.testPointsItems.length > 0)
+        .map((testPoint: any) => {
           const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
           return { ...testPoint, groupResultSummary };
         });
 
       const totalSummary = this.calculateTotalSummary(summarizedResults);
-      const testGroupArray = summarizedResults.map((item) => ({
+      const testGroupArray = summarizedResults.map((item: any) => ({
         testGroupName: item.testGroupName,
         ...item.groupResultSummary,
       }));
