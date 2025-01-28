@@ -23,6 +23,11 @@ export default class TicketsDataProvider {
     this.token = token;
   }
 
+  async FetchImageAsBase64(url: string): Promise<string> {
+    let image = await TFSServices.fetchAzureDevOpsImageAsBase64(url, this.token, 'get', null);
+    return image;
+  }
+
   async GetWorkItem(project: string, id: string): Promise<any> {
     let url = `${this.orgUrl}${project}/_apis/wit/workitems/${id}?$expand=All`;
     return TFSServices.getItemContent(url, this.token);
