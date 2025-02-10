@@ -112,7 +112,7 @@ export default class TicketsDataProvider {
   async GetSharedQueries(project: string, path: string, docType: string = ''): Promise<any> {
     let url;
     try {
-      if (path == '')
+      if (path === '')
         url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all`;
       else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
@@ -128,8 +128,8 @@ export default class TicketsDataProvider {
           break;
       }
     } catch (err: any) {
-      logger.error(err.message);
-      logger.error(`Error stack trace:  ${JSON.stringify(err.stack)}`);
+      logger.error(`Error occurred during fetching shared queries: ${err.message}`);
+      throw err;
     }
   }
 
@@ -750,7 +750,7 @@ export default class TicketsDataProvider {
           rootQuery
         )}`
       );
-      logger.error(`Error stack ${err.message}`);
+      throw err;
     }
   }
 
@@ -887,7 +887,7 @@ export default class TicketsDataProvider {
       item.fields = { ...parsedFields };
     } catch (err: any) {
       logger.error(`Cannot filter columns: ${err.message}`);
-      logger.error('Error Stack: ', err.stack);
+      throw err;
     }
   }
 }

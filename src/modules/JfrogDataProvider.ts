@@ -46,7 +46,7 @@ export default class JfrogDataProvider {
       return getCiResponse.buildInfo.url;
     } catch (err: any) {
       logger.error(`Error occurred during querying JFrog using: ${err.message}`);
-      return '';
+      throw err;
     }
   }
 }
