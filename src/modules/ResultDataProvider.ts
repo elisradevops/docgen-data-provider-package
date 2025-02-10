@@ -745,11 +745,10 @@ export default class ResultDataProvider {
       return combinedResults;
     } catch (error: any) {
       logger.error(`Error during getCombinedResultsSummary: ${error.message}`);
-      logger.error(`Error Stack:\n ${error.stack}`);
       if (error.response) {
         logger.error(`Response Data: ${JSON.stringify(error.response.data)}`);
       }
-      return combinedResults; // Return whatever is computed even in case of error
+      throw error;
     }
   }
 
