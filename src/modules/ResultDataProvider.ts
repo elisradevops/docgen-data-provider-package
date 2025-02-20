@@ -424,77 +424,66 @@ export default class ResultDataProvider {
    * @returns Array of linked Work Items
    */
   private async fetchLinkedWi(project: string, testItems: any[]): Promise<any[]> {
-    try {
-      const summarizedItemMap: Map<number, any> = new Map();
-      const testIds = testItems.map((summeryItem) => {
-        summarizedItemMap.set(summeryItem.testId, { ...summeryItem, linkItems: [] });
-        return `${summeryItem.testId}`;
-      });
-      const testIdsString = testIds.join(',');
-      // Construct URL to fetch linked work items
-      const getLinkedWisUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${testIdsString}&$expand=relations`;
+    logger.info('Fetching linked work items for test cases');
+    const CHUNK_SIZE = 100;
+    const summarizedItemMap: Map<number, any> = new Map();
 
-      // Fetch linked work items
-      const { value: workItems } = await TFSServices.getItemContent(getLinkedWisUrl, this.token);
+    // Prepare map and ID array
+    const testIds = testItems.map((item) => {
+      summarizedItemMap.set(item.testId, { ...item, linkItems: [] });
+      return item.testId.toString();
+    });
 
-      if (workItems.length > 0) {
-        for (const wi of workItems) {
-          const { relations } = wi;
-          // Ensure relations is an array
-          const item = summarizedItemMap.get(wi.id);
-          if (!item) {
-            continue;
-          }
-          if (!Array.isArray(relations) || relations.length === 0) {
-            continue;
-          }
+    logger.info(`Fetching linked work items for ${testIds.length} test cases`);
+    // Split test IDs into chunks
+    const chunks: string[][] = [];
+    for (let i = 0; i < testIds.length; i += CHUNK_SIZE) {
+      chunks.push(testIds.slice(i, i + CHUNK_SIZE));
+    }
+    logger.info(`Fetching linked work items in ${chunks.length} chunks`);
 
-          const relationWorkItemsIds = relations
-            .filter((relation) => relation?.attributes?.name === 'Tests')
-            .map((relation) => relation.url.split('/').pop());
+    // Process each chunk
+    for (const chunk of chunks) {
+      try {
+        const url = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${chunk.join(',')}&$expand=relations`;
+        const { value: workItems } = await TFSServices.getItemContent(url, this.token);
 
-          if (relationWorkItemsIds.length === 0) {
-            continue;
-          }
+        for (const wi of workItems || []) {
+          const mappedItem = summarizedItemMap.get(wi.id);
+          if (!mappedItem || !wi.relations) continue;
 
-          // Construct URL to fetch work item details
-          const relatedWIIdsString = relationWorkItemsIds.join(',');
-          const getRelatedWiDataUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${relatedWIIdsString}&$expand=1`;
+          const relatedIds = wi.relations
+            .filter((rel: any) => rel?.attributes?.name === 'Tests')
+            .map((rel: any) => rel.url.split('/').pop());
 
-          // Fetch work item details
-          const { value: relatedWorkItems } = await TFSServices.getItemContent(
-            getRelatedWiDataUrl,
-            this.token
-          );
-
-          // Ensure workItems is an array
-          if (!Array.isArray(relatedWorkItems)) {
-            throw new Error('Unexpected format for work items data');
+          // Fetch related items in batches
+          let allRelatedWi: any[] = [];
+          for (let i = 0; i < relatedIds.length; i += CHUNK_SIZE) {
+            const relChunk = relatedIds.slice(i, i + CHUNK_SIZE);
+            const relatedUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${relChunk.join(
+              ','
+            )}&$expand=1`;
+            const { value: rwi } = await TFSServices.getItemContent(relatedUrl, this.token);
+            allRelatedWi = [...allRelatedWi, ...rwi];
           }
 
-          // Filter work items based on type and state
-          const filteredWi = relatedWorkItems.filter(({ fields }) => {
-            const workItemType = fields?.['System.WorkItemType'];
-            const state = fields?.['System.State'];
-            return (
-              (workItemType === 'Change Request' || workItemType === 'Bug') &&
-              state !== 'Closed' &&
-              state !== 'Resolved'
-            );
+          // Filter
+          const filtered = allRelatedWi.filter(({ fields }) => {
+            const t = fields?.['System.WorkItemType'];
+            const s = fields?.['System.State'];
+            return (t === 'Change Request' || t === 'Bug') && s !== 'Closed' && s !== 'Resolved';
           });
 
-          const mappedFilteredWi = filteredWi.length > 0 ? this.MapLinkedWorkItem(filteredWi, project) : [];
-          summarizedItemMap.set(item.id, { ...item, linkItems: mappedFilteredWi });
+          mappedItem.linkItems = filtered.length > 0 ? this.MapLinkedWorkItem(filtered, project) : [];
+          summarizedItemMap.set(wi.id, mappedItem);
         }
+      } catch (error: any) {
+        logger.error(`Error occurred while fetching linked work items: ${error.message}`);
+        logger.error(`Error Stack: ${error.stack}`);
       }
-
-      return [...summarizedItemMap.values()];
-
-      // Return mapped work items if any exist
-    } catch (error) {
-      logger.error('Error fetching linked work items:', error);
-      return []; // Return an empty array or handle it as needed
     }
+
+    return [...summarizedItemMap.values()];
   }
 
   /**
