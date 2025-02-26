@@ -133,6 +133,7 @@ export class TestCase {
   description: string;
   area: string;
   steps: TestSteps[];
+  caseEvidenceAttachments: any[] = [];
   suit: string;
   url: string;
   relations: Relation[];
