@@ -167,6 +167,7 @@ export default class TestDataProvider {
             //In case its already parsed during the STR
           } else if (stepDetailObject) {
             testCase.steps = stepDetailObject.stepList;
+            testCase.caseEvidenceAttachments = stepDetailObject.caseEvidenceAttachments;
           }
           if (test.relations) {
             for (const relation of test.relations) {

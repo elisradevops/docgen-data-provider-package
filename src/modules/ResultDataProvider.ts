@@ -246,6 +246,7 @@ export default class ResultDataProvider {
               testCaseRevision: testCastObj.testCaseRevision,
               testName: point.testCaseName,
               stepIdentifier: stepIdentifier,
+              actionPath: actionResults[i].actionPath,
               stepNo: actionResults[i].stepPosition,
               stepAction: actionResults[i].action,
               stepExpected: actionResults[i].expected,
@@ -598,7 +599,7 @@ export default class ResultDataProvider {
 
     for (let i = 0; i < actionResults.length; i++) {
       const actionPath = actionResults[i].actionPath;
-      attachmentPathToIndexMap.set(actionPath, i);
+      attachmentPathToIndexMap.set(actionPath, actionResults[i].stepPosition);
     }
     return attachmentPathToIndexMap;
   }
@@ -678,7 +679,6 @@ export default class ResultDataProvider {
       // 3. Calculate Detailed Results Summary
       const testData = await this.fetchTestData(suites, projectName, testPlanId);
       const runResults = await this.fetchAllResultData(testData, projectName);
-
       const detailedStepResultsSummary = this.alignStepsWithIterations(testData, runResults);
       //Filter out all the results with no comment
       const filteredDetailedResults = detailedStepResultsSummary.filter(
@@ -723,7 +723,18 @@ export default class ResultDataProvider {
       }
 
       if (stepExecution && stepExecution.isEnabled) {
-        const mappedDetailedResults = this.mapStepResultsForExecutionAppendix(detailedStepResultsSummary);
+        const mappedAnalysisData =
+          stepExecution.generateAttachments.isEnabled &&
+          stepExecution.generateAttachments.runAttachmentMode !== 'planOnly'
+            ? runResults.filter((result) => result.iteration?.attachments?.length > 0)
+            : [];
+        const mappedAnalysisResultData =
+          mappedAnalysisData.length > 0 ? this.mapAttachmentsUrl(mappedAnalysisData, projectName) : [];
+
+        const mappedDetailedResults = this.mapStepResultsForExecutionAppendix(
+          detailedStepResultsSummary,
+          mappedAnalysisResultData
+        );
         combinedResults.push({
           contentControl: 'appendix-b-content-control',
           data: mappedDetailedResults,
@@ -756,28 +767,59 @@ export default class ResultDataProvider {
   //     : [];
   // }
 
-  private mapStepResultsForExecutionAppendix(detailedResults: any[]): Map<string, any> {
-    let testCaseIdToStepsMap: Map<string, any> = new Map();
+  private mapStepResultsForExecutionAppendix(detailedResults: any[], runResultData: any[]): Map<string, any> {
+    // Create maps first to avoid repeated lookups
+    const testCaseIdToStepsMap = new Map<string, any>();
+    const actionPathToPositionMap = this.mapActionPathToPosition(detailedResults);
+
+    // Pre-process detailedResults to set up the basic structure for testCaseIdToStepsMap
     detailedResults.forEach((result) => {
-      const testCaseRevision = result.testCaseRevision;
-      if (!testCaseIdToStepsMap.has(result.testId.toString())) {
-        testCaseIdToStepsMap.set(result.testId.toString(), { testCaseRevision, stepList: [] });
+      const testCaseId = result.testId.toString();
+      if (!testCaseIdToStepsMap.has(testCaseId)) {
+        testCaseIdToStepsMap.set(testCaseId, {
+          ...result.testCaseRevision,
+          stepList: [],
+          caseEvidenceAttachments: [],
+        });
       }
-      const value = testCaseIdToStepsMap.get(result.testId.toString());
-      const { stepList } = value;
-      stepList.push({
+
+      testCaseIdToStepsMap.get(testCaseId).stepList.push({
         stepPosition: result.stepNo,
-        stepIdentifier: result.stepIdentifier,
+        stepId: result.stepIdentifier,
         action: result.stepAction,
         expected: result.stepExpected,
         stepStatus: result.stepStatus,
         stepComments: result.stepComments,
         isSharedStepTitle: result.isSharedStepTitle,
       });
-      testCaseIdToStepsMap.set(result.testId.toString(), { ...testCaseRevision, stepList: stepList });
     });
 
+    // Process run attachments in a single pass
+    for (const result of runResultData) {
+      const testCaseId = result.testCaseId.toString();
+      const testCase = testCaseIdToStepsMap.get(testCaseId);
+
+      if (!testCase) continue;
+
+      // Process all attachments for this iteration at once
+      result.iteration.attachments.forEach((attachment: any) => {
+        const position = `${result.testCaseId}-${attachment.actionPath}`;
+        const stepNo = actionPathToPositionMap.get(position) || '';
+
+        testCase.caseEvidenceAttachments.push({
+          name: attachment.name,
+          testCaseId: result.testCaseId,
+          stepNo,
+          downloadUrl: attachment.downloadUrl,
+        });
+      });
+    }
+
     return testCaseIdToStepsMap;
+  }
+
+  private mapActionPathToPosition(actionResults: any[]): Map<string, number> {
+    return new Map(actionResults.map((result) => [`${result.testId}-${result.actionPath}`, result.stepNo]));
   }
 
   /**
