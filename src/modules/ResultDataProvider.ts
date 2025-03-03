@@ -616,7 +616,8 @@ export default class ResultDataProvider {
     includeOpenPCRs: boolean = false,
     includeTestLog: boolean = false,
     stepExecution?: any,
-    stepAnalysis?: any
+    stepAnalysis?: any,
+    includeHardCopyRun: boolean = false
   ): Promise<any[]> {
     const combinedResults: any[] = [];
     try {
@@ -645,11 +646,14 @@ export default class ResultDataProvider {
       const summarizedResults = testPoints
         .filter((testPoint: any) => testPoint.testPointsItems && testPoint.testPointsItems.length > 0)
         .map((testPoint: any) => {
-          const groupResultSummary = this.calculateGroupResultSummary(testPoint.testPointsItems || []);
+          const groupResultSummary = this.calculateGroupResultSummary(
+            testPoint.testPointsItems || [],
+            includeHardCopyRun
+          );
           return { ...testPoint, groupResultSummary };
         });
 
-      const totalSummary = this.calculateTotalSummary(summarizedResults);
+      const totalSummary = this.calculateTotalSummary(summarizedResults, includeHardCopyRun);
       const testGroupArray = summarizedResults.map((item: any) => ({
         testGroupName: item.testGroupName,
         ...item.groupResultSummary,
@@ -666,7 +670,7 @@ export default class ResultDataProvider {
       // 2. Calculate Test Results Summary
       const flattenedTestPoints = this.flattenTestPoints(testPoints);
       const testResultsSummary = flattenedTestPoints.map((testPoint) =>
-        this.formatTestResult(testPoint, addConfiguration)
+        this.formatTestResult(testPoint, addConfiguration, includeHardCopyRun)
       );
 
       // Add test results summary to combined results
@@ -825,7 +829,19 @@ export default class ResultDataProvider {
   /**
    * Calculates a summary of test group results.
    */
-  private calculateGroupResultSummary(testPointsItems: any[]): any {
+  private calculateGroupResultSummary(testPointsItems: any[], includeHardCopyRun: boolean): any {
+    if (includeHardCopyRun) {
+      return {
+        passed: '',
+        failed: '',
+        notApplicable: '',
+        blocked: '',
+        notRun: '',
+        total: '',
+        successPercentage: '',
+      };
+    }
+
     const summary = {
       passed: 0,
       failed: 0,
@@ -864,7 +880,18 @@ export default class ResultDataProvider {
   /**
    * Calculates the total summary of all test group results.
    */
-  private calculateTotalSummary(results: any[]): any {
+  private calculateTotalSummary(results: any[], includeHardCopyRun: boolean): any {
+    if (includeHardCopyRun) {
+      return {
+        passed: '',
+        failed: '',
+        notApplicable: '',
+        blocked: '',
+        notRun: '',
+        total: '',
+        successPercentage: '',
+      };
+    }
     const totalSummary = results.reduce(
       (acc, { groupResultSummary }) => {
         acc.passed += groupResultSummary.passed;
@@ -907,12 +934,12 @@ export default class ResultDataProvider {
   /**
    * Formats a test result for display.
    */
-  private formatTestResult(testPoint: any, addConfiguration: boolean): any {
+  private formatTestResult(testPoint: any, addConfiguration: boolean, includeHardCopyRun: boolean): any {
     const formattedResult: any = {
       testGroupName: testPoint.testGroupName,
       testId: testPoint.testCaseId,
       testName: testPoint.testCaseName,
-      runStatus: this.convertRunStatus(testPoint.outcome),
+      runStatus: !includeHardCopyRun ? this.convertRunStatus(testPoint.outcome) : '',
     };
 
     if (addConfiguration) {
