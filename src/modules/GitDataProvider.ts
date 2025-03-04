@@ -1,7 +1,7 @@
 import { TFSServices } from '../helpers/tfs';
 import TicketsDataProvider from './TicketsDataProvider';
 import logger from '../utils/logger';
-import { GitVersionDescriptor } from '../models/tfs-data';
+import { GitVersionDescriptor, value } from '../models/tfs-data';
 export default class GitDataProvider {
   orgUrl: string = '';
   token: string = '';
@@ -323,15 +323,22 @@ export default class GitDataProvider {
     return TFSServices.getItemContent(url, this.token, 'get', null, null);
   }
 
-  async GetCommitsForRepo(projectName: string, repoID: string, branchName?: string) {
+  async GetCommitsForRepo(projectName: string, repoID: string, versionIdentifier?: string) {
     let url: string;
-    if (typeof branchName !== 'undefined') {
-      url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/commits?searchCriteria.$top=2000&searchCriteria.itemVersion.version=${branchName}`;
+    if (typeof versionIdentifier !== 'undefined' || versionIdentifier !== '') {
+      url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/commits?searchCriteria.$top=2000&searchCriteria.itemVersion.version=${versionIdentifier}`;
     } else {
       url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/commits?searchCriteria.$top=2000`;
     }
     let res: any = await TFSServices.getItemContent(url, this.token, 'get', null, null);
-    return res;
+    if (res.count === 0) {
+      return [];
+    }
+
+    return res.value.map((commit: any) => ({
+      name: `${commit.commitId.slice(0, 7)} - ${commit.comment}`,
+      value: commit.commitId,
+    }));
   }
 
   async GetPullRequestsForRepo(projectName: string, repoID: string) {
@@ -393,6 +400,31 @@ export default class GitDataProvider {
     let url: string = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/refs?searchCriteria.$top=1000&filter=heads`;
     let res: any = await TFSServices.getItemContent(url, this.token, 'get', null, null);
     return res;
+  }
+
+  async GetRepoReferences(projectId: string, repoId: string, gitObjectType: string) {
+    let url: string = '';
+    switch (gitObjectType) {
+      case 'tag':
+        url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repoId}/refs/tags?api-version=5.1`;
+        break;
+      case 'branch':
+        url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repoId}/refs/heads?api-version=5.1`;
+        break;
+      default:
+        throw new Error(`Unsupported git object type: ${gitObjectType}`);
+    }
+
+    const res = await TFSServices.getItemContent(url, this.token, 'get');
+
+    if (res.count === 0) {
+      return [];
+    }
+
+    return res.value.map((refItem: any) => ({
+      name: refItem.name.replace('refs/heads/', '').replace('refs/tags/', ''),
+      value: refItem.name,
+    }));
   }
 
   async GetCommitBatch(
@@ -472,12 +504,12 @@ export default class GitDataProvider {
 
       logger.info(`generating submodules data for ${repoId}`);
 
-      let gitSubRepoName = '';
+      let gitSubModuleName = '';
       let gitSubPointerPath = '';
 
       for (const gitModuleLine of gitModulesFileLines) {
         if (gitModuleLine.startsWith('[submodule')) {
-          gitSubRepoName = gitModuleLine
+          gitSubModuleName = gitModuleLine
             .replace('[submodule "', '')
             .replace('"]', '')
             .replace('/', '_')
@@ -503,6 +535,7 @@ export default class GitDataProvider {
             gitSubRepoUrl = gitSubRepoUrlPrefix + '/' + gitSubRepoUrl.replace('../', '');
           }
         }
+
         let targetSha1 = await this.GetFileFromGitRepo(projectName, repoId, gitSubPointerPath, targetVersion);
         let sourceSha1 = await this.GetFileFromGitRepo(projectName, repoId, gitSubPointerPath, sourceVersion);
         if (!sourceSha1) {
@@ -521,7 +554,7 @@ export default class GitDataProvider {
               checkCommit = allCommitsExtended[checkCommitIndex].commitId;
             }
             if (!checkCommit) {
-              logger.warn(`commit not found for ${gitSubRepoName}`);
+              logger.warn(`commit not found for ${gitSubModuleName}`);
               continue;
             }
             sourceSha1 = await this.GetFileFromGitRepo(projectName, repoId, gitSubPointerPath, {
@@ -537,20 +570,20 @@ export default class GitDataProvider {
 
         if (!sourceSha1) {
           logger.warn(
-            `${gitSubRepoName} pointer not exist in source version ${sourceVersion.versionType} ${sourceVersion.version} in repository ${gitRepoUrl}`
+            `${gitSubModuleName} pointer not exist in source version ${sourceVersion.versionType} ${sourceVersion.version} in repository ${gitRepoUrl}`
           );
           continue;
         }
 
         if (!targetSha1) {
           logger.warn(
-            `${gitSubRepoName} pointer not exist in target version ${targetVersion.versionType} ${targetVersion.version} in repository ${gitRepoUrl}`
+            `${gitSubModuleName} pointer not exist in target version ${targetVersion.versionType} ${targetVersion.version} in repository ${gitRepoUrl}`
           );
           continue;
         }
         if (sourceSha1 === targetSha1) {
           logger.warn(
-            `${gitSubRepoName} pointer is the same in source and target version in repository ${gitRepoUrl}`
+            `${gitSubModuleName} pointer is the same in source and target version in repository ${gitRepoUrl}`
           );
           continue;
         }
@@ -559,7 +592,8 @@ export default class GitDataProvider {
           sourceSha1,
           targetSha1,
           gitSubRepoUrl,
-          gitSubRepoName,
+          gitSubRepoName: decodeURIComponent(gitSubRepoUrl?.split('/').pop() || ''),
+          gitSubModuleName,
         };
         submodules.push(subModule);
       }
