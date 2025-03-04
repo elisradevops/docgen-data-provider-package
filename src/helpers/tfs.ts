@@ -91,12 +91,12 @@ export class TFSServices {
         password: pat,
       },
       data: data,
-      timeout: 2000, // Set timeout to 2 seconds
+      timeout: 3000, // Set timeout to 3 seconds
     };
     let json;
     let attempts = 0;
     const maxAttempts = 3;
-
+    url = url.replace(/ /g, '%20');
     logger.silly(`making request:
     url: ${url}
     config: ${JSON.stringify(config)}`);
@@ -107,6 +107,10 @@ export class TFSServices {
         json = JSON.parse(JSON.stringify(result.data));
         return json;
       } catch (e: any) {
+        logger.error(`error fetching item content from azure devops at ${url}`);
+        //Print all the fields of error:
+
+        logger.error(`error: ${JSON.stringify(e.response?.data?.message)}`);
         attempts++;
         if (e.message.includes('ETIMEDOUT') || (e.message.includes('timeout') && attempts < maxAttempts)) {
           logger.warn(`Request timed out. Retrying attempt ${attempts} of ${maxAttempts}...`);
@@ -117,7 +121,7 @@ export class TFSServices {
             // Log detailed error information including the URL
             logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
             logger.error(`Status: ${e.response.status}`);
-            logger.error(`Response Data: ${JSON.stringify(e.response.data)}`);
+            logger.error(`Response Data: ${JSON.stringify(e.response.data?.message)}`);
           } else {
             // Handle other errors (network, etc.)
             logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
@@ -177,9 +181,16 @@ export class TFSServices {
     config: ${JSON.stringify(config)}`);
     try {
       result = await axios(url, config);
-    } catch (e) {
-      logger.error(`error making post request to azure devops`);
-      console.log(e);
+    } catch (e: any) {
+      if (e.response) {
+        // Log detailed error information including the URL
+        logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
+        logger.error(`Status: ${e.response.status}`);
+        logger.error(`Response Data: ${JSON.stringify(e.response.data?.message)}`);
+      } else {
+        // Handle other errors (network, etc.)
+        logger.error(`Error making request to Azure DevOps at ${url}: ${e.message}`);
+      }
     }
     return result;
   }
