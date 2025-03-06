@@ -35,7 +35,8 @@ export default class GitDataProvider {
     projectName: string,
     repoId: string,
     fileName: string,
-    version: GitVersionDescriptor
+    version: GitVersionDescriptor,
+    gitRepoUrl: string = ''
   ) {
     // get a single tag
     let versionFix = '';
@@ -45,12 +46,16 @@ export default class GitDataProvider {
       versionFix = version.version;
     }
     try {
+      let urlPrefix =
+        gitRepoUrl !== '' ? gitRepoUrl : `${this.orgUrl}${projectName}/_apis/git/repositories/${repoId}`;
+
       let url =
-        `${this.orgUrl}${projectName}/_apis/git/repositories/${repoId}/items` +
+        `${urlPrefix}/items` +
         `?path=${fileName}&download=true&includeContent=true&recursionLevel=none` +
         `&versionDescriptor.version=${versionFix}` +
         `&versionDescriptor.versionType=${version.versionType}` +
         `&api-version=5.1`;
+
       let res = await TFSServices.getItemContent(url, this.token, 'get', {}, {}, false);
       if (res && res.content) {
         const fileContent = res.content;
@@ -59,8 +64,33 @@ export default class GitDataProvider {
       }
       return undefined;
     } catch (err: any) {
-      logger.error(`File ${fileName} could not be read: ${err.message}`);
+      logger.warn(`File ${fileName} could not be read: ${err.message}`);
       return undefined;
+    }
+  }
+
+  async CheckIfItemExist(
+    gitApiUrl: string,
+    itemPath: string,
+    version: GitVersionDescriptor
+  ): Promise<boolean> {
+    let versionFixed = '';
+    try {
+      versionFixed = version.version.replace('/', '%2F').replace('#', '%23');
+    } catch {
+      versionFixed = version.version;
+    }
+
+    let url =
+      `${gitApiUrl}/items?path=${itemPath}` +
+      `&download=false&recursionLevel=none` +
+      `&versionDescriptor.version=${versionFixed}` +
+      `&versionDescriptor.versionType=${version.versionType}`;
+    try {
+      let res = await TFSServices.getItemContent(url, this.token, 'get', {}, {}, false);
+      return res ? true : false;
+    } catch {
+      return false;
     }
   }
 
@@ -430,7 +460,8 @@ export default class GitDataProvider {
   async GetCommitBatch(
     gitUrl: string,
     itemVersion: GitVersionDescriptor,
-    compareVersion: GitVersionDescriptor
+    compareVersion: GitVersionDescriptor,
+    specificItemPath: string = ''
   ) {
     const allCommitsExtended: any[] = [];
     let skipping = 0;
@@ -438,11 +469,20 @@ export default class GitDataProvider {
     let commitCounter = 0;
     let logToConsoleAfterCommits = 500;
     try {
-      let body = {
-        itemVersion,
-        compareVersion,
-        includeWorkItems: true,
-      };
+      let body =
+        specificItemPath === ''
+          ? {
+              itemVersion,
+              compareVersion,
+              includeWorkItems: true,
+            }
+          : {
+              itemVersion,
+              compareVersion,
+              includeWorkItems: true,
+              itemPath: specificItemPath,
+              historyMode: 'fullHistory',
+            };
 
       let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
       let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
