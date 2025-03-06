@@ -107,12 +107,19 @@ export class TFSServices {
         json = JSON.parse(JSON.stringify(result.data));
         return json;
       } catch (e: any) {
-        logger.error(`error fetching item content from azure devops at ${url}`);
-        //Print all the fields of error:
+        logger.warn(`error fetching item content from azure devops at ${url}`);
+        logger.warn(`error: ${JSON.stringify(e.response?.data?.message)}`);
+        if (e.response?.data?.message.includes('could not be found')) {
+          logger.info(`File does not exist, or you do not have permissions to read it.`);
+          return undefined;
+        }
 
-        logger.error(`error: ${JSON.stringify(e.response?.data?.message)}`);
         attempts++;
-        if (e.message.includes('ETIMEDOUT') || (e.message.includes('timeout') && attempts < maxAttempts)) {
+        if (
+          e.message.includes('ETIMEDOUT') ||
+          e.message.includes('timeout') ||
+          (e.response?.data?.message?.includes('timeout') && attempts < maxAttempts)
+        ) {
           logger.warn(`Request timed out. Retrying attempt ${attempts} of ${maxAttempts}...`);
           continue;
         }
