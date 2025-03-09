@@ -692,7 +692,7 @@ export default class ResultDataProvider {
       // Add detailed results summary to combined results
       combinedResults.push({
         contentControl: 'detailed-test-result-content-control',
-        data: filteredDetailedResults,
+        data: !includeHardCopyRun ? filteredDetailedResults : [],
         skin: 'detailed-test-result-table',
       });
 
