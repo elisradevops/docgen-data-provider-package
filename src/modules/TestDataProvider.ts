@@ -107,6 +107,8 @@ export default class TestDataProvider {
     let testCasesList: Array<any> = new Array<any>();
     const requirementToTestCaseTraceMap: Map<string, string[]> = new Map();
     const testCaseToRequirementsTraceMap: Map<string, string[]> = new Map();
+    // const startTime = performance.now();
+
     let suitesTestCasesList: Array<suiteData> = await this.GetTestSuiteById(
       project,
       planId,
@@ -119,7 +121,7 @@ export default class TestDataProvider {
       this.limit(async () => {
         try {
           const testCases = await this.GetTestCases(project, planId, suite.id);
-
+          // const structureStartTime = performance.now();
           const testCasesWithSteps = await this.StructureTestCase(
             project,
             testCases,
@@ -130,6 +132,9 @@ export default class TestDataProvider {
             testCaseToRequirementsTraceMap,
             stepResultDetailsMap
           );
+          // logger.debug(
+          //   `Performance: structured suite ${suite.id} in ${performance.now() - structureStartTime}ms`
+          // );
 
           // Return the results instead of modifying shared array
           return testCasesWithSteps || [];
@@ -143,7 +148,7 @@ export default class TestDataProvider {
     // Wait for all promises and only then combine the results
     const results = await Promise.all(testCaseListPromises);
     testCasesList = results.flat(); // Combine all results into a single array
-
+    // logger.debug(`Performance: GetTestCasesBySuites completed in ${performance.now() - startTime}ms`);
     return { testCasesList, requirementToTestCaseTraceMap, testCaseToRequirementsTraceMap };
   }
 
@@ -156,167 +161,98 @@ export default class TestDataProvider {
     requirementToTestCaseTraceMap: Map<string, string[]>,
     testCaseToRequirementsTraceMap: Map<string, string[]>,
     stepResultDetailsMap?: Map<string, any>
-  ): Promise<Array<any>> {
-    const baseUrl = this.orgUrl + project + '/_workitems/edit/';
-    const testCasesUrlList: Array<any> = [];
-
-    logger.debug(`Structuring test cases for ${project} suite: ${suite.id}:${suite.name}`);
-
+  ): Promise<any[]> {
+    let url = this.orgUrl + project + '/_workitems/edit/';
+    let testCasesUrlList: any[] = [];
+    logger.debug(`Trying to structure Test case for ${project} suite: ${suite.id}:${suite.name}`);
     try {
       if (!testCases || !testCases.value || testCases.count === 0) {
         logger.warn(`No test cases found for suite: ${suite.id}`);
         return [];
       }
 
-      // Step 1: Prepare all test case fetch requests
-      const testCaseRequests = testCases.value.map((item: any) => {
-        const testCaseId = item.testCase.id.toString();
-        const stepDetailObject = stepResultDetailsMap?.get(testCaseId);
+      for (let i = 0; i < testCases.count; i++) {
+        try {
+          let stepDetailObject =
+            stepResultDetailsMap?.get(testCases.value[i].testCase.id.toString()) || undefined;
 
-        const url = !stepDetailObject?.testCaseRevision
-          ? item.testCase.url + '?$expand=All'
-          : `${item.testCase.url}/revisions/${stepDetailObject.testCaseRevision}?$expand=All`;
+          let newurl = !stepDetailObject?.testCaseRevision
+            ? testCases.value[i].testCase.url + '?$expand=All'
+            : `${testCases.value[i].testCase.url}/revisions/${stepDetailObject.testCaseRevision}?$expand=All`;
+          let test: any = await this.fetchWithCache(newurl);
+          let testCase: TestCase = new TestCase();
 
-        return {
-          url,
-          testCaseId,
-          stepDetailObject,
-        };
-      });
+          testCase.title = test.fields['System.Title'];
+          testCase.area = test.fields['System.AreaPath'];
+          testCase.description = test.fields['System.Description'];
+          testCase.url = url + test.id;
+          //testCase.steps = test.fields["Microsoft.VSTS.TCM.Steps"];
+          testCase.id = test.id;
+          testCase.suit = suite.id;
 
-      // Step 2: Fetch all test cases in parallel using limit to control concurrency
-      logger.debug(`Fetching ${testCaseRequests.length} test cases concurrently`);
-      const testCaseResults = await Promise.all(
-        testCaseRequests.map((request: any) =>
-          this.limit(async () => {
-            try {
-              const test = await this.fetchWithCache(request.url);
-              return {
-                test,
-                testCaseId: request.testCaseId,
-                stepDetailObject: request.stepDetailObject,
-              };
-            } catch (error) {
-              logger.error(`Error fetching test case ${request.testCaseId}: ${error}`);
-              return null;
-            }
-          })
-        )
-      );
-
-      // Step 3: Process test cases and collect relation URLs
-      const validResults = testCaseResults.filter((result) => result !== null);
-      const relationRequests: Array<{ url: string; testCaseIndex: number }> = [];
-
-      const testCaseObjects = await Promise.all(
-        validResults.map(async (result, index) => {
-          try {
-            const test = result!.test;
-            const testCase = new TestCase();
-
-            // Build test case object
-            testCase.title = test.fields['System.Title'];
-            testCase.area = test.fields['System.AreaPath'];
-            testCase.description = test.fields['System.Description'];
-            testCase.url = baseUrl + test.id;
-            testCase.id = test.id;
-            testCase.suit = suite.id;
-
-            // Handle steps
-            if (!result!.stepDetailObject && test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
-              testCase.steps = await this.testStepParserHelper.parseTestSteps(
-                test.fields['Microsoft.VSTS.TCM.Steps'],
-                new Map<number, number>()
-              );
-            } else if (result!.stepDetailObject) {
-              testCase.steps = result!.stepDetailObject.stepList;
-              testCase.caseEvidenceAttachments = result!.stepDetailObject.caseEvidenceAttachments;
-            }
-
-            // Collect relation URLs for batch processing
-            if (test.relations) {
-              test.relations.forEach((relation: any) => {
-                if (relation.url.includes('/workItems/')) {
-                  relationRequests.push({
-                    url: relation.url,
-                    testCaseIndex: index,
-                  });
-                }
-              });
-            }
-
-            return testCase;
-          } catch (error) {
-            logger.error(`Error processing test case ${result!.testCaseId}: ${error}`);
-            return null;
+          if (!stepDetailObject && test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
+            let steps = await this.testStepParserHelper.parseTestSteps(
+              test.fields['Microsoft.VSTS.TCM.Steps'],
+              new Map<number, number>()
+            );
+            testCase.steps = steps;
+            //In case its already parsed during the STR
+          } else if (stepDetailObject) {
+            testCase.steps = stepDetailObject.stepList;
+            testCase.caseEvidenceAttachments = stepDetailObject.caseEvidenceAttachments;
           }
-        })
-      );
+          if (test.relations) {
+            for (const relation of test.relations) {
+              // Only proceed if the URL contains 'workItems'
+              if (relation.url.includes('/workItems/')) {
+                try {
+                  let relatedItemContent: any = await this.fetchWithCache(relation.url);
+                  // Check if the WorkItemType is "Requirement" before adding to relations
+                  if (relatedItemContent.fields['System.WorkItemType'] === 'Requirement') {
+                    const newRequirementRelation = this.createNewRequirement(
+                      CustomerRequirementId,
+                      relatedItemContent
+                    );
 
-      // Filter out any errors during test case processing
-      const validTestCases = testCaseObjects.filter((tc) => tc !== null) as TestCase[];
+                    const stringifiedTestCase = JSON.stringify({
+                      id: testCase.id,
+                      title: testCase.title,
+                    });
+                    const stringifiedRequirement = JSON.stringify(newRequirementRelation);
 
-      // Step 4: Fetch all relations concurrently
-      if (relationRequests.length > 0) {
-        logger.debug(`Fetching ${relationRequests.length} relations concurrently`);
-        const relationResults = await Promise.all(
-          relationRequests.map((request) =>
-            this.limit(async () => {
-              try {
-                const relatedItemContent = await this.fetchWithCache(request.url);
-                return {
-                  content: relatedItemContent,
-                  testCaseIndex: request.testCaseIndex,
-                };
-              } catch (error) {
-                logger.error(`Failed to fetch relation: ${error}`);
-                return null;
-              }
-            })
-          )
-        );
+                    // Add the test case to the requirement-to-test-case trace map
+                    this.addToMap(requirementToTestCaseTraceMap, stringifiedRequirement, stringifiedTestCase);
 
-        // Step 5: Process relations and update test cases
-        relationResults
-          .filter((result) => result !== null)
-          .forEach((result) => {
-            const relatedItemContent = result!.content;
-            const testCase = validTestCases[result!.testCaseIndex];
+                    // Add the requirement to the test-case-to-requirements trace map
+                    this.addToMap(
+                      testCaseToRequirementsTraceMap,
+                      stringifiedTestCase,
+                      stringifiedRequirement
+                    );
 
-            // Only process requirement relations
-            if (relatedItemContent.fields['System.WorkItemType'] === 'Requirement') {
-              const newRequirementRelation = this.createNewRequirement(
-                CustomerRequirementId,
-                relatedItemContent
-              );
-
-              const stringifiedTestCase = JSON.stringify({
-                id: testCase.id,
-                title: testCase.title,
-              });
-              const stringifiedRequirement = JSON.stringify(newRequirementRelation);
-
-              // Update trace maps
-              this.addToMap(requirementToTestCaseTraceMap, stringifiedRequirement, stringifiedTestCase);
-              this.addToMap(testCaseToRequirementsTraceMap, stringifiedTestCase, stringifiedRequirement);
-
-              // Add to test case relations if needed
-              if (includeRequirements) {
-                testCase.relations.push(newRequirementRelation);
+                    if (includeRequirements) {
+                      testCase.relations.push(newRequirementRelation);
+                    }
+                  }
+                } catch (fetchError) {
+                  // Log error silently or handle as needed
+                  console.error('Failed to fetch relation content', fetchError);
+                  logger.error(`Failed to fetch relation content for URL ${relation.url}: ${fetchError}`);
+                }
               }
             }
-          });
+          }
+          testCasesUrlList.push(testCase);
+        } catch {
+          const errorMsg = `ran into an issue while retrieving testCase ${testCases.value[i].testCase.id}`;
+          logger.error(`Error: ${errorMsg}`);
+          throw new Error(errorMsg);
+        }
       }
-
-      // Add all valid test cases to the result list
-      testCasesUrlList.push(...validTestCases);
     } catch (err: any) {
-      logger.error(`Error: ${err.message} while structuring test cases for suite ${suite.id}`);
+      logger.error(`Error: ${err.message} while trying to structure testCases for test suite ${suite.id}`);
     }
 
-    logger.info(
-      `StructureTestCase for suite ${suite.id} completed with ${testCasesUrlList.length} test cases`
-    );
     return testCasesUrlList;
   }
 
