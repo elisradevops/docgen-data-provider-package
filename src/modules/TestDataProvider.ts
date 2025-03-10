@@ -1,21 +1,18 @@
 import { TFSServices } from '../helpers/tfs';
-import { Workitem } from '../models/tfs-data';
-import { Helper, suiteData, Links, Trace, Relations } from '../helpers/helper';
-import { Query, TestSteps, createBugRelation, createRequirementRelation } from '../models/tfs-data';
-import { QueryType } from '../models/tfs-data';
-import { QueryAllTypes } from '../models/tfs-data';
-import { Column } from '../models/tfs-data';
-import { value } from '../models/tfs-data';
+import { Helper, suiteData } from '../helpers/helper';
+import { TestSteps, createRequirementRelation } from '../models/tfs-data';
 import { TestCase } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
-
 import logger from '../utils/logger';
 import TestStepParserHelper from '../utils/testStepParserHelper';
+const pLimit = require('p-limit');
 
 export default class TestDataProvider {
   orgUrl: string = '';
   token: string = '';
   private testStepParserHelper: TestStepParserHelper;
+  private cache = new Map<string, any>(); // Cache for API responses
+  private limit = pLimit(10);
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
@@ -23,26 +20,47 @@ export default class TestDataProvider {
     this.testStepParserHelper = new TestStepParserHelper(orgUrl, token);
   }
 
+  private async fetchWithCache(url: string, ttlMs = 60000): Promise<any> {
+    if (this.cache.has(url)) {
+      const cached = this.cache.get(url);
+      if (cached.timestamp + ttlMs > Date.now()) {
+        return cached.data;
+      }
+    }
+
+    try {
+      const result = await TFSServices.getItemContent(url, this.token);
+
+      this.cache.set(url, {
+        data: result,
+        timestamp: Date.now(),
+      });
+
+      return result;
+    } catch (error: any) {
+      logger.error(`Error fetching ${url}: ${error.message}`);
+      throw error;
+    }
+  }
+
   async GetTestSuiteByTestCase(testCaseId: string): Promise<any> {
     let url = `${this.orgUrl}/_apis/testplan/suites?testCaseId=${testCaseId}`;
-    let testCaseData = await TFSServices.getItemContent(url, this.token);
-    return testCaseData;
+    return this.fetchWithCache(url);
   }
 
-  //get all test plans in the project
   async GetTestPlans(project: string): Promise<string> {
     let testPlanUrl: string = `${this.orgUrl}${project}/_apis/test/plans`;
-    return TFSServices.getItemContent(testPlanUrl, this.token);
+    return this.fetchWithCache(testPlanUrl);
   }
-  //async get data test
 
-  // get all test suits in projct test plan
   async GetTestSuites(project: string, planId: string): Promise<any> {
     let testsuitesUrl: string = this.orgUrl + project + '/_apis/test/Plans/' + planId + '/suites';
     try {
-      let testSuites = await TFSServices.getItemContent(testsuitesUrl, this.token);
-      return testSuites;
-    } catch (e) {}
+      return this.fetchWithCache(testsuitesUrl);
+    } catch (e) {
+      logger.error(`Failed to get test suites: ${e}`);
+      return null;
+    }
   }
 
   async GetTestSuitesForPlan(project: string, planid: string): Promise<any> {
@@ -54,20 +72,16 @@ export default class TestDataProvider {
     }
     let url =
       this.orgUrl + '/' + project + '/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=' + planid;
-    let suites = await TFSServices.getItemContent(url, this.token);
-    return suites;
+    return this.fetchWithCache(url);
   }
 
   async GetTestSuitesByPlan(project: string, planId: string, recursive: boolean): Promise<any> {
     let suiteId = Number(planId) + 1;
-    let suites = await this.GetTestSuiteById(project, planId, suiteId.toString(), recursive);
-    return suites;
+    return this.GetTestSuiteById(project, planId, suiteId.toString(), recursive);
   }
-  //gets all testsuits recorsivly under test suite
 
   async GetTestSuiteById(project: string, planId: string, suiteId: string, recursive: boolean): Promise<any> {
     let testSuites = await this.GetTestSuitesForPlan(project, planId);
-    // GetTestSuites(project, planId);
     Helper.suitList = [];
     let dataSuites: any = Helper.findSuitesRecursive(
       planId,
@@ -78,17 +92,14 @@ export default class TestDataProvider {
       recursive
     );
     Helper.first = true;
-    // let levledSuites: any = Helper.buildSuiteslevel(dataSuites);
-
     return dataSuites;
   }
-  //gets all testcase under test suite acording to recursive flag
 
   async GetTestCasesBySuites(
     project: string,
     planId: string,
     suiteId: string,
-    recursiv: boolean,
+    recursive: boolean,
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
     stepResultDetailsMap?: Map<string, any>
@@ -100,23 +111,38 @@ export default class TestDataProvider {
       project,
       planId,
       suiteId,
-      recursiv
+      recursive
     );
-    for (let i = 0; i < suitesTestCasesList.length; i++) {
-      let testCases: any = await this.GetTestCases(project, planId, suitesTestCasesList[i].id);
-      let testCseseWithSteps: any = await this.StructureTestCase(
-        project,
-        testCases,
-        suitesTestCasesList[i],
-        includeRequirements,
-        CustomerRequirementId,
-        requirementToTestCaseTraceMap,
-        testCaseToRequirementsTraceMap,
-        stepResultDetailsMap
-      );
 
-      if (testCseseWithSteps.length > 0) testCasesList = [...testCasesList, ...testCseseWithSteps];
-    }
+    // Create array of promises that each return their test cases
+    const testCaseListPromises = suitesTestCasesList.map((suite) =>
+      this.limit(async () => {
+        try {
+          const testCases = await this.GetTestCases(project, planId, suite.id);
+
+          const testCasesWithSteps = await this.StructureTestCase(
+            project,
+            testCases,
+            suite,
+            includeRequirements,
+            CustomerRequirementId,
+            requirementToTestCaseTraceMap,
+            testCaseToRequirementsTraceMap,
+            stepResultDetailsMap
+          );
+
+          // Return the results instead of modifying shared array
+          return testCasesWithSteps || [];
+        } catch (error) {
+          logger.error(`Error processing suite ${suite.id}: ${error}`);
+          return []; // Return empty array on error
+        }
+      })
+    );
+
+    // Wait for all promises and only then combine the results
+    const results = await Promise.all(testCaseListPromises);
+    testCasesList = results.flat(); // Combine all results into a single array
 
     return { testCasesList, requirementToTestCaseTraceMap, testCaseToRequirementsTraceMap };
   }
@@ -131,96 +157,166 @@ export default class TestDataProvider {
     testCaseToRequirementsTraceMap: Map<string, string[]>,
     stepResultDetailsMap?: Map<string, any>
   ): Promise<Array<any>> {
-    let url = this.orgUrl + project + '/_workitems/edit/';
-    let testCasesUrlList: Array<any> = new Array<any>();
-    logger.debug(`Trying to structure Test case for ${project} suite: ${suite.id}:${suite.name}`);
+    const baseUrl = this.orgUrl + project + '/_workitems/edit/';
+    const testCasesUrlList: Array<any> = [];
+
+    logger.debug(`Structuring test cases for ${project} suite: ${suite.id}:${suite.name}`);
+
     try {
-      if (!testCases) {
-        throw new Error('test cases were not found');
+      if (!testCases || !testCases.value || testCases.count === 0) {
+        logger.warn(`No test cases found for suite: ${suite.id}`);
+        return [];
       }
 
-      for (let i = 0; i < testCases.count; i++) {
-        try {
-          let stepDetailObject =
-            stepResultDetailsMap?.get(testCases.value[i].testCase.id.toString()) || undefined;
+      // Step 1: Prepare all test case fetch requests
+      const testCaseRequests = testCases.value.map((item: any) => {
+        const testCaseId = item.testCase.id.toString();
+        const stepDetailObject = stepResultDetailsMap?.get(testCaseId);
 
-          let newurl = !stepDetailObject?.testCaseRevision
-            ? testCases.value[i].testCase.url + '?$expand=All'
-            : `${testCases.value[i].testCase.url}/revisions/${stepDetailObject.testCaseRevision}?$expand=All`;
-          let test: any = await TFSServices.getItemContent(newurl, this.token);
-          let testCase: TestCase = new TestCase();
+        const url = !stepDetailObject?.testCaseRevision
+          ? item.testCase.url + '?$expand=All'
+          : `${item.testCase.url}/revisions/${stepDetailObject.testCaseRevision}?$expand=All`;
 
-          testCase.title = test.fields['System.Title'];
-          testCase.area = test.fields['System.AreaPath'];
-          testCase.description = test.fields['System.Description'];
-          testCase.url = url + test.id;
-          //testCase.steps = test.fields["Microsoft.VSTS.TCM.Steps"];
-          testCase.id = test.id;
-          testCase.suit = suite.id;
+        return {
+          url,
+          testCaseId,
+          stepDetailObject,
+        };
+      });
 
-          if (!stepDetailObject && test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
-            let steps = await this.testStepParserHelper.parseTestSteps(
-              test.fields['Microsoft.VSTS.TCM.Steps'],
-              new Map<number, number>()
-            );
-            testCase.steps = steps;
-            //In case its already parsed during the STR
-          } else if (stepDetailObject) {
-            testCase.steps = stepDetailObject.stepList;
-            testCase.caseEvidenceAttachments = stepDetailObject.caseEvidenceAttachments;
-          }
-          if (test.relations) {
-            for (const relation of test.relations) {
-              // Only proceed if the URL contains 'workItems'
-              if (relation.url.includes('/workItems/')) {
-                try {
-                  let relatedItemContent: any = await TFSServices.getItemContent(relation.url, this.token);
-                  // Check if the WorkItemType is "Requirement" before adding to relations
-                  if (relatedItemContent.fields['System.WorkItemType'] === 'Requirement') {
-                    const newRequirementRelation = this.createNewRequirement(
-                      CustomerRequirementId,
-                      relatedItemContent
-                    );
+      // Step 2: Fetch all test cases in parallel using limit to control concurrency
+      logger.debug(`Fetching ${testCaseRequests.length} test cases concurrently`);
+      const testCaseResults = await Promise.all(
+        testCaseRequests.map((request: any) =>
+          this.limit(async () => {
+            try {
+              const test = await this.fetchWithCache(request.url);
+              return {
+                test,
+                testCaseId: request.testCaseId,
+                stepDetailObject: request.stepDetailObject,
+              };
+            } catch (error) {
+              logger.error(`Error fetching test case ${request.testCaseId}: ${error}`);
+              return null;
+            }
+          })
+        )
+      );
 
-                    const stringifiedTestCase = JSON.stringify({
-                      id: testCase.id,
-                      title: testCase.title,
-                    });
-                    const stringifiedRequirement = JSON.stringify(newRequirementRelation);
+      // Step 3: Process test cases and collect relation URLs
+      const validResults = testCaseResults.filter((result) => result !== null);
+      const relationRequests: Array<{ url: string; testCaseIndex: number }> = [];
 
-                    // Add the test case to the requirement-to-test-case trace map
-                    this.addToMap(requirementToTestCaseTraceMap, stringifiedRequirement, stringifiedTestCase);
+      const testCaseObjects = await Promise.all(
+        validResults.map(async (result, index) => {
+          try {
+            const test = result!.test;
+            const testCase = new TestCase();
 
-                    // Add the requirement to the test-case-to-requirements trace map
-                    this.addToMap(
-                      testCaseToRequirementsTraceMap,
-                      stringifiedTestCase,
-                      stringifiedRequirement
-                    );
+            // Build test case object
+            testCase.title = test.fields['System.Title'];
+            testCase.area = test.fields['System.AreaPath'];
+            testCase.description = test.fields['System.Description'];
+            testCase.url = baseUrl + test.id;
+            testCase.id = test.id;
+            testCase.suit = suite.id;
 
-                    if (includeRequirements) {
-                      testCase.relations.push(newRequirementRelation);
-                    }
-                  }
-                } catch (fetchError) {
-                  // Log error silently or handle as needed
-                  console.error('Failed to fetch relation content', fetchError);
-                  logger.error(`Failed to fetch relation content for URL ${relation.url}: ${fetchError}`);
+            // Handle steps
+            if (!result!.stepDetailObject && test.fields['Microsoft.VSTS.TCM.Steps'] != null) {
+              testCase.steps = await this.testStepParserHelper.parseTestSteps(
+                test.fields['Microsoft.VSTS.TCM.Steps'],
+                new Map<number, number>()
+              );
+            } else if (result!.stepDetailObject) {
+              testCase.steps = result!.stepDetailObject.stepList;
+              testCase.caseEvidenceAttachments = result!.stepDetailObject.caseEvidenceAttachments;
+            }
+
+            // Collect relation URLs for batch processing
+            if (test.relations) {
+              test.relations.forEach((relation: any) => {
+                if (relation.url.includes('/workItems/')) {
+                  relationRequests.push({
+                    url: relation.url,
+                    testCaseIndex: index,
+                  });
                 }
+              });
+            }
+
+            return testCase;
+          } catch (error) {
+            logger.error(`Error processing test case ${result!.testCaseId}: ${error}`);
+            return null;
+          }
+        })
+      );
+
+      // Filter out any errors during test case processing
+      const validTestCases = testCaseObjects.filter((tc) => tc !== null) as TestCase[];
+
+      // Step 4: Fetch all relations concurrently
+      if (relationRequests.length > 0) {
+        logger.debug(`Fetching ${relationRequests.length} relations concurrently`);
+        const relationResults = await Promise.all(
+          relationRequests.map((request) =>
+            this.limit(async () => {
+              try {
+                const relatedItemContent = await this.fetchWithCache(request.url);
+                return {
+                  content: relatedItemContent,
+                  testCaseIndex: request.testCaseIndex,
+                };
+              } catch (error) {
+                logger.error(`Failed to fetch relation: ${error}`);
+                return null;
+              }
+            })
+          )
+        );
+
+        // Step 5: Process relations and update test cases
+        relationResults
+          .filter((result) => result !== null)
+          .forEach((result) => {
+            const relatedItemContent = result!.content;
+            const testCase = validTestCases[result!.testCaseIndex];
+
+            // Only process requirement relations
+            if (relatedItemContent.fields['System.WorkItemType'] === 'Requirement') {
+              const newRequirementRelation = this.createNewRequirement(
+                CustomerRequirementId,
+                relatedItemContent
+              );
+
+              const stringifiedTestCase = JSON.stringify({
+                id: testCase.id,
+                title: testCase.title,
+              });
+              const stringifiedRequirement = JSON.stringify(newRequirementRelation);
+
+              // Update trace maps
+              this.addToMap(requirementToTestCaseTraceMap, stringifiedRequirement, stringifiedTestCase);
+              this.addToMap(testCaseToRequirementsTraceMap, stringifiedTestCase, stringifiedRequirement);
+
+              // Add to test case relations if needed
+              if (includeRequirements) {
+                testCase.relations.push(newRequirementRelation);
               }
             }
-          }
-          testCasesUrlList.push(testCase);
-        } catch {
-          const errorMsg = `ran into an issue while retriving testCase ${testCases.value[i].testCase.id}`;
-          logger.error(`errorMsg`);
-          throw new Error(errorMsg);
-        }
+          });
       }
+
+      // Add all valid test cases to the result list
+      testCasesUrlList.push(...validTestCases);
     } catch (err: any) {
-      logger.error(`Error: ${err.message} while trying to structure testCases for test suite ${suite.id}`);
+      logger.error(`Error: ${err.message} while structuring test cases for suite ${suite.id}`);
     }
 
+    logger.info(
+      `StructureTestCase for suite ${suite.id} completed with ${testCasesUrlList.length} test cases`
+    );
     return testCasesUrlList;
   }
 
@@ -275,16 +371,14 @@ export default class TestDataProvider {
   async GetTestCases(project: string, planId: string, suiteId: string): Promise<any> {
     let testCaseUrl: string =
       this.orgUrl + project + '/_apis/test/Plans/' + planId + '/suites/' + suiteId + '/testcases/';
-    let testCases: any = await TFSServices.getItemContent(testCaseUrl, this.token);
+    let testCases: any = await this.fetchWithCache(testCaseUrl);
     logger.debug(`test cases for plan ${planId} and ${suiteId} were ${testCases ? 'found' : 'not found'}`);
     return testCases;
   }
 
-  //gets all test point in a test case
   async GetTestPoint(project: string, planId: string, suiteId: string, testCaseId: string): Promise<any> {
     let testPointUrl: string = `${this.orgUrl}${project}/_apis/test/Plans/${planId}/Suites/${suiteId}/points?testCaseId=${testCaseId}`;
-    let testPoints: any = await TFSServices.getItemContent(testPointUrl, this.token);
-    return testPoints;
+    return this.fetchWithCache(testPointUrl);
   }
 
   async CreateTestRun(
@@ -415,4 +509,12 @@ export default class TestDataProvider {
     }
     map.get(key)?.push(value);
   };
+
+  /**
+   * Clears the cache to free memory
+   */
+  public clearCache(): void {
+    this.cache.clear();
+    logger.debug('Cache cleared');
+  }
 }
