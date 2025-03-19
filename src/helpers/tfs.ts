@@ -90,9 +90,10 @@ export class TFSServices {
 
   public static async getJfrogRequest(url: string, header?: any) {
     const config: AxiosRequestConfig = {
+      url: url,
       method: 'GET',
       headers: header,
-      timeout: 8000, // Reasonable timeout
+      timeout: 8000, // Reasonable timeout,
     };
 
     try {
@@ -112,15 +113,13 @@ export class TFSServices {
     customHeaders: any = { headers: { 'Content-Type': 'application/json' } }
   ): Promise<any> {
     const config: AxiosRequestConfig = {
+      url: url,
       headers: customHeaders,
       method: requestMethod,
       auth: { username: '', password: pat },
       data: data,
       timeout: 10000, // More reasonable timeout
     };
-
-    // Use shorter log format for better performance
-    logger.silly(`Request: ${url} [${requestMethod}]`);
 
     try {
       const result = await this.axiosInstance.request(config);
