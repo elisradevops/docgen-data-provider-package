@@ -15,7 +15,10 @@ export default class GitDataProvider {
   async GetTeamProjectGitReposList(teamProject: string) {
     logger.debug(`fetching repos list for team project - ${teamProject}`);
     let url = `${this.orgUrl}/${teamProject}/_apis/git/repositories`;
-    return TFSServices.getItemContent(url, this.token, 'get');
+    const res = await TFSServices.getItemContent(url, this.token, 'get');
+    return res.value && res.value.length > 0
+      ? [...res.value].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+      : [];
   } //GetGitRepoFromPrId
 
   async GetGitRepoFromRepoId(repoId: string) {

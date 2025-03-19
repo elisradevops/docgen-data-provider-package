@@ -1,10 +1,10 @@
-import { TFSServices } from "../helpers/tfs";
-import logger from "../utils/logger";
+import { TFSServices } from '../helpers/tfs';
+import logger from '../utils/logger';
 
 export default class MangementDataProvider {
-  orgUrl: string = "";
-  token: string = "";
-  
+  orgUrl: string = '';
+  token: string = '';
+
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
@@ -12,30 +12,19 @@ export default class MangementDataProvider {
 
   async GetCllectionLinkTypes() {
     let url: string = `${this.orgUrl}_apis/wit/workitemrelationtypes`;
-    let res: any = await TFSServices.getItemContent(
-      url,
-      this.token,
-      "get",
-      null,
-      null
-    );
+    let res: any = await TFSServices.getItemContent(url, this.token, 'get', null, null);
     return res;
   }
 
-  //get all projects 
+  //get all projects
   async GetProjects(): Promise<any> {
     let projectUrl: string = `${this.orgUrl}_apis/projects?$top=1000`;
-    let projects: any = await TFSServices.getItemContent(
-      projectUrl,
-      this.token
-    );
+    let projects: any = await TFSServices.getItemContent(projectUrl, this.token);
     return projects;
   }
 
   // get project by  name return project object
-  async GetProjectByName(
-    projectName: string
-  ): Promise<any> {
+  async GetProjectByName(projectName: string): Promise<any> {
     try {
       let projects: any = await this.GetProjects();
       for (let i = 0; i < projects.value.length; i++) {
@@ -49,11 +38,14 @@ export default class MangementDataProvider {
   }
 
   // get project by id return project object
-  async GetProjectByID(
-    projectID: string
-  ): Promise<any> {
+  async GetProjectByID(projectID: string): Promise<any> {
     let projectUrl: string = `${this.orgUrl}_apis/projects/${projectID}`;
     let project: any = await TFSServices.getItemContent(projectUrl, this.token);
     return project;
+  }
+
+  async GetUserProfile(): Promise<any> {
+    let url: string = `${this.orgUrl}_api/_common/GetUserProfile?__v=5`;
+    return TFSServices.getItemContent(url, this.token);
   }
 }
