@@ -7,12 +7,12 @@ export class TFSServices {
     httpAgent: new (require('http').Agent)({
       keepAlive: true,
       maxSockets: 50, // Allow more connections
-      keepAliveMsecs: 30000, // Keep connections alive longer
+      keepAliveMsecs: 300000, // Keep connections alive longer
     }),
     httpsAgent: new (require('https').Agent)({
       keepAlive: true,
       maxSockets: 50,
-      keepAliveMsecs: 30000,
+      keepAliveMsecs: 300000,
     }),
   };
 
@@ -28,7 +28,6 @@ export class TFSServices {
         url: url,
         headers: { 'Content-Type': 'application/zip' },
         auth: { username: '', password: pat },
-        timeout: 15000, // Increased timeout for large files
       });
       return res;
     } catch (e) {
@@ -51,7 +50,6 @@ export class TFSServices {
       auth: { username: '', password: pat },
       data: data,
       responseType: 'arraybuffer', // Important for binary data
-      timeout: 8000, // Increased timeout for images
     };
 
     return this.executeWithRetry(url, config, printError, (response) => {
@@ -79,7 +77,7 @@ export class TFSServices {
       method: requestMethod,
       auth: { username: '', password: pat },
       data: data,
-      timeout: 10000, // More reasonable timeout
+      timeout: requestMethod.toLocaleLowerCase() === 'get' ? 10000 : undefined, // More reasonable timeout
     };
 
     return this.executeWithRetry(cleanUrl, config, printError, (response) => {
@@ -93,7 +91,6 @@ export class TFSServices {
       url: url,
       method: 'GET',
       headers: header,
-      timeout: 8000, // Reasonable timeout,
     };
 
     try {
@@ -118,7 +115,6 @@ export class TFSServices {
       method: requestMethod,
       auth: { username: '', password: pat },
       data: data,
-      timeout: 10000, // More reasonable timeout
     };
 
     try {
