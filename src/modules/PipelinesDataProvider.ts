@@ -97,9 +97,9 @@ export default class PipelinesDataProvider {
     searchPrevPipelineFromDifferentCommit: boolean
   ): boolean {
     const fromRepo =
-      fromPipeline.resources.repositories[0].self || fromPipeline.resources.repositories.__designer_repo;
+      fromPipeline.resources.repositories[0]?.self || fromPipeline.resources.repositories.__designer_repo;
     const targetRepo =
-      targetPipeline.resources.repositories[0].self || targetPipeline.resources.repositories.__designer_repo;
+      targetPipeline.resources.repositories[0]?.self || targetPipeline.resources.repositories.__designer_repo;
 
     if (fromRepo.repository.id !== targetRepo.repository.id) {
       return false;

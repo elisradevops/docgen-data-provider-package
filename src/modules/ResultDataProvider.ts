@@ -107,6 +107,7 @@ export default class ResultDataProvider {
     }
 
     const parts = path.split('/');
+    if (parts.length - 1 === 1) return parts[1];
     return parts.length > 3
       ? `${parts[1]}/.../${parts[parts.length - 1]}`
       : `${parts[1]}/${parts[parts.length - 1]}`;
@@ -208,8 +209,8 @@ export default class ResultDataProvider {
     return actionResult.outcome === 'Unspecified'
       ? 'Not Run'
       : actionResult.outcome !== 'Not Run'
-      ? actionResult.outcome
-      : '';
+        ? actionResult.outcome
+        : '';
   }
 
   /**
@@ -402,19 +403,19 @@ export default class ResultDataProvider {
     }
     return resultData?.testCase
       ? {
-          testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
-          testCaseId: resultData.testCase.id,
-          testSuiteName: `${resultData.testSuite.name}`,
-          testSuiteId,
-          lastRunId,
-          lastResultId,
-          iteration,
-          testCaseRevision: resultData.testCaseRevision,
-          failureType: resultData.failureType,
-          resolution: resultData.resolutionState,
-          comment: resultData.comment,
-          analysisAttachments: resultData.analysisAttachments,
-        }
+        testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
+        testCaseId: resultData.testCase.id,
+        testSuiteName: `${resultData.testSuite.name}`,
+        testSuiteId,
+        lastRunId,
+        lastResultId,
+        iteration,
+        testCaseRevision: resultData.testCaseRevision,
+        failureType: resultData.failureType,
+        resolution: resultData.resolutionState,
+        comment: resultData.comment,
+        analysisAttachments: resultData.analysisAttachments,
+      }
       : null;
   }
 
@@ -729,7 +730,7 @@ export default class ResultDataProvider {
       if (stepExecution && stepExecution.isEnabled) {
         const mappedAnalysisData =
           stepExecution.generateAttachments.isEnabled &&
-          stepExecution.generateAttachments.runAttachmentMode !== 'planOnly'
+            stepExecution.generateAttachments.runAttachmentMode !== 'planOnly'
             ? runResults.filter((result) => result.iteration?.attachments?.length > 0)
             : [];
         const mappedAnalysisResultData =
@@ -752,7 +753,8 @@ export default class ResultDataProvider {
       if (error.response) {
         logger.error(`Response Data: ${JSON.stringify(error.response.data)}`);
       }
-      throw error;
+      // Ensure the error is rethrown to propagate it correctly
+      throw new Error(error.message || 'Unknown error occurred during getCombinedResultsSummary');
     }
   }
 

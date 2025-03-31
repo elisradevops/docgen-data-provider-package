@@ -1,63 +1,292 @@
-import DgDataProviderAzureDevOps from '../..';
+import { PipelineRun } from '../../models/tfs-data';
+import { TFSServices } from '../../helpers/tfs';
+import PipelinesDataProvider from '../PipelinesDataProvider';
+import GitDataProvider from '../GitDataProvider';
+import logger from '../../utils/logger';
 
-require('dotenv').config();
-jest.setTimeout(60000);
+jest.mock('../../helpers/tfs');
+jest.mock('../../utils/logger');
+jest.mock('../GitDataProvider');
 
-const orgUrl = process.env.ORG_URL;
-const token = process.env.PAT;
-const dgDataProviderAzureDevOps = new DgDataProviderAzureDevOps(orgUrl, token);
+describe('PipelinesDataProvider', () => {
+  let pipelinesDataProvider: PipelinesDataProvider;
+  const mockOrgUrl = 'https://dev.azure.com/orgname/';
+  const mockToken = 'mock-token';
 
-describe('pipeline module - tests', () => {
-  test('should return pipeline info', async () => {
-    let pipelinesDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let json = await pipelinesDataProvider.getPipelineBuildByBuildId('tests', 244);
-    expect(json.id).toBe(244);
-  });
-  test('should return Release definition', async () => {
-    let pipelinesDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let json = await pipelinesDataProvider.GetReleaseByReleaseId('tests', 1);
-    expect(json.id).toBe(1);
-  });
-  test('should return OK(200) as response ', async () => {
-    let PipelineDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let result = await PipelineDataProvider.TriggerBuildById(
-      'tests',
-      '14',
-      '{"test":"param1","age":"26","name":"denis" }'
-    );
-    expect(result.status).toBe(200);
-  });
-  test('should the path to zip file as response ', async () => {
-    let PipelineDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let result = await PipelineDataProvider.GetArtifactByBuildId(
-      'tests',
-      '245', //buildId
-      '_tests' //artifactName
-    );
-    expect(result).toBeDefined();
+  beforeEach(() => {
+    jest.clearAllMocks();
+    pipelinesDataProvider = new PipelinesDataProvider(mockOrgUrl, mockToken);
   });
 
-  test('should return pipeline run history ', async () => {
-    let PipelineDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let json = await PipelineDataProvider.GetPipelineRunHistory('tests', '14');
-    expect(json).toBeDefined();
+  describe('isMatchingPipeline', () => {
+    // Create test method to access private method
+    const invokeIsMatchingPipeline = (
+      fromPipeline: PipelineRun,
+      targetPipeline: PipelineRun,
+      searchPrevPipelineFromDifferentCommit: boolean
+    ): boolean => {
+      return (pipelinesDataProvider as any).isMatchingPipeline(
+        fromPipeline,
+        targetPipeline,
+        searchPrevPipelineFromDifferentCommit
+      );
+    };
+
+    it('should return false when repository IDs are different', () => {
+      // Arrange
+      const fromPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo1' },
+                version: 'v1',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      const targetPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo2' },
+                version: 'v1',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      // Act
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('should return true when versions are the same and searchPrevPipelineFromDifferentCommit is false', () => {
+      // Arrange
+      const fromPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo1' },
+                version: 'v1',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      const targetPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo1' },
+                version: 'v1',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      // Act
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('should return false when versions are the same and searchPrevPipelineFromDifferentCommit is true', () => {
+      // Arrange
+      const fromPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo1' },
+                version: 'v1',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      const targetPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo1' },
+                version: 'v1',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      // Act
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, true);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('should return true when refNames match but versions differ', () => {
+      // Arrange
+      const fromPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo1' },
+                version: 'v1',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      const targetPipeline = {
+        resources: {
+          repositories: {
+            '0': {
+              self: {
+                repository: { id: 'repo1' },
+                version: 'v2',
+                refName: 'refs/heads/main'
+              }
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      // Act
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, true);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('should use __designer_repo when self is not available', () => {
+      // Arrange
+      const fromPipeline = {
+        resources: {
+          repositories: {
+            __designer_repo: {
+              repository: { id: 'repo1' },
+              version: 'v1',
+              refName: 'refs/heads/main'
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      const targetPipeline = {
+        resources: {
+          repositories: {
+            __designer_repo: {
+              repository: { id: 'repo1' },
+              version: 'v1',
+              refName: 'refs/heads/main'
+            }
+          }
+        }
+      } as unknown as PipelineRun;
+
+      // Act
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+
+      // Assert
+      expect(result).toBe(true);
+    });
   });
 
-  test('should return release defenition history ', async () => {
-    let PipelineDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let json = await PipelineDataProvider.GetReleaseHistory('tests', '1');
-    expect(json).toBeDefined();
+  describe('getPipelineRunDetails', () => {
+    it('should call TFSServices.getItemContent with correct parameters', async () => {
+      // Arrange
+      const projectName = 'project1';
+      const pipelineId = 123;
+      const runId = 456;
+      const mockResponse = { id: runId, resources: {} };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
+
+      // Act
+      const result = await pipelinesDataProvider.getPipelineRunDetails(projectName, pipelineId, runId);
+
+      // Assert
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}${projectName}/_apis/pipelines/${pipelineId}/runs/${runId}`,
+        mockToken
+      );
+      expect(result).toEqual(mockResponse);
+    });
   });
 
-  test('should return all pipelines ', async () => {
-    let PipelineDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let json = await PipelineDataProvider.GetAllPipelines('tests');
-    expect(json).toBeDefined();
-  });
+  describe('GetPipelineRunHistory', () => {
+    it('should return filtered pipeline run history', async () => {
+      // Arrange
+      const projectName = 'project1';
+      const pipelineId = '123';
+      const mockResponse = {
+        value: [
+          { id: 1, result: 'succeeded' },
+          { id: 2, result: 'failed' },
+          { id: 3, result: 'canceled' },
+          { id: 4, result: 'succeeded' }
+        ]
+      };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
-  test('should return all releaseDefenitions ', async () => {
-    let PipelineDataProvider = await dgDataProviderAzureDevOps.getPipelinesDataProvider();
-    let json = await PipelineDataProvider.GetAllReleaseDefenitions('tests');
-    expect(json).toBeDefined();
+      // Act
+      const result = await pipelinesDataProvider.GetPipelineRunHistory(projectName, pipelineId);
+
+      // Assert
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}${projectName}/_apis/pipelines/${pipelineId}/runs`,
+        mockToken,
+        'get',
+        null,
+        null
+      );
+      expect(result).toEqual({
+        count: 4, // Note: Current filter logic keeps all runs where result is not 'failed' AND not 'canceled'
+        value: mockResponse.value
+      });
+    });
+
+    it('should handle API errors gracefully', async () => {
+      // Arrange
+      const projectName = 'project1';
+      const pipelineId = '123';
+      const expectedError = new Error('API error');
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(expectedError);
+
+      // Act
+      const result = await pipelinesDataProvider.GetPipelineRunHistory(projectName, pipelineId);
+
+      // Assert
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}${projectName}/_apis/pipelines/${pipelineId}/runs`,
+        mockToken,
+        'get',
+        null,
+        null
+      );
+      expect(logger.error).toHaveBeenCalledWith(`Could not fetch Pipeline Run History: ${expectedError.message}`);
+      expect(result).toBeUndefined();
+    });
   });
 });

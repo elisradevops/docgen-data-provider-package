@@ -32,12 +32,14 @@ export class Trace {
   url: string;
   customerId: string;
   links: Array<Links>;
+
+
 }
 
 export class Helper {
   static level: number = 1;
   static first: boolean = true;
-  static buildSuiteslevel(dataSuites: any): any {}
+  static buildSuiteslevel(dataSuites: any): any { }
   public static suitList: Array<suiteData> = new Array<suiteData>();
   public static findSuitesRecursive(
     planId: string,
@@ -75,24 +77,24 @@ export class Helper {
             suits,
             suits[i].id,
             true
-            );
+          );
           this.level--;
         }
       } else {
-          if (suits[i].id == foundId && Helper.first) {
-            let suit: suiteData = new suiteData(
-              suits[i].title,
-              suits[i].id,
-              foundId,
-              this.level
-            );
-            suit.url = url + project + "/_workitems/edit/" + suits[i].id;
-            Helper.first = false;
-            if (recursive == false) {
-              return this.suitList;
-            }
+        if (suits[i].id == foundId && Helper.first) {
+          let suit: suiteData = new suiteData(
+            suits[i].title,
+            suits[i].id,
+            foundId,
+            this.level
+          );
+          suit.url = url + project + "/_workitems/edit/" + suits[i].id;
+          Helper.first = false;
+          if (recursive == false) {
+            return this.suitList;
           }
         }
+      }
     }
     return this.suitList;
   }

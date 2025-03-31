@@ -44,21 +44,21 @@ export default class TestDataProvider {
   }
 
   async GetTestSuiteByTestCase(testCaseId: string): Promise<any> {
-    let url = `${this.orgUrl}/_apis/testplan/suites?testCaseId=${testCaseId}`;
-    return this.fetchWithCache(url);
+    let url = `${this.orgUrl.endsWith('/') ? this.orgUrl : `${this.orgUrl}/`}_apis/testplan/suites?testCaseId=${testCaseId}`;
+    return await this.fetchWithCache(url);
   }
 
   async GetTestPlans(project: string): Promise<string> {
     let testPlanUrl: string = `${this.orgUrl}${project}/_apis/test/plans`;
-    return this.fetchWithCache(testPlanUrl);
+    return await this.fetchWithCache(testPlanUrl);
   }
 
   async GetTestSuites(project: string, planId: string): Promise<any> {
     let testsuitesUrl: string = this.orgUrl + project + '/_apis/test/Plans/' + planId + '/suites';
     try {
-      return this.fetchWithCache(testsuitesUrl);
-    } catch (e) {
-      logger.error(`Failed to get test suites: ${e}`);
+      return await this.fetchWithCache(testsuitesUrl);
+    } catch (e: any) {
+      logger.error(`Failed to get test suites: ${e.message}`);
       return null;
     }
   }
@@ -72,7 +72,7 @@ export default class TestDataProvider {
     }
     let url =
       this.orgUrl + '/' + project + '/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=' + planid;
-    return this.fetchWithCache(url);
+    return await this.fetchWithCache(url);
   }
 
   async GetTestSuitesByPlan(project: string, planId: string, recursive: boolean): Promise<any> {
@@ -314,7 +314,7 @@ export default class TestDataProvider {
 
   async GetTestPoint(project: string, planId: string, suiteId: string, testCaseId: string): Promise<any> {
     let testPointUrl: string = `${this.orgUrl}${project}/_apis/test/Plans/${planId}/Suites/${suiteId}/points?testCaseId=${testCaseId}`;
-    return this.fetchWithCache(testPointUrl);
+    return await this.fetchWithCache(testPointUrl);
   }
 
   async CreateTestRun(

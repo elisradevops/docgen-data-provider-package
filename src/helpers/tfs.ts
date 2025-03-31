@@ -150,7 +150,7 @@ export class TFSServices {
         // Handle not found errors
         if (errorMessage.includes('could not be found')) {
           logger.info(`File does not exist, or you do not have permissions to read it.`);
-          return undefined;
+          throw new Error(`File not found or insufficient permissions: ${url}`);
         }
 
         // Check if we should retry

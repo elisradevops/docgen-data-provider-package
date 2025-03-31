@@ -475,17 +475,17 @@ export default class GitDataProvider {
       let body =
         specificItemPath === ''
           ? {
-              itemVersion,
-              compareVersion,
-              includeWorkItems: true,
-            }
+            itemVersion,
+            compareVersion,
+            includeWorkItems: true,
+          }
           : {
-              itemVersion,
-              compareVersion,
-              includeWorkItems: true,
-              itemPath: specificItemPath,
-              historyMode: 'fullHistory',
-            };
+            itemVersion,
+            compareVersion,
+            includeWorkItems: true,
+            itemPath: specificItemPath,
+            historyMode: 'fullHistory',
+          };
 
       let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
       let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
