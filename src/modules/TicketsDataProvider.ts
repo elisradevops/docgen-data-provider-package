@@ -1,17 +1,13 @@
 import { TFSServices } from '../helpers/tfs';
 import { Workitem, QueryTree } from '../models/tfs-data';
-import { Helper, suiteData, Links, Trace, Relations } from '../helpers/helper';
-import { Query, TestSteps } from '../models/tfs-data';
+import { Helper, Links, Trace, Relations } from '../helpers/helper';
+import { Query } from '../models/tfs-data';
 import { QueryType } from '../models/tfs-data';
 import { QueryAllTypes } from '../models/tfs-data';
 import { Column } from '../models/tfs-data';
 import { value } from '../models/tfs-data';
-import { TestCase } from '../models/tfs-data';
-import * as xml2js from 'xml2js';
 
 import logger from '../utils/logger';
-import { log } from 'console';
-import { pid, title } from 'process';
 
 export default class TicketsDataProvider {
   orgUrl: string = '';
@@ -42,7 +38,7 @@ export default class TicketsDataProvider {
       let traceItem: Trace; //= new Trace();
       traceItem = await this.GetParentLink(project, wis[i]);
 
-      if (linksMap.get(wis[i].id).rels.length > 0) {
+      if (linksMap.get(wis[i].id)?.rels.length > 0) {
         relations = await this.PopulateWorkItemsByIds(linksMap.get(wis[i].id).rels, project);
         traceItem.links = await this.GetLinks(project, wis[i], relations);
       }
@@ -626,11 +622,11 @@ export default class TicketsDataProvider {
   } //CreateNewWorkItem
 
   async GetWorkitemAttachments(project: string, id: string) {
-    let attachmentList: Array<string> = [];
+    let attachmentList: Array<any> = [];
     let ticketsDataProvider = new TicketsDataProvider(this.orgUrl, this.token);
     try {
       let wi = await ticketsDataProvider.GetWorkItem(project, id);
-      if (!wi.relations) return [];
+      if (!wi?.relations) return [];
       await Promise.all(
         wi.relations.map(async (relation: any) => {
           if (relation.rel == 'AttachedFile') {
