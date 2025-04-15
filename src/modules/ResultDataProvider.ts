@@ -472,6 +472,7 @@ export default class ResultDataProvider {
    * - `testCaseRevision`: The revision number of the test case.
    * - `filteredFields`: The filtered fields from the work item based on the selected fields.
    * - `relatedRequirements`: An array of related requirements with details such as ID, title, customer ID, and URL.
+   * - `relatedBugs`: An array of related bugs with details such as ID, title, and URL.
    * If an error occurs, logs the error and returns `null`.
    *
    * @throws Logs an error message if the data retrieval fails.
@@ -484,6 +485,7 @@ export default class ResultDataProvider {
       expandWorkItem?: boolean;
       selectedFields?: string[];
       processRelatedRequirements?: boolean;
+      processRelatedBugs?: boolean;
       includeFullErrorStack?: boolean;
     } = {}
   ): Promise<any> {
@@ -498,12 +500,15 @@ export default class ResultDataProvider {
       const expandParam = options.expandWorkItem ? '?$expand=all' : '';
       const wiUrl = `${this.orgUrl}${projectName}/_apis/wit/workItems/${resultData.testCase.id}/revisions/${resultData.testCaseRevision}${expandParam}`;
       const wiByRevision = await TFSServices.getItemContent(wiUrl, this.token);
-
       let filteredFields: any = {};
       let relatedRequirements: any[] = [];
+      let relatedBugs: any[] = [];
 
       // Process selected fields if provided
-      if (options.selectedFields?.length && options.processRelatedRequirements) {
+      if (
+        options.selectedFields?.length &&
+        (options.processRelatedRequirements || options.processRelatedBugs)
+      ) {
         const filtered = options.selectedFields
           ?.filter((field: string) => field.includes('@testCaseWorkItemField'))
           ?.map((field: string) => field.split('@')[0]);
@@ -514,7 +519,10 @@ export default class ResultDataProvider {
           const { relations } = wiByRevision;
           if (relations) {
             for (const relation of relations) {
-              if (relation.rel?.includes('System.LinkTypes.Hierarchy')) {
+              if (
+                relation.rel?.includes('System.LinkTypes.Hierarchy') ||
+                relation.rel?.includes('Microsoft.VSTS.Common.TestedBy')
+              ) {
                 const relatedUrl = relation.url;
                 const wi = await TFSServices.getItemContent(relatedUrl, this.token);
                 if (wi.fields['System.WorkItemType'] === 'Requirement') {
@@ -526,6 +534,11 @@ export default class ResultDataProvider {
                   const customerId = customerFieldKey ? fields[customerFieldKey] : undefined;
                   const url = _links.html.href;
                   relatedRequirements.push({ id, requirementTitle, customerId, url });
+                } else if (wi.fields['System.WorkItemType'] === 'Bug') {
+                  const { id, fields, _links } = wi;
+                  const bugTitle = fields['System.Title'];
+                  const url = _links.html.href;
+                  relatedBugs.push({ id, bugTitle, url });
                 }
               }
             }
@@ -540,7 +553,6 @@ export default class ResultDataProvider {
             }, {});
         }
       }
-
       return {
         ...resultData,
         stepsResultXml: wiByRevision.fields['Microsoft.VSTS.TCM.Steps'] || undefined,
@@ -548,6 +560,7 @@ export default class ResultDataProvider {
         testCaseRevision: resultData.testCaseRevision,
         filteredFields,
         relatedRequirements,
+        relatedBugs,
       };
     } catch (error: any) {
       logger.error(`Error while fetching run result: ${error.message}`);
@@ -1295,6 +1308,7 @@ export default class ResultDataProvider {
       expandWorkItem: true,
       selectedFields,
       processRelatedRequirements: true,
+      processRelatedBugs: true,
       includeFullErrorStack: true,
     });
   }
@@ -1380,6 +1394,7 @@ export default class ResultDataProvider {
           configurationName: fetchedTestCase.configurationName,
           errorMessage: fetchedTestCase.errorMessage,
           relatedRequirements: fetchedTestCase.relatedRequirements,
+          relatedBugs: fetchedTestCase.relatedBugs,
         };
 
         // If we have action results, add step-specific properties
@@ -1453,6 +1468,7 @@ export default class ResultDataProvider {
           errorMessage: undefined as string | undefined,
           configurationName: undefined as string | undefined,
           relatedRequirements: undefined,
+          relatedBugs: undefined,
           lastRunResult: undefined as any,
         };
 
@@ -1491,6 +1507,9 @@ export default class ResultDataProvider {
                 break;
               case 'associatedRequirement':
                 resultDataResponse.relatedRequirements = resultData.relatedRequirements;
+                break;
+              case 'associatedBug':
+                resultDataResponse.relatedBugs = resultData.relatedBugs;
                 break;
               default:
                 logger.debug(`Field ${field} not handled`);
