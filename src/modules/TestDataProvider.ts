@@ -1,6 +1,6 @@
 import { TFSServices } from '../helpers/tfs';
 import { Helper, suiteData } from '../helpers/helper';
-import { TestSteps, createRequirementRelation } from '../models/tfs-data';
+import { TestSteps, createMomRelation, createRequirementRelation } from '../models/tfs-data';
 import { TestCase } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 import logger from '../utils/logger';
@@ -44,7 +44,9 @@ export default class TestDataProvider {
   }
 
   async GetTestSuiteByTestCase(testCaseId: string): Promise<any> {
-    let url = `${this.orgUrl.endsWith('/') ? this.orgUrl : `${this.orgUrl}/`}_apis/testplan/suites?testCaseId=${testCaseId}`;
+    let url = `${
+      this.orgUrl.endsWith('/') ? this.orgUrl : `${this.orgUrl}/`
+    }_apis/testplan/suites?testCaseId=${testCaseId}`;
     return await this.fetchWithCache(url);
   }
 
@@ -102,6 +104,7 @@ export default class TestDataProvider {
     recursive: boolean,
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
+    includeLinkedMom: boolean,
     stepResultDetailsMap?: Map<string, any>
   ): Promise<any> {
     let testCasesList: Array<any> = new Array<any>();
@@ -128,6 +131,7 @@ export default class TestDataProvider {
             suite,
             includeRequirements,
             CustomerRequirementId,
+            includeLinkedMom,
             requirementToTestCaseTraceMap,
             testCaseToRequirementsTraceMap,
             stepResultDetailsMap
@@ -158,6 +162,7 @@ export default class TestDataProvider {
     suite: suiteData,
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
+    includeLinkedMom: boolean,
     requirementToTestCaseTraceMap: Map<string, string[]>,
     testCaseToRequirementsTraceMap: Map<string, string[]>,
     stepResultDetailsMap?: Map<string, any>
@@ -232,6 +237,20 @@ export default class TestDataProvider {
 
                     if (includeRequirements) {
                       testCase.relations.push(newRequirementRelation);
+                    }
+                  }
+                  if (includeLinkedMom) {
+                    const workItemType = relatedItemContent.fields['System.WorkItemType'] || '';
+                    if (workItemType === 'Task' || workItemType === 'Bug') {
+                      const momRequirement = createMomRelation(
+                        relatedItemContent.id,
+                        workItemType,
+                        relatedItemContent.fields['System.Title'],
+                        relatedItemContent._links['html'].href,
+                        //TODO: consult for more fields to add
+                        relatedItemContent.fields['System.State']
+                      );
+                      testCase.relations.push(momRequirement);
                     }
                   }
                 } catch (fetchError) {
