@@ -143,13 +143,21 @@ export class TestCase {
   }
 }
 
-type Relation = RequirementRelation | BugRelation;
+type Relation = RequirementRelation | BugRelation | MomRelation;
 
 type RequirementRelation = {
   type: 'requirement';
   id: string;
   title: string;
   customerId?: string;
+};
+
+type MomRelation = {
+  type: string;
+  id: string;
+  title: string;
+  url: string;
+  status: string;
 };
 
 type BugRelation = {
@@ -165,6 +173,16 @@ export function createRequirementRelation(
   customerId?: string
 ): RequirementRelation {
   return { type: 'requirement', id, title, customerId };
+}
+
+export function createMomRelation(
+  id: string,
+  type: string,
+  title: string,
+  url: string,
+  status: string
+): MomRelation {
+  return { type, id, title, url, status };
 }
 
 export function createBugRelation(id: string, title: string, severity?: string): BugRelation {
