@@ -28,6 +28,11 @@ export default class TicketsDataProvider {
     let url = `${this.orgUrl}${project}/_apis/wit/workitems/${id}?$expand=All`;
     return TFSServices.getItemContent(url, this.token);
   }
+
+  async GetWorkItemByUrl(url: string): Promise<any> {
+    return TFSServices.getItemContent(url, this.token);
+  }
+
   async GetLinksByIds(project: string, ids: any) {
     var trace: Array<Trace> = new Array<Trace>();
     let wis = await this.PopulateWorkItemsByIds(ids, project);

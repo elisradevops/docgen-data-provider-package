@@ -145,6 +145,14 @@ export class TestCase {
 
 type Relation = RequirementRelation | BugRelation | MomRelation;
 
+export type LinkedRelation = {
+  id: string;
+  wiType: string;
+  title: string;
+  url: string;
+  relationType: string;
+};
+
 type RequirementRelation = {
   type: 'requirement';
   id: string;
@@ -166,6 +174,16 @@ type BugRelation = {
   title: string;
   severity?: string;
 };
+
+export function createLinkedRelation(
+  id: string,
+  wiType: string,
+  title: string,
+  url: string,
+  relationType: string
+): LinkedRelation {
+  return { relationType, wiType, id, title, url };
+}
 
 export function createRequirementRelation(
   id: string,

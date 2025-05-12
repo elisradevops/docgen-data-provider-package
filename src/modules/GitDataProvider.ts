@@ -1,7 +1,13 @@
 import { TFSServices } from '../helpers/tfs';
 import TicketsDataProvider from './TicketsDataProvider';
 import logger from '../utils/logger';
-import { GitVersionDescriptor, value } from '../models/tfs-data';
+import {
+  createLinkedRelation,
+  createRequirementRelation,
+  GitVersionDescriptor,
+  LinkedRelation,
+  value,
+} from '../models/tfs-data';
 export default class GitDataProvider {
   orgUrl: string = '';
   token: string = '';
@@ -161,7 +167,12 @@ export default class GitDataProvider {
     return ChangeSetsArray;
   } //GetPullRequestsInCommitRange
 
-  async GetItemsInCommitRange(projectId: string, repositoryId: string, commitRange: any) {
+  async GetItemsInCommitRange(
+    projectId: string,
+    repositoryId: string,
+    commitRange: any,
+    linkedWiOptions: any
+  ) {
     //get all items linked to commits
     let res: any = [];
     let commitChangesArray: any = [];
@@ -170,7 +181,12 @@ export default class GitDataProvider {
       if (commit.workItems) {
         for (const wi of commit.workItems) {
           let populatedItem = await this.ticketsDataProvider.GetWorkItem(projectId, wi.id);
-          let changeSet: any = { workItem: populatedItem, commit: commit };
+          let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
+            linkedWiOptions,
+            populatedItem
+          );
+          logger.debug(`linked items for ${wi.id}: ${JSON.stringify(linkedItems)}`);
+          let changeSet: any = { workItem: populatedItem, commit: commit, linkedItems };
           commitChangesArray.push(changeSet);
         }
       }
@@ -272,7 +288,8 @@ export default class GitDataProvider {
     teamProject: string,
     extendedCommits: any[],
     targetRepo: any,
-    addedWorkItemByIdSet: Set<number>
+    addedWorkItemByIdSet: Set<number>,
+    linkedWiOptions: any = undefined
   ) {
     let commitChangesArray: any[] = [];
     try {
@@ -300,7 +317,17 @@ export default class GitDataProvider {
             targetRepo['projectId'],
             wi.id
           );
-          let changeSet: any = { workItem: populatedWorkItem, commit: commit, targetRepo };
+          let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
+            linkedWiOptions,
+            populatedWorkItem
+          );
+          logger.debug(`linked items for ${wi.id}: ${JSON.stringify(linkedItems)}`);
+          let changeSet: any = {
+            workItem: populatedWorkItem,
+            commit: commit,
+            targetRepo,
+            linkedItems,
+          };
           if (!addedWorkItemByIdSet.has(wi.id)) {
             addedWorkItemByIdSet.add(wi.id);
             commitChangesArray.push(changeSet);
@@ -322,6 +349,86 @@ export default class GitDataProvider {
     }
 
     return commitChangesArray;
+  }
+
+  /**
+   * Creates a list of linked related items for a given work item (SVD).
+   *
+   * This method processes the relations of a populated work item and filters them
+   * based on the provided options for linked work item types and relationships.
+   * It then creates and returns an array of linked relations that match the criteria.
+   *
+   * @param linkedWiOptions - Options for filtering linked work items. Contains:
+   *   - `linkedWiTypes`: Specifies the types of work items to include. Possible values:
+   *     - `'none'`: Do not include any linked work items.
+   *     - `'reqOnly'`: Include only work items of type 'Requirement'.
+   *     - `'featureOnly'`: Include only work items of type 'Feature'.
+   *     - `'both'`: Include both 'Requirement' and 'Feature' work items.
+   *   - `linkedWiRelationship`: Specifies the relationship types to include. Possible values:
+   *     - `'affectsOnly'`: Include only relations with 'Affects' in their name.
+   *     - `'coversOnly'`: Include only relations with 'CoveredBy' in their name.
+   *     - `'both'`: Include both 'Affects' and 'CoveredBy' relations.
+   * @param wi - The work item for which linked related items are being created.
+   * @param populatedWorkItem - The fully populated work item containing its relations.
+   * @returns A promise that resolves to an array of `LinkedRelation` objects representing
+   *          the filtered and created linked related items.
+   */
+  private async createLinkedRelatedItemsForSVD(linkedWiOptions: any, populatedWorkItem: any) {
+    let linkedItems: LinkedRelation[] = [];
+    try {
+      if (linkedWiOptions) {
+        const { linkedWiTypes, linkedWiRelationship } = linkedWiOptions;
+
+        // linkedWiTypes = {'none','reqOnly', 'featureOnly', 'both'};
+        // linkedWiRelationship = {'affectsOnly', 'coversOnly', 'both' };
+        if (linkedWiTypes !== 'none') {
+          logger.debug(`Adding linked work items for ${populatedWorkItem.id}`);
+          if (populatedWorkItem.relations) {
+            for (const relation of populatedWorkItem.relations) {
+              if (!relation.url.includes('/workItems/')) continue;
+
+              const relatedItemContent: any = await this.ticketsDataProvider.GetWorkItemByUrl(relation.url);
+              const wiItemType = relatedItemContent.fields['System.WorkItemType'];
+              const relName = relation.rel;
+
+              const isRequirement = wiItemType === 'Requirement';
+              const isFeature = wiItemType === 'Feature';
+
+              const shouldAddLinkedItem =
+                (linkedWiTypes === 'reqOnly' && isRequirement) ||
+                (linkedWiTypes === 'featureOnly' && isFeature) ||
+                (linkedWiTypes === 'both' && (isRequirement || isFeature));
+
+              if (!shouldAddLinkedItem) continue;
+
+              const linkedItem = createLinkedRelation(
+                relatedItemContent.id,
+                wiItemType,
+                relatedItemContent.fields['System.Title'],
+                relatedItemContent._links?.html?.href || '',
+                relation.attributes['name'] || ''
+              );
+
+              const isAffectsRelation = relName.includes('Affects');
+              const isCoveredByRelation = relName.includes('CoveredBy');
+
+              const shouldAddRelation =
+                (linkedWiRelationship === 'affectsOnly' && isAffectsRelation) ||
+                (linkedWiRelationship === 'coversOnly' && isCoveredByRelation) ||
+                (linkedWiRelationship === 'both' && (isAffectsRelation || isCoveredByRelation));
+
+              if (shouldAddRelation) {
+                linkedItems.push(linkedItem);
+              }
+            }
+          }
+        }
+      }
+    } catch (ex) {
+      logger.error(`Error creating linked related items: ${ex}`);
+    }
+
+    return linkedItems;
   }
 
   async GetCommitsInDateRange(
@@ -475,17 +582,17 @@ export default class GitDataProvider {
       let body =
         specificItemPath === ''
           ? {
-            itemVersion,
-            compareVersion,
-            includeWorkItems: true,
-          }
+              itemVersion,
+              compareVersion,
+              includeWorkItems: true,
+            }
           : {
-            itemVersion,
-            compareVersion,
-            includeWorkItems: true,
-            itemPath: specificItemPath,
-            historyMode: 'fullHistory',
-          };
+              itemVersion,
+              compareVersion,
+              includeWorkItems: true,
+              itemPath: specificItemPath,
+              historyMode: 'fullHistory',
+            };
 
       let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
       let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
