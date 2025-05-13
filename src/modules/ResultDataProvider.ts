@@ -994,9 +994,8 @@ export default class ResultDataProvider {
         for (const wi of workItems || []) {
           const mappedItem = summarizedItemMap.get(wi.id);
           if (!mappedItem || !wi.relations) continue;
-
           const relatedIds = wi.relations
-            .filter((rel: any) => rel?.attributes?.name === 'Tests')
+            .filter((relation: any) => relation?.url?.includes('workItems'))
             .map((rel: any) => rel.url.split('/').pop());
 
           // Fetch related items in batches
