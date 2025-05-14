@@ -1084,7 +1084,8 @@ export default class ResultDataProvider {
           executedDate: dateCompleted,
           performedBy: runBy.displayName,
         };
-      });
+      })
+      .sort((a, b) => new Date(b.executedDate).getTime() - new Date(a.executedDate).getTime());
 
     if (testLogData?.length > 0) {
       // Add openPCR to combined results
