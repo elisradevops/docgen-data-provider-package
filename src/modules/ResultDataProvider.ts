@@ -1,3 +1,4 @@
+import { log } from 'winston';
 import { TFSServices } from '../helpers/tfs';
 import { TestSteps } from '../models/tfs-data';
 import logger from '../utils/logger';
@@ -115,7 +116,9 @@ export default class ResultDataProvider {
       // 3. Calculate Detailed Results Summary
       const testData = await this.fetchTestData(suites, projectName, testPlanId);
       const runResults = await this.fetchAllResultData(testData, projectName);
-      const detailedStepResultsSummary = this.alignStepsWithIterations(testData, runResults);
+      const detailedStepResultsSummary = this.alignStepsWithIterations(testData, runResults)?.filter(
+        (results) => results !== null
+      );
       //Filter out all the results with no comment
       const filteredDetailedResults = detailedStepResultsSummary.filter(
         (result) => result && (result.stepComments !== '' || result.stepStatus === 'Failed')
@@ -206,6 +209,7 @@ export default class ResultDataProvider {
     projectName: string,
     selectedSuiteIds: number[],
     selectedFields: string[],
+    enableRunTestCaseFilter: boolean,
     enableRunStepStatusFilter: boolean
   ) {
     const fetchedTestResults: any[] = [];
@@ -221,19 +225,16 @@ export default class ResultDataProvider {
       const testReporterData = this.alignStepsWithIterationsTestReporter(
         testData,
         runResults,
-        selectedFields
+        selectedFields,
+        !enableRunTestCaseFilter
       );
-
-      const isNotRunStep = (result: any): boolean => {
-        return result && result.stepStatus === 'Not Run';
-      };
 
       // Apply filters sequentially based on enabled flags
       let filteredResults = testReporterData;
 
       // filter: Test step run status
       if (enableRunStepStatusFilter) {
-        filteredResults = filteredResults.filter((result) => !isNotRunStep(result));
+        filteredResults = filteredResults.filter((result) => !this.isNotRunStep(result));
       }
 
       // Use the final filtered results
@@ -503,6 +504,8 @@ export default class ResultDataProvider {
       let filteredFields: any = {};
       let relatedRequirements: any[] = [];
       let relatedBugs: any[] = [];
+      //TODO: Add CR support as well, and also add the logic to fetch the CR details
+      // TODO: Add logic for grabbing the relations from cross projects
 
       // Process selected fields if provided
       if (
@@ -571,6 +574,10 @@ export default class ResultDataProvider {
     }
   }
 
+  private isNotRunStep = (result: any): boolean => {
+    return result && result.stepStatus === 'Not Run';
+  };
+
   /**
    * Fetches result data based on the specified work item (WI) details.
    *
@@ -594,12 +601,12 @@ export default class ResultDataProvider {
    * @returns A human-readable string representing the run status.
    */
   private convertRunStatus(status: string): string {
-    switch (status) {
+    switch (status.toLowerCase()) {
       case 'passed':
         return 'Passed';
       case 'failed':
         return 'Failed';
-      case 'notApplicable':
+      case 'notapplicable':
         return 'Not Applicable';
       default:
         return 'Not Run';
@@ -619,7 +626,7 @@ export default class ResultDataProvider {
    * @returns A string representing the converted outcome.
    */
   private convertUnspecifiedRunStatus(actionResult: any) {
-    if (actionResult.outcome === 'Unspecified' && actionResult.isSharedStepTitle) {
+    if (!actionResult || (actionResult.outcome === 'Unspecified' && actionResult.isSharedStepTitle)) {
       return '';
     }
 
@@ -635,6 +642,7 @@ export default class ResultDataProvider {
    *
    * @param testData - An array of test data objects containing test points and test cases.
    * @param iterations - An array of iteration data used to map test cases to their respective iterations.
+   * @param includeNotRunTestCases - including not run test cases in the results.
    * @param options - Configuration options for processing the test data.
    * @param options.selectedFields - An optional array of selected fields to filter step-level properties.
    * @param options.createResultObject - A callback function to create a result object for each test or step.
@@ -644,6 +652,9 @@ export default class ResultDataProvider {
   private alignStepsWithIterationsBase(
     testData: any[],
     iterations: any[],
+    includeNotRunTestCases: boolean,
+    includeItemsWithNoIterations: boolean,
+    isTestReporter: boolean,
     options: {
       selectedFields?: any[];
       createResultObject: (params: {
@@ -672,49 +683,99 @@ export default class ResultDataProvider {
       for (const point of testItem.testPointsItems) {
         const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
         if (!testCase) continue;
-        const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id);
 
         if (testCase.workItem.workItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
         }
 
-        if (point.lastRunId && point.lastResultId) {
-          const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
-          const fetchedTestCase = iterationsMap[iterationKey];
+        if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
+          this.AppendResults(options, testCase, filteredFields, testItem, point, detailedResults);
+        } else {
+          const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id, isTestReporter);
 
-          if (!fetchedTestCase || !fetchedTestCase.iteration) continue;
+          const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
+          const fetchedTestCase =
+            iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
+
+          // First check if fetchedTestCase exists
+          if (!fetchedTestCase) continue;
+
+          // Then separately check for iteration only if configured not to include items without iterations
+          if (!includeItemsWithNoIterations && !fetchedTestCase.iteration) continue;
 
           // Determine if we should process at step level
-          const shouldProcessSteps = options.shouldProcessStepLevel(fetchedTestCase, filteredFields);
-
-          if (!shouldProcessSteps) {
-            // Create a test-level result object
-            const resultObj = options.createResultObject({
-              testItem,
-              point,
-              fetchedTestCase,
-              filteredFields,
-            });
-            detailedResults.push(resultObj);
-          } else {
-            // Create step-level result objects
-            const { actionResults } = fetchedTestCase?.iteration;
-            for (let i = 0; i < actionResults?.length; i++) {
-              const resultObj = options.createResultObject({
-                testItem,
-                point,
-                fetchedTestCase,
-                actionResult: actionResults[i],
-                filteredFields,
-              });
-              detailedResults.push(resultObj);
-            }
-          }
+          this.AppendResults(options, fetchedTestCase, filteredFields, testItem, point, detailedResults);
         }
       }
     }
     return detailedResults;
+  }
+
+  /**
+   * Appends results to the detailed results array based on the provided options and test data.
+   *
+   * @param options - Configuration options for processing the test data.
+   * @param fetchedTestCase - The fetched test case object containing iteration and action results.
+   * @param filteredFields - A set of filtered fields to include in the result object.
+   * @param testItem - The test item object containing test point information.
+   * @param point - The test point object containing details about the test case.
+   * @param detailedResults - The array to which the result objects will be appended.
+   */
+  private AppendResults(
+    options: {
+      selectedFields?: any[];
+      createResultObject: (params: {
+        testItem: any;
+        point: any;
+        fetchedTestCase: any;
+        actionResult?: any;
+        filteredFields?: Set<string>;
+      }) => any;
+      shouldProcessStepLevel: (fetchedTestCase: any, filteredFields: Set<string>) => boolean;
+    },
+    fetchedTestCase: any,
+    filteredFields: Set<string>,
+    testItem: any,
+    point: any,
+    detailedResults: any[]
+  ) {
+    const shouldProcessSteps = options.shouldProcessStepLevel(fetchedTestCase, filteredFields);
+
+    if (!shouldProcessSteps) {
+      // Create a test-level result object
+      const resultObj = options.createResultObject({
+        testItem,
+        point,
+        fetchedTestCase,
+        filteredFields,
+      });
+      detailedResults.push(resultObj);
+    } else {
+      // Create step-level result objects
+      const { actionResults } = fetchedTestCase?.iteration;
+      const resultObjectsToAdd: any[] = [];
+      for (let i = 0; i < actionResults?.length; i++) {
+        const resultObj = options.createResultObject({
+          testItem,
+          point,
+          fetchedTestCase,
+          actionResult: actionResults[i],
+          filteredFields,
+        });
+        resultObjectsToAdd.push(resultObj);
+      }
+      resultObjectsToAdd.length > 0
+        ? detailedResults.push(...resultObjectsToAdd)
+        : detailedResults.push(
+            options.createResultObject({
+              testItem,
+              point,
+              fetchedTestCase,
+              filteredFields,
+            })
+          );
+    }
   }
 
   /**
@@ -730,7 +791,7 @@ export default class ResultDataProvider {
    * - Creating result objects for each step, including details such as test ID, step identifier, action path, step status, and comments.
    */
   private alignStepsWithIterations(testData: any[], iterations: any[]): any[] {
-    return this.alignStepsWithIterationsBase(testData, iterations, {
+    return this.alignStepsWithIterationsBase(testData, iterations, false, false, false, {
       shouldProcessStepLevel: (fetchedTestCase) =>
         fetchedTestCase != null &&
         fetchedTestCase.iteration != null &&
@@ -758,9 +819,16 @@ export default class ResultDataProvider {
   /**
    * Creates a mapping of iterations by their unique keys.
    */
-  private createIterationsMap(iterations: any[], testCaseId: number): Record<string, any> {
+  private createIterationsMap(
+    iterations: any[],
+    testCaseId: number,
+    isTestReporter: boolean
+  ): Record<string, any> {
     return iterations.reduce((map, iterationItem) => {
-      if (iterationItem.iteration) {
+      if (
+        (isTestReporter && iterationItem.lastRunId && iterationItem.lastResultId) ||
+        iterationItem.iteration
+      ) {
         const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${testCaseId}`;
         map[key] = iterationItem;
       }
@@ -1358,9 +1426,10 @@ export default class ResultDataProvider {
   private alignStepsWithIterationsTestReporter(
     testData: any[],
     iterations: any[],
-    selectedFields: any[]
+    selectedFields: any[],
+    includeNotRunTestCases: boolean
   ): any[] {
-    return this.alignStepsWithIterationsBase(testData, iterations, {
+    return this.alignStepsWithIterationsBase(testData, iterations, includeNotRunTestCases, true, true, {
       selectedFields,
       shouldProcessStepLevel: (fetchedTestCase, filteredFields) =>
         fetchedTestCase != null &&
@@ -1442,82 +1511,99 @@ export default class ResultDataProvider {
         this.fetchResultDataBasedOnWiTestReporter(project, runId, resultId, fields),
       (resultData, testSuiteId, point, selectedFields) => {
         const { lastRunId, lastResultId, configurationName, lastResultDetails } = point;
-        const iteration =
-          resultData.iterationDetails.length > 0
-            ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
-            : undefined;
+        try {
+          const iteration =
+            resultData.iterationDetails.length > 0
+              ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
+              : undefined;
 
-        const resultDataResponse = {
-          testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
-          testCaseId: resultData.testCase.id,
-          testSuiteName: `${resultData.testSuite.name}`,
-          testSuiteId,
-          lastRunId,
-          lastResultId,
-          iteration,
-          testCaseRevision: resultData.testCaseRevision,
-          resolution: resultData.resolutionState,
-          automationStatus: resultData.filteredFields['Microsoft.VSTS.TCM.AutomationStatus'] || undefined,
-          analysisAttachments: resultData.analysisAttachments,
-          failureType: undefined as string | undefined,
-          comment: undefined as string | undefined,
-          priority: undefined,
-          runBy: undefined as string | undefined,
-          executionDate: undefined as string | undefined,
-          testCaseResult: undefined as any | undefined,
-          errorMessage: undefined as string | undefined,
-          configurationName: undefined as string | undefined,
-          relatedRequirements: undefined,
-          relatedBugs: undefined,
-          lastRunResult: undefined as any,
-        };
+          const resultDataResponse = {
+            testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
+            testCaseId: resultData.testCase.id,
+            testSuiteName: `${resultData.testSuite.name}`,
+            testSuiteId,
+            lastRunId,
+            lastResultId,
+            iteration,
+            testCaseRevision: resultData.testCaseRevision,
+            resolution: resultData.resolutionState,
+            automationStatus: resultData.filteredFields['Microsoft.VSTS.TCM.AutomationStatus'] || undefined,
+            analysisAttachments: resultData.analysisAttachments,
+            failureType: undefined as string | undefined,
+            comment: undefined as string | undefined,
+            priority: undefined,
+            runBy: undefined as string | undefined,
+            executionDate: undefined as string | undefined,
+            testCaseResult: undefined as any | undefined,
+            errorMessage: undefined as string | undefined,
+            configurationName: undefined as string | undefined,
+            relatedRequirements: undefined,
+            relatedBugs: undefined,
+            lastRunResult: undefined as any,
+          };
 
-        const filteredFields = selectedFields
-          ?.filter((field: string) => field.includes('@runResultField') || field.includes('@linked'))
-          ?.map((field: string) => field.split('@')[0]);
+          const filteredFields = selectedFields
+            ?.filter((field: string) => field.includes('@runResultField') || field.includes('@linked'))
+            ?.map((field: string) => field.split('@')[0]);
 
-        if (filteredFields && filteredFields.length > 0) {
-          for (const field of filteredFields) {
-            switch (field) {
-              case 'priority':
-                resultDataResponse.priority = resultData.priority;
-                break;
-              case 'testCaseResult':
-                const outcome = resultData.iterationDetails[resultData.iterationDetails.length - 1]?.outcome;
-                resultDataResponse.testCaseResult = {
-                  resultMessage: `${outcome} in Run ${lastRunId}`,
-                  url: `${this.orgUrl}${projectName}/_testManagement/runs?runId=${lastRunId}&_a=resultSummary&resultId=${lastResultId}`,
-                };
-                break;
-              case 'failureType':
-                resultDataResponse.failureType = resultData.failureType;
-                break;
-              case 'testCaseComment':
-                resultDataResponse.comment = resultData.comment || undefined;
-                break;
-              case 'runBy':
-                const runBy = lastResultDetails.runBy.displayName;
-                resultDataResponse.runBy = runBy;
-                break;
-              case 'executionDate':
-                resultDataResponse.executionDate = lastResultDetails.dateCompleted;
-                break;
-              case 'configurationName':
-                resultDataResponse.configurationName = configurationName;
-                break;
-              case 'associatedRequirement':
-                resultDataResponse.relatedRequirements = resultData.relatedRequirements;
-                break;
-              case 'associatedBug':
-                resultDataResponse.relatedBugs = resultData.relatedBugs;
-                break;
-              default:
-                logger.debug(`Field ${field} not handled`);
-                break;
+          if (filteredFields && filteredFields.length > 0) {
+            for (const field of filteredFields) {
+              switch (field) {
+                case 'priority':
+                  resultDataResponse.priority = resultData.priority;
+                  break;
+                case 'testCaseResult':
+                  const outcome =
+                    resultData.iterationDetails[resultData.iterationDetails.length - 1]?.outcome ||
+                    resultData.outcome ||
+                    'NotApplicable';
+                  if (lastRunId === undefined || lastResultId === undefined) {
+                    resultDataResponse.testCaseResult = {
+                      resultMessage: `${this.convertRunStatus(outcome)}`,
+                      url: '',
+                    };
+                  } else {
+                    resultDataResponse.testCaseResult = {
+                      resultMessage: `${this.convertRunStatus(outcome)} in Run ${lastRunId}`,
+                      url: `${this.orgUrl}${projectName}/_testManagement/runs?runId=${lastRunId}&_a=resultSummary&resultId=${lastResultId}`,
+                    };
+                  }
+
+                  break;
+                case 'failureType':
+                  resultDataResponse.failureType = resultData.failureType;
+                  break;
+                case 'testCaseComment':
+                  resultDataResponse.comment = resultData.comment || undefined;
+                  break;
+                case 'runBy':
+                  const runBy = lastResultDetails.runBy.displayName;
+                  resultDataResponse.runBy = runBy;
+                  break;
+                case 'executionDate':
+                  resultDataResponse.executionDate = lastResultDetails.dateCompleted;
+                  break;
+                case 'configurationName':
+                  resultDataResponse.configurationName = configurationName;
+                  break;
+                case 'associatedRequirement':
+                  resultDataResponse.relatedRequirements = resultData.relatedRequirements;
+                  break;
+                case 'associatedBug':
+                  resultDataResponse.relatedBugs = resultData.relatedBugs;
+                  break;
+                default:
+                  logger.debug(`Field ${field} not handled`);
+                  break;
+              }
             }
           }
+          return resultDataResponse;
+        } catch (err: any) {
+          logger.error(`Error occurred while fetching result data: ${err.message}`);
+          logger.error(`Error stack: ${err.stack}`);
+          return null;
         }
-        return resultDataResponse;
       },
       [selectedFields]
     );
