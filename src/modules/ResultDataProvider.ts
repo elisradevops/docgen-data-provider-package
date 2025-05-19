@@ -693,12 +693,21 @@ export default class ResultDataProvider {
         if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
           this.AppendResults(options, testCase, filteredFields, testItem, point, detailedResults);
         } else {
-          logger.debug(`Last run ID: ${point.lastRunId}`);
-          logger.debug(`Last result ID: ${point.lastResultId}`);
+          let iterationKeyPrefix =
+            point.lastRunId && point.lastResultId
+              ? `${point.lastRunId}-${point.lastResultId}`
+              : crypto.randomUUID();
 
-          const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id, isTestReporter);
+          logger.debug(`Iteration key prefix: ${iterationKeyPrefix}`);
 
-          const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
+          const iterationsMap = this.createIterationsMap(
+            iterations,
+            testCase.workItem.id,
+            isTestReporter,
+            iterationKeyPrefix
+          );
+
+          const iterationKey = `${iterationKeyPrefix}-${testCase.workItem.id}`;
           const fetchedTestCase =
             iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
           logger.debug(`Fetched test case: ${JSON.stringify(fetchedTestCase)}`);
@@ -828,14 +837,12 @@ export default class ResultDataProvider {
   private createIterationsMap(
     iterations: any[],
     testCaseId: number,
-    isTestReporter: boolean
+    isTestReporter: boolean,
+    iterationKeyPrefix: string
   ): Record<string, any> {
     return iterations.reduce((map, iterationItem) => {
-      if (
-        (isTestReporter && iterationItem.lastRunId && iterationItem.lastResultId) ||
-        iterationItem.iteration
-      ) {
-        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${testCaseId}`;
+      if (isTestReporter || iterationItem.iteration) {
+        const key = `${iterationKeyPrefix}-${testCaseId}`;
         map[key] = iterationItem;
       }
       return map;
