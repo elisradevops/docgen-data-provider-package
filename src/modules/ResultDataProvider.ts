@@ -688,16 +688,29 @@ export default class ResultDataProvider {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
         }
-
+        logger.debug(`Test case ID: ${testCase.workItem.id}`);
+        logger.debug(`Test case name: ${testCase.workItem.name}`);
         if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
           this.AppendResults(options, testCase, filteredFields, testItem, point, detailedResults);
         } else {
-          const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id, isTestReporter);
+          let iterationKeyPrefix =
+            point.lastRunId && point.lastResultId
+              ? `${point.lastRunId}-${point.lastResultId}`
+              : crypto.randomUUID();
 
-          const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
+          logger.debug(`Iteration key prefix: ${iterationKeyPrefix}`);
+
+          const iterationsMap = this.createIterationsMap(
+            iterations,
+            testCase.workItem.id,
+            isTestReporter,
+            iterationKeyPrefix
+          );
+
+          const iterationKey = `${iterationKeyPrefix}-${testCase.workItem.id}`;
           const fetchedTestCase =
             iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
-
+          logger.debug(`Fetched test case: ${JSON.stringify(fetchedTestCase)}`);
           // First check if fetchedTestCase exists
           if (!fetchedTestCase) continue;
 
@@ -709,6 +722,8 @@ export default class ResultDataProvider {
         }
       }
     }
+
+    logger.debug(`Detailed results: ${JSON.stringify(detailedResults)}`);
     return detailedResults;
   }
 
@@ -822,14 +837,12 @@ export default class ResultDataProvider {
   private createIterationsMap(
     iterations: any[],
     testCaseId: number,
-    isTestReporter: boolean
+    isTestReporter: boolean,
+    iterationKeyPrefix: string
   ): Record<string, any> {
     return iterations.reduce((map, iterationItem) => {
-      if (
-        (isTestReporter && iterationItem.lastRunId && iterationItem.lastResultId) ||
-        iterationItem.iteration
-      ) {
-        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${testCaseId}`;
+      if (isTestReporter || iterationItem.iteration) {
+        const key = `${iterationKeyPrefix}-${testCaseId}`;
         map[key] = iterationItem;
       }
       return map;
