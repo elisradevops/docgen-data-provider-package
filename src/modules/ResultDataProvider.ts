@@ -686,30 +686,20 @@ export default class ResultDataProvider {
 
         if (testCase.workItem.workItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
-          if (!isTestReporter) continue;
+          if (!isTestReporter) {
+            continue;
+          }
         }
-        logger.debug(`Test case ID: ${testCase.workItem.id}`);
+
         if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
           this.AppendResults(options, testCase, filteredFields, testItem, point, detailedResults);
         } else {
-          let iterationKeyPrefix =
-            point.lastRunId && point.lastResultId
-              ? `${point.lastRunId}-${point.lastResultId}`
-              : crypto.randomUUID();
+          const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id, isTestReporter);
 
-          logger.debug(`Iteration key prefix: ${iterationKeyPrefix}`);
-
-          const iterationsMap = this.createIterationsMap(
-            iterations,
-            testCase.workItem.id,
-            isTestReporter,
-            iterationKeyPrefix
-          );
-
-          const iterationKey = `${iterationKeyPrefix}-${testCase.workItem.id}`;
+          const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
           const fetchedTestCase =
             iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
-          logger.debug(`Fetched test case: ${JSON.stringify(fetchedTestCase)}`);
+
           // First check if fetchedTestCase exists
           if (!fetchedTestCase) continue;
 
@@ -721,8 +711,6 @@ export default class ResultDataProvider {
         }
       }
     }
-
-    logger.debug(`Detailed results: ${JSON.stringify(detailedResults)}`);
     return detailedResults;
   }
 
@@ -836,12 +824,14 @@ export default class ResultDataProvider {
   private createIterationsMap(
     iterations: any[],
     testCaseId: number,
-    isTestReporter: boolean,
-    iterationKeyPrefix: string
+    isTestReporter: boolean
   ): Record<string, any> {
     return iterations.reduce((map, iterationItem) => {
-      if (isTestReporter || iterationItem.iteration) {
-        const key = `${iterationKeyPrefix}-${testCaseId}`;
+      if (
+        (isTestReporter && iterationItem.lastRunId && iterationItem.lastResultId) ||
+        iterationItem.iteration
+      ) {
+        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${testCaseId}`;
         map[key] = iterationItem;
       }
       return map;
