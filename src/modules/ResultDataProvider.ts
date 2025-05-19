@@ -686,9 +686,10 @@ export default class ResultDataProvider {
 
         if (testCase.workItem.workItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
-          if (!isTestReporter) continue;
+          continue;
         }
         logger.debug(`Test case ID: ${testCase.workItem.id}`);
+        logger.debug(`Test case name: ${testCase.workItem.name}`);
         if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
           this.AppendResults(options, testCase, filteredFields, testItem, point, detailedResults);
         } else {
