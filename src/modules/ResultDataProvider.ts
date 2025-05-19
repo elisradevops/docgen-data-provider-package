@@ -688,16 +688,20 @@ export default class ResultDataProvider {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           continue;
         }
-
+        logger.debug(`Test case ID: ${testCase.workItem.id}`);
+        logger.debug(`Test case name: ${testCase.workItem.name}`);
         if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
           this.AppendResults(options, testCase, filteredFields, testItem, point, detailedResults);
         } else {
+          logger.debug(`Last run ID: ${point.lastRunId}`);
+          logger.debug(`Last result ID: ${point.lastResultId}`);
+
           const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id, isTestReporter);
 
           const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
           const fetchedTestCase =
             iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
-
+          logger.debug(`Fetched test case: ${JSON.stringify(fetchedTestCase)}`);
           // First check if fetchedTestCase exists
           if (!fetchedTestCase) continue;
 
@@ -709,6 +713,8 @@ export default class ResultDataProvider {
         }
       }
     }
+
+    logger.debug(`Detailed results: ${JSON.stringify(detailedResults)}`);
     return detailedResults;
   }
 
