@@ -686,7 +686,9 @@ export default class ResultDataProvider {
 
         if (testCase.workItem.workItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
-          continue;
+          if (!isTestReporter) {
+            continue;
+          }
         }
 
         if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
