@@ -456,39 +456,12 @@ export default class ResultDataProvider {
     return testCases;
   }
 
-  /**
-   * Fetches result data based on a work item base (WiBase) for a specific test run and result.
-   *
-   * @param projectName - The name of the project in Azure DevOps.
-   * @param runId - The ID of the test run.
-   * @param resultId - The ID of the test result.
-   * @param options - Optional parameters for customizing the data retrieval.
-   * @param options.expandWorkItem - If true, expands all fields of the work item.
-   * @param options.selectedFields - An array of field names to filter the work item fields.
-   * @param options.processRelatedRequirements - If true, processes related requirements linked to the work item.
-   * @param options.includeFullErrorStack - If true, includes the full error stack in the logs when an error occurs.
-   * @returns A promise that resolves to an object containing the fetched result data, including:
-   * - `stepsResultXml`: The test steps result in XML format.
-   * - `analysisAttachments`: Attachments related to the test result analysis.
-   * - `testCaseRevision`: The revision number of the test case.
-   * - `filteredFields`: The filtered fields from the work item based on the selected fields.
-   * - `relatedRequirements`: An array of related requirements with details such as ID, title, customer ID, and URL.
-   * - `relatedBugs`: An array of related bugs with details such as ID, title, and URL.
-   * If an error occurs, logs the error and returns `null`.
-   *
-   * @throws Logs an error message if the data retrieval fails.
-   */
   private async fetchResultDataBasedOnWiBase(
     projectName: string,
     runId: string,
     resultId: string,
-    options: {
-      expandWorkItem?: boolean;
-      selectedFields?: string[];
-      processRelatedRequirements?: boolean;
-      processRelatedBugs?: boolean;
-      includeFullErrorStack?: boolean;
-    } = {}
+    isTestReporter: boolean = false,
+    selectedFields?: string[]
   ): Promise<any> {
     try {
       const url = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/results/${resultId}?detailsToInclude=Iterations`;
@@ -498,21 +471,19 @@ export default class ResultDataProvider {
       const { value: analysisAttachments } = await TFSServices.getItemContent(attachmentsUrl, this.token);
 
       // Build workItem URL with optional expand parameter
-      const expandParam = options.expandWorkItem ? '?$expand=all' : '';
+      const expandParam = isTestReporter ? '?$expand=all' : '';
       const wiUrl = `${this.orgUrl}${projectName}/_apis/wit/workItems/${resultData.testCase.id}/revisions/${resultData.testCaseRevision}${expandParam}`;
       const wiByRevision = await TFSServices.getItemContent(wiUrl, this.token);
       let filteredFields: any = {};
       let relatedRequirements: any[] = [];
       let relatedBugs: any[] = [];
+      let relatedCRs: any[] = [];
       //TODO: Add CR support as well, and also add the logic to fetch the CR details
       // TODO: Add logic for grabbing the relations from cross projects
 
       // Process selected fields if provided
-      if (
-        options.selectedFields?.length &&
-        (options.processRelatedRequirements || options.processRelatedBugs)
-      ) {
-        const filtered = options.selectedFields
+      if (selectedFields?.length && isTestReporter) {
+        const filtered = selectedFields
           ?.filter((field: string) => field.includes('@testCaseWorkItemField'))
           ?.map((field: string) => field.split('@')[0]);
         const selectedFieldSet = new Set(filtered);
@@ -523,7 +494,7 @@ export default class ResultDataProvider {
           if (relations) {
             for (const relation of relations) {
               if (
-                relation.rel?.includes('System.LinkTypes.Hierarchy') ||
+                relation.rel?.includes('System.LinkTypes') ||
                 relation.rel?.includes('Microsoft.VSTS.Common.TestedBy')
               ) {
                 const relatedUrl = relation.url;
@@ -542,6 +513,11 @@ export default class ResultDataProvider {
                   const bugTitle = fields['System.Title'];
                   const url = _links.html.href;
                   relatedBugs.push({ id, bugTitle, url });
+                } else if (wi.fields['System.WorkItemType'] === 'Change Request') {
+                  const { id, fields, _links } = wi;
+                  const crTitle = fields['System.Title'];
+                  const url = _links.html.href;
+                  relatedCRs.push({ id, crTitle, url });
                 }
               }
             }
@@ -564,10 +540,11 @@ export default class ResultDataProvider {
         filteredFields,
         relatedRequirements,
         relatedBugs,
+        relatedCRs,
       };
     } catch (error: any) {
       logger.error(`Error while fetching run result: ${error.message}`);
-      if (options.includeFullErrorStack) {
+      if (isTestReporter) {
         logger.error(`Error stack: ${error.stack}`);
       }
       return null;
@@ -1374,13 +1351,7 @@ export default class ResultDataProvider {
     resultId: string,
     selectedFields?: string[]
   ): Promise<any> {
-    return this.fetchResultDataBasedOnWiBase(projectName, runId, resultId, {
-      expandWorkItem: true,
-      selectedFields,
-      processRelatedRequirements: true,
-      processRelatedBugs: true,
-      includeFullErrorStack: true,
-    });
+    return this.fetchResultDataBasedOnWiBase(projectName, runId, resultId, true, selectedFields);
   }
 
   /**
@@ -1459,6 +1430,7 @@ export default class ResultDataProvider {
           runBy: fetchedTestCase.runBy,
           activatedBy: fetchedTestCase.activatedBy,
           assignedTo: fetchedTestCase.assignedTo,
+          subSystem: fetchedTestCase.subSystem,
           failureType: fetchedTestCase.failureType,
           automationStatus: fetchedTestCase.automationStatus,
           executionDate: fetchedTestCase.executionDate,
@@ -1466,6 +1438,7 @@ export default class ResultDataProvider {
           errorMessage: fetchedTestCase.errorMessage,
           relatedRequirements: fetchedTestCase.relatedRequirements,
           relatedBugs: fetchedTestCase.relatedBugs,
+          relatedCRs: fetchedTestCase.relatedCRs,
         };
 
         // If we have action results, add step-specific properties
@@ -1518,7 +1491,6 @@ export default class ResultDataProvider {
             resultData.iterationDetails.length > 0
               ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
               : undefined;
-
           const resultDataResponse = {
             testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
             testCaseId: resultData.testCase.id,
@@ -1534,6 +1506,8 @@ export default class ResultDataProvider {
             failureType: undefined as string | undefined,
             comment: undefined as string | undefined,
             priority: undefined,
+            assignedTo: resultData.filteredFields['System.AssignedTo'],
+            subSystem: resultData.filteredFields['Custom.SubSystem'],
             runBy: undefined as string | undefined,
             executionDate: undefined as string | undefined,
             testCaseResult: undefined as any | undefined,
@@ -1541,6 +1515,7 @@ export default class ResultDataProvider {
             configurationName: undefined as string | undefined,
             relatedRequirements: undefined,
             relatedBugs: undefined,
+            relatedCRs: undefined,
             lastRunResult: undefined as any,
           };
 
@@ -1582,6 +1557,7 @@ export default class ResultDataProvider {
                   const runBy = lastResultDetails.runBy.displayName;
                   resultDataResponse.runBy = runBy;
                   break;
+
                 case 'executionDate':
                   resultDataResponse.executionDate = lastResultDetails.dateCompleted;
                   break;
@@ -1593,6 +1569,9 @@ export default class ResultDataProvider {
                   break;
                 case 'associatedBug':
                   resultDataResponse.relatedBugs = resultData.relatedBugs;
+                  break;
+                case 'associatedCR':
+                  resultDataResponse.relatedCRs = resultData.relatedCRs;
                   break;
                 default:
                   logger.debug(`Field ${field} not handled`);
