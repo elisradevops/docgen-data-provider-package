@@ -120,9 +120,11 @@ export default class TicketsDataProvider {
       logger.debug(`doctype: ${docType}`);
       switch (docType) {
         case 'STD':
-          return await this.fetchLinkedQueries(queries, false);
+          return await this.fetchLinkedReqTestQueries(queries, false);
         case 'STR':
-          return await this.fetchLinkedQueries(queries, true);
+          const reqTestTrees = await this.fetchLinkedReqTestQueries(queries, false);
+          const openPcrTestTrees = await this.fetchLinkedOpenPcrTestQueries(queries, false);
+          return { reqTestTrees, openPcrTestTrees };
         case 'SVD':
           return await this.fetchAnyQueries(queries);
         default:
@@ -140,13 +142,41 @@ export default class TicketsDataProvider {
    * @param onlyTestReq get only test req
    * @returns ReqTestTree and TestReqTree
    */
-  private async fetchLinkedQueries(queries: any, onlyTestReq: boolean = false) {
-    const { tree1: reqTestTree, tree2: testReqTree } = await this.structureReqTestQueries(
+  private async fetchLinkedReqTestQueries(queries: any, onlyTestReq: boolean = false) {
+    const { tree1: reqTestTree, tree2: testReqTree } = await this.structureFetchedQueries(
       queries,
-      onlyTestReq
+      onlyTestReq,
+      null,
+      ['Requirement'],
+      ['Test Case']
     );
     return { reqTestTree, testReqTree };
   }
+
+  /**
+   * Fetches and structures linked queries related to open PCR (Problem Change Request) tests.
+   *
+   * This method retrieves and organizes the relationships between "Test Case" and
+   * other entities such as "Bug" and "Change Request" into two tree structures.
+   *
+   * @param queries - The input queries to be processed and structured.
+   * @param onlySourceSide - A flag indicating whether to process only the source side of the queries.
+   *                          Defaults to `false`.
+   * @returns An object containing two tree structures:
+   *          - `OpenPcrToTestTree`: The tree representing the relationship from Open PCR to Test Case.
+   *          - `TestToOpenPcrTree`: The tree representing the relationship from Test Case to Open PCR.
+   */
+  private async fetchLinkedOpenPcrTestQueries(queries: any, onlySourceSide: boolean = false) {
+    const { tree1: OpenPcrToTestTree, tree2: TestToOpenPcrTree } = await this.structureFetchedQueries(
+      queries,
+      onlySourceSide,
+      null,
+      ['Bug', 'Change Request'],
+      ['Test Case']
+    );
+    return { OpenPcrToTestTree, TestToOpenPcrTree };
+  }
+
   private async fetchAnyQueries(queries: any) {
     const { tree1: systemOverviewQueryTree, tree2: knownBugsQueryTree } = await this.structureAllQueryPath(
       queries
@@ -756,12 +786,25 @@ export default class TicketsDataProvider {
   }
 
   /**
-   * Recursively structures the query list for the requirement to test case and test case to requirement queries
+   * Recursively structures fetched queries into two hierarchical trees (tree1 and tree2)
+   * based on specific conditions. It processes both leaf and non-leaf nodes, fetching
+   * children if necessary, and builds the trees by matching source and target conditions.
+   *
+   * @param rootQuery - The root query object to process. It may contain children or be a leaf node.
+   * @param onlyTestReq - A boolean flag indicating whether to exclude requirement-to-test-case queries.
+   * @param parentId - The ID of the parent node, used to maintain the hierarchy. Defaults to `null`.
+   * @param sources - An array of source strings used to match queries.
+   * @param targets - An array of target strings used to match queries.
+   * @returns A promise that resolves to an object containing two trees (`tree1` and `tree2`),
+   *          or `null` for each tree if no valid nodes are found.
+   * @throws Logs an error if an exception occurs during processing.
    */
-  private async structureReqTestQueries(
+  private async structureFetchedQueries(
     rootQuery: any,
     onlyTestReq: boolean,
-    parentId: any = null
+    parentId: any = null,
+    sources: string[],
+    targets: string[]
   ): Promise<any> {
     try {
       if (!rootQuery.hasChildren) {
@@ -770,7 +813,7 @@ export default class TicketsDataProvider {
           let tree1Node = null;
           let tree2Node = null;
           // Check if the query is a requirement to test case query
-          if (!onlyTestReq && this.matchesReqTestCondition(wiql)) {
+          if (!onlyTestReq && this.matchesSourceTargetCondition(wiql, sources, targets)) {
             tree1Node = {
               id: rootQuery.id,
               pId: parentId,
@@ -781,7 +824,7 @@ export default class TicketsDataProvider {
               isValidQuery: true,
             };
           }
-          if (this.matchesTestReqCondition(wiql)) {
+          if (this.matchesSourceTargetCondition(wiql, targets, sources)) {
             tree2Node = {
               id: rootQuery.id,
               pId: parentId,
@@ -802,13 +845,15 @@ export default class TicketsDataProvider {
         const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
         const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
         return currentQuery
-          ? await this.structureReqTestQueries(currentQuery, onlyTestReq, currentQuery.id)
+          ? await this.structureFetchedQueries(currentQuery, onlyTestReq, currentQuery.id, sources, targets)
           : { tree1: null, tree2: null };
       }
 
       // Process children recursively
       const childResults = await Promise.all(
-        rootQuery.children.map((child: any) => this.structureReqTestQueries(child, onlyTestReq, rootQuery.id))
+        rootQuery.children.map((child: any) =>
+          this.structureFetchedQueries(child, onlyTestReq, rootQuery.id, sources, targets)
+        )
       );
 
       // Build tree1
@@ -848,20 +893,36 @@ export default class TicketsDataProvider {
     }
   }
 
-  // check if the query is a requirement to test case query
-  private matchesReqTestCondition(wiql: string): boolean {
-    return (
-      wiql.includes("Source.[System.WorkItemType] = 'Requirement'") &&
-      wiql.includes("Target.[System.WorkItemType] = 'Test Case'")
-    );
-  }
+  /**
+   * Determines whether the given WIQL (Work Item Query Language) string matches the specified
+   * source and target conditions. It checks if the WIQL contains references to the specified
+   * source and target work item types.
+   *
+   * @param wiql - The WIQL string to evaluate.
+   * @param source - An array of source work item types to check for in the WIQL.
+   * @param target - An array of target work item types to check for in the WIQL.
+   * @returns A boolean indicating whether the WIQL includes at least one source work item type
+   *          and at least one target work item type.
+   */
+  private matchesSourceTargetCondition(wiql: string, source: string[], target: string[]): boolean {
+    let isSourceIncluded = false;
+    let isTargetIncluded = false;
 
-  // check if the query is a test case to requirement query
-  private matchesTestReqCondition(wiql: string): boolean {
-    return (
-      wiql.includes("Source.[System.WorkItemType] = 'Test Case'") &&
-      wiql.includes("Target.[System.WorkItemType] = 'Requirement'")
-    );
+    for (const src of source) {
+      if (wiql.includes(`Source.[System.WorkItemType] = '${src}'`)) {
+        isSourceIncluded = true;
+        break;
+      }
+    }
+
+    for (const tgt of target) {
+      if (wiql.includes(`Target.[System.WorkItemType] = '${tgt}'`)) {
+        isTargetIncluded = true;
+        break;
+      }
+    }
+
+    return isSourceIncluded && isTargetIncluded;
   }
 
   // check if the query is a bug query

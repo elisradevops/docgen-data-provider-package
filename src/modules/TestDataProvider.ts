@@ -4,20 +4,21 @@ import { TestSteps, createMomRelation, createRequirementRelation } from '../mode
 import { TestCase } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 import logger from '../utils/logger';
-import TestStepParserHelper from '../utils/testStepParserHelper';
+import Utils from '../utils/testStepParserHelper';
+import DataProviderUtils from '../utils/DataProviderUtils';
 const pLimit = require('p-limit');
 
 export default class TestDataProvider {
   orgUrl: string = '';
   token: string = '';
-  private testStepParserHelper: TestStepParserHelper;
+  private testStepParserHelper: Utils;
   private cache = new Map<string, any>(); // Cache for API responses
   private limit = pLimit(10);
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
-    this.testStepParserHelper = new TestStepParserHelper(orgUrl, token);
+    this.testStepParserHelper = new Utils(orgUrl, token);
   }
 
   private async fetchWithCache(url: string, ttlMs = 60000): Promise<any> {
@@ -226,10 +227,14 @@ export default class TestDataProvider {
                     const stringifiedRequirement = JSON.stringify(newRequirementRelation);
 
                     // Add the test case to the requirement-to-test-case trace map
-                    this.addToMap(requirementToTestCaseTraceMap, stringifiedRequirement, stringifiedTestCase);
+                    DataProviderUtils.addToTraceMap(
+                      requirementToTestCaseTraceMap,
+                      stringifiedRequirement,
+                      stringifiedTestCase
+                    );
 
                     // Add the requirement to the test-case-to-requirements trace map
-                    this.addToMap(
+                    DataProviderUtils.addToTraceMap(
                       testCaseToRequirementsTraceMap,
                       stringifiedTestCase,
                       stringifiedRequirement
