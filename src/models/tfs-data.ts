@@ -175,6 +175,13 @@ type BugRelation = {
   severity?: string;
 };
 
+export type OpenPcrRequest = {
+  openPcrMode: string;
+  testToOpenPcrQuery: string;
+  OpenPcrToTestQuery: string;
+  includeCommonColumnsMode: string;
+};
+
 export function createLinkedRelation(
   id: string,
   wiType: string,

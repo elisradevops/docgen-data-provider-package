@@ -1,8 +1,8 @@
-import { log } from 'winston';
+import DataProviderUtils from '../utils/DataProviderUtils';
 import { TFSServices } from '../helpers/tfs';
-import { TestSteps } from '../models/tfs-data';
+import { OpenPcrRequest, TestSteps } from '../models/tfs-data';
 import logger from '../utils/logger';
-import TestStepParserHelper from '../utils/testStepParserHelper';
+import Utils from '../utils/testStepParserHelper';
 const pLimit = require('p-limit');
 /**
  * Provides methods to fetch, process, and summarize test data from Azure DevOps.
@@ -30,11 +30,11 @@ export default class ResultDataProvider {
   orgUrl: string = '';
   token: string = '';
   private limit = pLimit(10);
-  private testStepParserHelper: TestStepParserHelper;
+  private testStepParserHelper: Utils;
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
-    this.testStepParserHelper = new TestStepParserHelper(orgUrl, token);
+    this.testStepParserHelper = new Utils(orgUrl, token);
   }
 
   /**
@@ -46,14 +46,20 @@ export default class ResultDataProvider {
     selectedSuiteIds?: number[],
     addConfiguration: boolean = false,
     isHierarchyGroupName: boolean = false,
-    includeOpenPCRs: boolean = false,
+    openPcrRequest: OpenPcrRequest | null = null,
     includeTestLog: boolean = false,
     stepExecution?: any,
     stepAnalysis?: any,
     includeHardCopyRun: boolean = false
-  ): Promise<any[]> {
+  ): Promise<{
+    combinedResults: any[];
+    openPcrToTestCaseTraceMap: Map<string, string[]>;
+    testCaseToOpenPcrTraceMap: Map<string, string[]>;
+  }> {
     const combinedResults: any[] = [];
     try {
+      const openPcrToTestCaseTraceMap = new Map<string, string[]>();
+      const testCaseToOpenPcrTraceMap = new Map<string, string[]>();
       // Fetch test suites
       const suites = await this.fetchTestSuites(
         testPlanId,
@@ -131,9 +137,14 @@ export default class ResultDataProvider {
         skin: 'detailed-test-result-table',
       });
 
-      if (includeOpenPCRs) {
+      if (openPcrRequest?.openPcrMode === 'linked') {
         //5. Open PCRs data (only if enabled)
-        await this.fetchOpenPcrData(testResultsSummary, projectName, combinedResults);
+        await this.fetchOpenPcrData(
+          testResultsSummary,
+          projectName,
+          openPcrToTestCaseTraceMap,
+          testCaseToOpenPcrTraceMap
+        );
       }
 
       //6. Test Log (only if enabled)
@@ -181,7 +192,7 @@ export default class ResultDataProvider {
         });
       }
 
-      return combinedResults;
+      return { combinedResults, openPcrToTestCaseTraceMap, testCaseToOpenPcrTraceMap };
     } catch (error: any) {
       logger.error(`Error during getCombinedResultsSummary: ${error.message}`);
       if (error.response) {
@@ -478,9 +489,6 @@ export default class ResultDataProvider {
       let relatedRequirements: any[] = [];
       let relatedBugs: any[] = [];
       let relatedCRs: any[] = [];
-      //TODO: Add CR support as well, and also add the logic to fetch the CR details
-      // TODO: Add logic for grabbing the relations from cross projects
-
       // Process selected fields if provided
       if (selectedFields?.length && isTestReporter) {
         const filtered = selectedFields
@@ -1099,21 +1107,32 @@ export default class ResultDataProvider {
    * Fetching Open PCRs data
    */
 
-  private async fetchOpenPcrData(testItems: any[], projectName: string, combinedResults: any[]) {
+  private async fetchOpenPcrData(
+    testItems: any[],
+    projectName: string,
+    openPcrToTestCaseTraceMap: Map<string, string[]>,
+    testCaseToOpenPcrTraceMap: Map<string, string[]>
+  ) {
     const linkedWorkItems = await this.fetchLinkedWi(projectName, testItems);
-    const flatOpenPcrsItems = linkedWorkItems
-      .filter((item) => item.linkItems.length > 0)
-      .flatMap((item) => {
-        const { linkItems, ...restItem } = item;
-        return linkItems.map((linkedItem: any) => ({ ...restItem, ...linkedItem }));
+    for (const wi of linkedWorkItems) {
+      const { linkItems, ...restItem } = wi;
+      const stringifiedTestCase = JSON.stringify({
+        id: restItem.testId,
+        title: restItem.testName,
+        testCaseUrl: restItem.testCaseUrl,
+        runStatus: restItem.runStatus,
       });
-    if (flatOpenPcrsItems?.length > 0) {
-      // Add openPCR to combined results
-      combinedResults.push({
-        contentControl: 'open-pcr-content-control',
-        data: flatOpenPcrsItems,
-        skin: 'open-pcr-table',
-      });
+      for (const linkedItem of linkItems) {
+        const stringifiedPcr = JSON.stringify({
+          pcrId: linkedItem.pcrId,
+          workItemType: linkedItem.workItemType,
+          title: linkedItem.title,
+          severity: linkedItem.severity,
+          pcrUrl: linkedItem.pcrUrl,
+        });
+        DataProviderUtils.addToTraceMap(openPcrToTestCaseTraceMap, stringifiedPcr, stringifiedTestCase);
+        DataProviderUtils.addToTraceMap(testCaseToOpenPcrTraceMap, stringifiedTestCase, stringifiedPcr);
+      }
     }
   }
 
@@ -1323,6 +1342,7 @@ export default class ResultDataProvider {
       testGroupName: testPoint.testGroupName,
       testId: testPoint.testCaseId,
       testName: testPoint.testCaseName,
+      testCaseUrl: testPoint.testCaseUrl,
       runStatus: !includeHardCopyRun ? this.convertRunStatus(testPoint.outcome) : '',
     };
 

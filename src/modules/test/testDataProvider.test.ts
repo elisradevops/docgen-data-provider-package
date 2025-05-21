@@ -1,7 +1,7 @@
 import { TFSServices } from '../../helpers/tfs';
 import { Helper, suiteData } from '../../helpers/helper';
 import TestDataProvider from '../TestDataProvider';
-import TestStepParserHelper from '../../utils/testStepParserHelper';
+import Utils from '../../utils/testStepParserHelper';
 import logger from '../../utils/logger';
 import { TestCase } from '../../models/tfs-data';
 
@@ -41,7 +41,7 @@ describe('TestDataProvider', () => {
       const cache = new Map();
       cache.set(mockUrl, {
         data: mockData,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       });
       (testDataProvider as any).cache = cache;
 
@@ -61,7 +61,7 @@ describe('TestDataProvider', () => {
       const cache = new Map();
       cache.set(mockUrl, {
         data: mockData,
-        timestamp: Date.now() - 70000 // Expired (default TTL is 60000ms)
+        timestamp: Date.now() - 70000, // Expired (default TTL is 60000ms)
       });
       (testDataProvider as any).cache = cache;
 
@@ -127,8 +127,8 @@ describe('TestDataProvider', () => {
       const mockData = {
         value: [
           { id: '456', name: 'Test Plan 1' },
-          { id: '789', name: 'Test Plan 2' }
-        ]
+          { id: '789', name: 'Test Plan 2' },
+        ],
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockData);
 
@@ -150,8 +150,8 @@ describe('TestDataProvider', () => {
       const mockData = {
         value: [
           { id: '123', name: 'Test Suite 1' },
-          { id: '456', name: 'Test Suite 2' }
-        ]
+          { id: '456', name: 'Test Suite 2' },
+        ],
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockData);
 
@@ -182,14 +182,16 @@ describe('TestDataProvider', () => {
   describe('GetTestSuitesForPlan', () => {
     it('should throw error when project is not provided', async () => {
       // Act & Assert
-      await expect(testDataProvider.GetTestSuitesForPlan('', mockPlanId))
-        .rejects.toThrow('Project not selected');
+      await expect(testDataProvider.GetTestSuitesForPlan('', mockPlanId)).rejects.toThrow(
+        'Project not selected'
+      );
     });
 
     it('should throw error when plan ID is not provided', async () => {
       // Act & Assert
-      await expect(testDataProvider.GetTestSuitesForPlan(mockProject, ''))
-        .rejects.toThrow('Plan not selected');
+      await expect(testDataProvider.GetTestSuitesForPlan(mockProject, '')).rejects.toThrow(
+        'Plan not selected'
+      );
     });
 
     it('should return test suites for a plan', async () => {
@@ -197,8 +199,8 @@ describe('TestDataProvider', () => {
       const mockData = {
         testSuites: [
           { id: '123', name: 'Test Suite 1' },
-          { id: '456', name: 'Test Suite 2' }
-        ]
+          { id: '456', name: 'Test Suite 2' },
+        ],
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockData);
 
@@ -251,8 +253,8 @@ describe('TestDataProvider', () => {
         count: 2,
         value: [
           { testCase: { id: '101', name: 'Test Case 1', url: 'url1' } },
-          { testCase: { id: '102', name: 'Test Case 2', url: 'url2' } }
-        ]
+          { testCase: { id: '102', name: 'Test Case 2', url: 'url2' } },
+        ],
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockData);
 
@@ -279,7 +281,7 @@ describe('TestDataProvider', () => {
       const cache = new Map();
       cache.set(mockUrl, {
         data: mockData,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       });
       (testDataProvider as any).cache = cache;
 
@@ -316,5 +318,4 @@ describe('TestDataProvider', () => {
       expect(logger.info).toHaveBeenCalledWith(`Update runId : ${mockRunId} to state : ${mockState}`);
     });
   });
-
 });
