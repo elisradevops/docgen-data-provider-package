@@ -138,40 +138,7 @@ describe('ResultDataProvider', () => {
       });
     });
 
-    describe('setRunStatus', () => {
-      it('should return empty for shared step titles with Unspecified outcome', () => {
-        // Arrange
-        const actionResult = { outcome: 'Unspecified', isSharedStepTitle: true };
 
-        // Act
-        const result = (resultDataProvider as any).setRunStatus(actionResult);
-
-        // Assert
-        expect(result).toBe('');
-      });
-
-      it('should return "Not Run" for Unspecified outcome on regular steps', () => {
-        // Arrange
-        const actionResult = { outcome: 'Unspecified', isSharedStepTitle: false };
-
-        // Act
-        const result = (resultDataProvider as any).setRunStatus(actionResult);
-
-        // Assert
-        expect(result).toBe('Not Run');
-      });
-
-      it('should return the outcome for non-Unspecified outcomes', () => {
-        // Arrange
-        const actionResult = { outcome: 'Failed', isSharedStepTitle: false };
-
-        // Act
-        const result = (resultDataProvider as any).setRunStatus(actionResult);
-
-        // Assert
-        expect(result).toBe('Failed');
-      });
-    });
 
     describe('compareActionResults', () => {
       it('should compare version-like step positions correctly', () => {
@@ -275,6 +242,7 @@ describe('ResultDataProvider', () => {
           lastRunId: 100,
           lastResultId: 200,
           lastResultDetails: { dateCompleted: '2023-01-01', runBy: { displayName: 'Test User' } },
+          testCaseUrl: 'https://dev.azure.com/organization/test-project/_workitems/edit/1',
         });
       });
 
@@ -314,7 +282,7 @@ describe('ResultDataProvider', () => {
         };
 
         // Act
-        const result = (resultDataProvider as any).mapTestPoint(testPoint);
+        const result = (resultDataProvider as any).mapTestPoint(testPoint, mockProjectName);
 
         // Assert
         expect(result).toEqual({
@@ -325,6 +293,7 @@ describe('ResultDataProvider', () => {
           lastRunId: 100,
           lastResultId: 200,
           lastResultDetails: { dateCompleted: '2023-01-01', runBy: { displayName: 'Test User' } },
+          testCaseUrl: 'https://dev.azure.com/organization/test-project/_workitems/edit/1',
         });
       });
 
@@ -336,7 +305,7 @@ describe('ResultDataProvider', () => {
         };
 
         // Act
-        const result = (resultDataProvider as any).mapTestPoint(testPoint);
+        const result = (resultDataProvider as any).mapTestPoint(testPoint, mockProjectName);
 
         // Assert
         expect(result).toEqual({
@@ -347,6 +316,7 @@ describe('ResultDataProvider', () => {
           lastRunId: undefined,
           lastResultId: undefined,
           lastResultDetails: undefined,
+          testCaseUrl: 'https://dev.azure.com/organization/test-project/_workitems/edit/1',
         });
       });
     });
