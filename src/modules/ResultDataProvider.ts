@@ -230,11 +230,15 @@ export default class ResultDataProvider {
     );
     logger.debug(`Selected suite IDs: ${selectedSuiteIds}`);
     try {
+      logger.debug(`Fetching Plan info for test plan ID: ${testPlanId}, project name: ${projectName}`);
       const plan = await this.fetchTestPlanName(testPlanId, projectName);
+      logger.debug(`Fetching Test suites for test plan ID: ${testPlanId}, project name: ${projectName}`);
       const suites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
+      logger.debug(`Fetching test data for test plan ID: ${testPlanId}, project name: ${projectName}`);
       const testData = await this.fetchTestData(suites, projectName, testPlanId, allowCrossTestPlan);
+      logger.debug(`Fetching Run results for test data, project name: ${projectName}`);
       const runResults = await this.fetchAllResultDataTestReporter(testData, projectName, selectedFields);
-
+      logger.debug(`Aligning steps with iterations for test reporter results`);
       const testReporterData = this.alignStepsWithIterationsTestReporter(
         testData,
         runResults,
