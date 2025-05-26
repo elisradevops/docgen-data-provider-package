@@ -120,7 +120,7 @@ export default class ResultDataProvider {
       });
 
       // 3. Calculate Detailed Results Summary
-      const testData = await this.fetchTestData(suites, projectName, testPlanId);
+      const testData = await this.fetchTestData(suites, projectName, testPlanId, false);
       const runResults = await this.fetchAllResultData(testData, projectName);
       const detailedStepResultsSummary = this.alignStepsWithIterations(testData, runResults)?.filter(
         (results) => results !== null
@@ -175,7 +175,7 @@ export default class ResultDataProvider {
       if (stepExecution && stepExecution.isEnabled) {
         const mappedAnalysisData =
           stepExecution.generateAttachments.isEnabled &&
-          stepExecution.generateAttachments.runAttachmentMode !== 'planOnly'
+            stepExecution.generateAttachments.runAttachmentMode !== 'planOnly'
             ? runResults.filter((result) => result.iteration?.attachments?.length > 0)
             : [];
         const mappedAnalysisResultData =
@@ -220,6 +220,7 @@ export default class ResultDataProvider {
     projectName: string,
     selectedSuiteIds: number[],
     selectedFields: string[],
+    allowCrossTestPlan: boolean,
     enableRunTestCaseFilter: boolean,
     enableRunStepStatusFilter: boolean
   ) {
@@ -231,15 +232,15 @@ export default class ResultDataProvider {
     try {
       const plan = await this.fetchTestPlanName(testPlanId, projectName);
       const suites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
-      const testData = await this.fetchTestData(suites, projectName, testPlanId);
+      const testData = await this.fetchTestData(suites, projectName, testPlanId, allowCrossTestPlan);
       const runResults = await this.fetchAllResultDataTestReporter(testData, projectName, selectedFields);
+
       const testReporterData = this.alignStepsWithIterationsTestReporter(
         testData,
         runResults,
         selectedFields,
         !enableRunTestCaseFilter
       );
-
       // Apply filters sequentially based on enabled flags
       let filteredResults = testReporterData;
 
@@ -417,13 +418,85 @@ export default class ResultDataProvider {
       : `${parts[1]}/${parts[parts.length - 1]}`;
   }
 
+  private async fetchCrossTestPoints(projectName: string, testCaseIds: any[]): Promise<any[]> {
+    try {
+      const url = `${this.orgUrl}${projectName}/_apis/test/points?api-version=6.0`
+      if (testCaseIds.length === 0) {
+        return []
+      }
+
+      const requestBody: any = {
+        PointsFilter: {
+          TestcaseIds: testCaseIds,
+        },
+      };
+
+      const { data: value } = await TFSServices.postRequest(url, this.token, 'Post', requestBody, null)
+      if (!value || !value.points || !Array.isArray(value.points)) {
+        logger.warn("No test points found or invalid response format");
+        return [];
+      }
+
+      // Group test points by test case ID
+      const pointsByTestCase = new Map();
+      value.points.forEach((point: any) => {
+        const testCaseId = point.testCase.id;
+
+        if (!pointsByTestCase.has(testCaseId)) {
+          pointsByTestCase.set(testCaseId, []);
+        }
+
+        pointsByTestCase.get(testCaseId).push(point);
+      });
+
+      // For each test case, find the point with the most recent run
+      const latestPoints: any[] = [];
+
+      for (const [testCaseId, points] of pointsByTestCase.entries()) {
+        // Sort by lastTestRun.id (descending), then by lastResult.id (descending)
+        const sortedPoints = points.sort((a: any, b: any) => {
+          // Parse IDs as numbers for proper comparison
+          const aRunId = parseInt(a.lastTestRun?.id || '0');
+          const bRunId = parseInt(b.lastTestRun?.id || '0');
+
+          if (aRunId !== bRunId) {
+            return bRunId - aRunId; // Sort by run ID first (descending)
+          }
+
+          const aResultId = parseInt(a.lastResult?.id || '0');
+          const bResultId = parseInt(b.lastResult?.id || '0');
+          return bResultId - aResultId; // Then by result ID (descending)
+        });
+
+        // Take the first item (most recent)
+        latestPoints.push(sortedPoints[0]);
+      }
+
+      // Fetch detailed information for each test point and map to required format
+      const detailedPoints = await Promise.all(
+        latestPoints.map(async (point: any) => {
+          const url = `${point.url}?witFields=Microsoft.VSTS.TCM.Steps&includePointDetails=true`
+          const detailedPoint = await TFSServices.getItemContent(url, this.token);
+          return this.mapTestPointForCrossPlans(detailedPoint, projectName);
+          // return this.mapTestPointForCrossPlans(detailedPoint, projectName);
+        })
+      );
+      return detailedPoints
+    } catch (err: any) {
+      logger.error(`Error during fetching Cross Test Points: ${err.message}`);
+      logger.error(`Error stack: ${err.stack}`);
+      return [];
+    }
+
+  }
+
   /**
    * Fetches test points by suite ID.
    */
   private async fetchTestPoints(
     projectName: string,
     testPlanId: string,
-    testSuiteId: string
+    testSuiteId: string,
   ): Promise<any[]> {
     try {
       const url = `${this.orgUrl}${projectName}/_apis/testplan/Plans/${testPlanId}/Suites/${testSuiteId}/TestPoint?includePointDetails=true`;
@@ -452,6 +525,39 @@ export default class ResultDataProvider {
     };
   }
 
+
+  /**
+ * Maps raw test point data to a simplified object.
+ */
+  private mapTestPointForCrossPlans(testPoint: any, projectName: string): any {
+    return {
+      testCaseId: testPoint.testCase.id,
+      testCaseName: testPoint.testCase.name,
+      testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${testPoint.testCase.id}`,
+      configurationName: testPoint.configuration?.name,
+      outcome: testPoint.outcome || 'Not Run',
+      lastRunId: testPoint.lastTestRun?.id,
+      lastResultId: testPoint.lastResult?.id,
+      lastResultDetails: testPoint.lastResultDetails || {
+        "duration": 0,
+        "dateCompleted": "0000-00-00T00:00:00.000Z",
+        "runBy": { "displayName": "No tester", "id": "00000000-0000-0000-0000-000000000000" }
+      },
+    };
+  }
+
+  // Helper method to get all test points for a test case
+  async getTestPointsForTestCases(projectName: string, testCaseId: string[]): Promise<any> {
+    const url = `${this.orgUrl}${projectName}/_apis/test/points`;
+    const requestBody = {
+      PointsFilter: {
+        TestcaseIds: testCaseId,
+      },
+    };
+
+    return await TFSServices.postRequest(url, this.token, 'Post', requestBody, null);
+  }
+
   /**
    * Fetches test cases by suite ID.
    */
@@ -475,6 +581,10 @@ export default class ResultDataProvider {
     selectedFields?: string[]
   ): Promise<any> {
     try {
+      if (runId === '0' || resultId === '0') {
+        logger.warn(`Invalid runId or resultId: ${runId}, ${resultId}`);
+        return null;
+      }
       const url = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/results/${resultId}?detailsToInclude=Iterations`;
       const resultData = await TFSServices.getItemContent(url, this.token);
 
@@ -618,8 +728,8 @@ export default class ResultDataProvider {
     return actionResult.outcome === 'Unspecified'
       ? 'Not Run'
       : actionResult.outcome !== 'Not Run'
-      ? actionResult.outcome
-      : '';
+        ? actionResult.outcome
+        : '';
   }
 
   /**
@@ -653,6 +763,7 @@ export default class ResultDataProvider {
     }
   ): any[] {
     const detailedResults: any[] = [];
+
     if (!iterations || iterations?.length === 0) {
       return detailedResults;
     }
@@ -666,7 +777,7 @@ export default class ResultDataProvider {
 
     for (const testItem of testData) {
       for (const point of testItem.testPointsItems) {
-        const testCase = testItem.testCasesItems.find((tc: any) => tc.workItem.id === point.testCaseId);
+        const testCase = testItem.testCasesItems.find((tc: any) => Number(tc.workItem.id) === Number(point.testCaseId));
         if (!testCase) continue;
 
         if (testCase.workItem.workItemFields.length === 0) {
@@ -755,13 +866,13 @@ export default class ResultDataProvider {
       resultObjectsToAdd.length > 0
         ? detailedResults.push(...resultObjectsToAdd)
         : detailedResults.push(
-            options.createResultObject({
-              testItem,
-              point,
-              fetchedTestCase,
-              filteredFields,
-            })
-          );
+          options.createResultObject({
+            testItem,
+            point,
+            fetchedTestCase,
+            filteredFields,
+          })
+        );
     }
   }
 
@@ -826,17 +937,25 @@ export default class ResultDataProvider {
   /**
    * Fetches test data for all suites, including test points and test cases.
    */
-  private async fetchTestData(suites: any[], projectName: string, testPlanId: string): Promise<any[]> {
+  private async fetchTestData(
+    suites: any[],
+    projectName: string,
+    testPlanId: string,
+    fetchCrossPlans: boolean = false
+  ): Promise<any[]> {
     return await Promise.all(
       suites.map((suite) =>
         this.limit(async () => {
           try {
-            const testPointsItems = await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId);
+
             const testCasesItems = await this.fetchTestCasesBySuiteId(
               projectName,
               testPlanId,
               suite.testSuiteId
             );
+            const testCaseIds = testCasesItems.map((testCase: any) => testCase.workItem.id);
+            const testPointsItems = !fetchCrossPlans ? await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId) : await this.fetchCrossTestPoints(projectName, testCaseIds);
+
             return { ...suite, testPointsItems, testCasesItems };
           } catch (error: any) {
             logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
@@ -929,6 +1048,13 @@ export default class ResultDataProvider {
     additionalArgs: any[] = []
   ): Promise<any> {
     const { lastRunId, lastResultId } = point;
+    if (!lastRunId || !lastResultId) {
+      logger.warn(`Invalid lastRunId or lastResultId for point: ${JSON.stringify(point)}`);
+      return null;
+    } else if (lastRunId === '0' || lastResultId === '0') {
+      logger.warn(`Invalid lastRunId or lastResultId: ${lastRunId}, ${lastResultId}`);
+      return null;
+    }
     const resultData = await fetchResultMethod(
       projectName,
       lastRunId.toString(),
