@@ -175,7 +175,7 @@ export default class ResultDataProvider {
       if (stepExecution && stepExecution.isEnabled) {
         const mappedAnalysisData =
           stepExecution.generateAttachments.isEnabled &&
-            stepExecution.generateAttachments.runAttachmentMode !== 'planOnly'
+          stepExecution.generateAttachments.runAttachmentMode !== 'planOnly'
             ? runResults.filter((result) => result.iteration?.attachments?.length > 0)
             : [];
         const mappedAnalysisResultData =
@@ -424,9 +424,9 @@ export default class ResultDataProvider {
 
   private async fetchCrossTestPoints(projectName: string, testCaseIds: any[]): Promise<any[]> {
     try {
-      const url = `${this.orgUrl}${projectName}/_apis/test/points?api-version=6.0`
+      const url = `${this.orgUrl}${projectName}/_apis/test/points?api-version=6.0`;
       if (testCaseIds.length === 0) {
-        return []
+        return [];
       }
 
       const requestBody: any = {
@@ -435,9 +435,9 @@ export default class ResultDataProvider {
         },
       };
 
-      const { data: value } = await TFSServices.postRequest(url, this.token, 'Post', requestBody, null)
+      const { data: value } = await TFSServices.postRequest(url, this.token, 'Post', requestBody, null);
       if (!value || !value.points || !Array.isArray(value.points)) {
-        logger.warn("No test points found or invalid response format");
+        logger.warn('No test points found or invalid response format');
         return [];
       }
 
@@ -479,19 +479,18 @@ export default class ResultDataProvider {
       // Fetch detailed information for each test point and map to required format
       const detailedPoints = await Promise.all(
         latestPoints.map(async (point: any) => {
-          const url = `${point.url}?witFields=Microsoft.VSTS.TCM.Steps&includePointDetails=true`
+          const url = `${point.url}?witFields=Microsoft.VSTS.TCM.Steps&includePointDetails=true`;
           const detailedPoint = await TFSServices.getItemContent(url, this.token);
           return this.mapTestPointForCrossPlans(detailedPoint, projectName);
           // return this.mapTestPointForCrossPlans(detailedPoint, projectName);
         })
       );
-      return detailedPoints
+      return detailedPoints;
     } catch (err: any) {
       logger.error(`Error during fetching Cross Test Points: ${err.message}`);
       logger.error(`Error stack: ${err.stack}`);
       return [];
     }
-
   }
 
   /**
@@ -500,7 +499,7 @@ export default class ResultDataProvider {
   private async fetchTestPoints(
     projectName: string,
     testPlanId: string,
-    testSuiteId: string,
+    testSuiteId: string
   ): Promise<any[]> {
     try {
       const url = `${this.orgUrl}${projectName}/_apis/testplan/Plans/${testPlanId}/Suites/${testSuiteId}/TestPoint?includePointDetails=true`;
@@ -529,10 +528,9 @@ export default class ResultDataProvider {
     };
   }
 
-
   /**
- * Maps raw test point data to a simplified object.
- */
+   * Maps raw test point data to a simplified object.
+   */
   private mapTestPointForCrossPlans(testPoint: any, projectName: string): any {
     return {
       testCaseId: testPoint.testCase.id,
@@ -543,9 +541,9 @@ export default class ResultDataProvider {
       lastRunId: testPoint.lastTestRun?.id,
       lastResultId: testPoint.lastResult?.id,
       lastResultDetails: testPoint.lastResultDetails || {
-        "duration": 0,
-        "dateCompleted": "0000-00-00T00:00:00.000Z",
-        "runBy": { "displayName": "No tester", "id": "00000000-0000-0000-0000-000000000000" }
+        duration: 0,
+        dateCompleted: '0000-00-00T00:00:00.000Z',
+        runBy: { displayName: 'No tester', id: '00000000-0000-0000-0000-000000000000' },
       },
     };
   }
@@ -732,8 +730,8 @@ export default class ResultDataProvider {
     return actionResult.outcome === 'Unspecified'
       ? 'Not Run'
       : actionResult.outcome !== 'Not Run'
-        ? actionResult.outcome
-        : '';
+      ? actionResult.outcome
+      : '';
   }
 
   /**
@@ -781,7 +779,9 @@ export default class ResultDataProvider {
 
     for (const testItem of testData) {
       for (const point of testItem.testPointsItems) {
-        const testCase = testItem.testCasesItems.find((tc: any) => Number(tc.workItem.id) === Number(point.testCaseId));
+        const testCase = testItem.testCasesItems.find(
+          (tc: any) => Number(tc.workItem.id) === Number(point.testCaseId)
+        );
         if (!testCase) continue;
 
         if (testCase.workItem.workItemFields.length === 0) {
@@ -870,13 +870,13 @@ export default class ResultDataProvider {
       resultObjectsToAdd.length > 0
         ? detailedResults.push(...resultObjectsToAdd)
         : detailedResults.push(
-          options.createResultObject({
-            testItem,
-            point,
-            fetchedTestCase,
-            filteredFields,
-          })
-        );
+            options.createResultObject({
+              testItem,
+              point,
+              fetchedTestCase,
+              filteredFields,
+            })
+          );
     }
   }
 
@@ -951,14 +951,15 @@ export default class ResultDataProvider {
       suites.map((suite) =>
         this.limit(async () => {
           try {
-
             const testCasesItems = await this.fetchTestCasesBySuiteId(
               projectName,
               testPlanId,
               suite.testSuiteId
             );
             const testCaseIds = testCasesItems.map((testCase: any) => testCase.workItem.id);
-            const testPointsItems = !fetchCrossPlans ? await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId) : await this.fetchCrossTestPoints(projectName, testCaseIds);
+            const testPointsItems = !fetchCrossPlans
+              ? await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId)
+              : await this.fetchCrossTestPoints(projectName, testCaseIds);
 
             return { ...suite, testPointsItems, testCasesItems };
           } catch (error: any) {
@@ -1269,19 +1270,49 @@ export default class ResultDataProvider {
   /**
    * Fetch Test log data
    */
+  private formatUtcToLocalDateTimeString(utcDateString: string, ianaTimeZone: string): string {
+    try {
+      const date = new Date(utcDateString);
+      return new Intl.DateTimeFormat('en-US', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+        timeZone: ianaTimeZone,
+      }).format(date);
+    } catch (error) {
+      logger.error(`Error formatting date string "${utcDateString}" to timezone "${ianaTimeZone}":`, error);
+      // Fallback to original UTC string if formatting fails, or handle as per requirements
+      return utcDateString;
+    }
+  }
+
   private fetchTestLogData(testItems: any[], combinedResults: any[]) {
-    const testLogData = testItems
+    const processedItems = testItems
       .filter((item) => item.lastResultDetails && item.lastResultDetails.runBy.displayName !== null)
       .map((item) => {
         const { dateCompleted, runBy } = item.lastResultDetails;
         return {
           testId: item.testCaseId,
           testName: item.testCaseName,
-          executedDate: dateCompleted,
+          originalUtcDate: new Date(dateCompleted), // For sorting
+          utcDateString: dateCompleted, // For formatting
           performedBy: runBy.displayName,
         };
       })
-      .sort((a, b) => new Date(b.executedDate).getTime() - new Date(a.executedDate).getTime());
+      .sort((a, b) => b.originalUtcDate.getTime() - a.originalUtcDate.getTime());
+
+    const testLogData = processedItems.map((item) => {
+      return {
+        testId: item.testId,
+        testName: item.testName,
+        executedDate: this.formatUtcToLocalDateTimeString(item.utcDateString, 'Asia/Jerusalem'),
+        performedBy: item.performedBy,
+      };
+    });
 
     if (testLogData?.length > 0) {
       // Add openPCR to combined results
