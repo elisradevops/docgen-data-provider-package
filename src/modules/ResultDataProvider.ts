@@ -618,26 +618,32 @@ export default class ResultDataProvider {
                 relation.rel?.includes('Microsoft.VSTS.Common.TestedBy')
               ) {
                 const relatedUrl = relation.url;
-                const wi = await TFSServices.getItemContent(relatedUrl, this.token);
-                if (wi.fields['System.WorkItemType'] === 'Requirement') {
-                  const { id, fields, _links } = wi;
-                  const requirementTitle = fields['System.Title'];
-                  const customerFieldKey = Object.keys(fields).find((key) =>
-                    key.toLowerCase().includes('customer')
+                try {
+                  const wi = await TFSServices.getItemContent(relatedUrl, this.token);
+                  if (wi.fields['System.WorkItemType'] === 'Requirement') {
+                    const { id, fields, _links } = wi;
+                    const requirementTitle = fields['System.Title'];
+                    const customerFieldKey = Object.keys(fields).find((key) =>
+                      key.toLowerCase().includes('customer')
+                    );
+                    const customerId = customerFieldKey ? fields[customerFieldKey] : undefined;
+                    const url = _links.html.href;
+                    relatedRequirements.push({ id, requirementTitle, customerId, url });
+                  } else if (wi.fields['System.WorkItemType'] === 'Bug') {
+                    const { id, fields, _links } = wi;
+                    const bugTitle = fields['System.Title'];
+                    const url = _links.html.href;
+                    relatedBugs.push({ id, bugTitle, url });
+                  } else if (wi.fields['System.WorkItemType'] === 'Change Request') {
+                    const { id, fields, _links } = wi;
+                    const crTitle = fields['System.Title'];
+                    const url = _links.html.href;
+                    relatedCRs.push({ id, crTitle, url });
+                  }
+                } catch (err: any) {
+                  logger.error(
+                    `Could not append related work item to test case ${wiByRevision.id}: ${err.message}`
                   );
-                  const customerId = customerFieldKey ? fields[customerFieldKey] : undefined;
-                  const url = _links.html.href;
-                  relatedRequirements.push({ id, requirementTitle, customerId, url });
-                } else if (wi.fields['System.WorkItemType'] === 'Bug') {
-                  const { id, fields, _links } = wi;
-                  const bugTitle = fields['System.Title'];
-                  const url = _links.html.href;
-                  relatedBugs.push({ id, bugTitle, url });
-                } else if (wi.fields['System.WorkItemType'] === 'Change Request') {
-                  const { id, fields, _links } = wi;
-                  const crTitle = fields['System.Title'];
-                  const url = _links.html.href;
-                  relatedCRs.push({ id, crTitle, url });
                 }
               }
             }
