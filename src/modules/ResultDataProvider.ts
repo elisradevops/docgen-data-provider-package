@@ -1611,7 +1611,7 @@ export default class ResultDataProvider {
             title: point.testCaseName,
             url: point.testCaseUrl,
             result: fetchedTestCase.testCaseResult,
-            comment: fetchedTestCase.iteration?.comment,
+            comment: fetchedTestCase.comment,
           },
           priority: fetchedTestCase.priority,
           runBy: fetchedTestCase.runBy,
@@ -1632,7 +1632,12 @@ export default class ResultDataProvider {
         if (actionResult) {
           return {
             ...baseObj,
-            stepNo: actionResult.stepPosition,
+            stepNo:
+              filteredFields.has('includeSteps') ||
+              filteredFields.has('stepRunStatus') ||
+              filteredFields.has('testStepComment')
+                ? actionResult.stepPosition
+                : undefined,
             stepAction: filteredFields.has('includeSteps') ? actionResult.action : undefined,
             stepExpected: filteredFields.has('includeSteps') ? actionResult.expected : undefined,
             stepStatus: filteredFields.has('stepRunStatus')
@@ -1691,13 +1696,13 @@ export default class ResultDataProvider {
             automationStatus: resultData.filteredFields['Microsoft.VSTS.TCM.AutomationStatus'] || undefined,
             analysisAttachments: resultData.analysisAttachments,
             failureType: undefined as string | undefined,
-            comment: undefined as string | undefined,
             priority: undefined,
             assignedTo: resultData.filteredFields['System.AssignedTo'],
             subSystem: resultData.filteredFields['Custom.SubSystem'],
             runBy: undefined as string | undefined,
             executionDate: undefined as string | undefined,
             testCaseResult: undefined as any | undefined,
+            comment: undefined as string | undefined,
             errorMessage: undefined as string | undefined,
             configurationName: undefined as string | undefined,
             relatedRequirements: undefined,
@@ -1732,13 +1737,11 @@ export default class ResultDataProvider {
                       url: `${this.orgUrl}${projectName}/_testManagement/runs?runId=${lastRunId}&_a=resultSummary&resultId=${lastResultId}`,
                     };
                   }
-
+                case 'testCaseComment':
+                  resultDataResponse.comment = iteration?.comment;
                   break;
                 case 'failureType':
                   resultDataResponse.failureType = resultData.failureType;
-                  break;
-                case 'testCaseComment':
-                  resultDataResponse.comment = resultData.comment || undefined;
                   break;
                 case 'runBy':
                   const runBy = lastResultDetails.runBy.displayName;
