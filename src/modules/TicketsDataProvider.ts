@@ -118,14 +118,17 @@ export default class TicketsDataProvider {
       else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
       logger.debug(`doctype: ${docType}`);
-      switch (docType) {
-        case 'STD':
+      switch (docType?.toLowerCase()) {
+        case 'std':
           return await this.fetchLinkedReqTestQueries(queries, false);
-        case 'STR':
+        case 'str':
           const reqTestTrees = await this.fetchLinkedReqTestQueries(queries, false);
           const openPcrTestTrees = await this.fetchLinkedOpenPcrTestQueries(queries, false);
           return { reqTestTrees, openPcrTestTrees };
-        case 'SVD':
+        case 'test-reporter':
+          const testAssociatedTree = await this.fetchTestReporterQueries(queries);
+          return { testAssociatedTree };
+        case 'svd':
           return await this.fetchAnyQueries(queries);
         default:
           break;
@@ -175,6 +178,22 @@ export default class TicketsDataProvider {
       ['Test Case']
     );
     return { OpenPcrToTestTree, TestToOpenPcrTree };
+  }
+
+  /**
+   * fetches test reporter queries
+   * @param queries  fetched queries
+   * @returns
+   */
+  private async fetchTestReporterQueries(queries: any) {
+    const { tree1: tree1, tree2: testAssociatedTree } = await this.structureFetchedQueries(
+      queries,
+      true,
+      null,
+      ['Requirement', 'Bug', 'Change Request'],
+      ['Test Case']
+    );
+    return { testAssociatedTree };
   }
 
   private async fetchAnyQueries(queries: any) {
