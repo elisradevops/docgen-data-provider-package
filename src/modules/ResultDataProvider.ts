@@ -226,7 +226,8 @@ export default class ResultDataProvider {
     allowCrossTestPlan: boolean,
     enableRunTestCaseFilter: boolean,
     enableRunStepStatusFilter: boolean,
-    linkedQueryRequest: any
+    linkedQueryRequest: any,
+    errorFilterMode: string = 'none'
   ) {
     const fetchedTestResults: any[] = [];
     logger.debug(
@@ -267,6 +268,31 @@ export default class ResultDataProvider {
       );
       // Apply filters sequentially based on enabled flags
       let filteredResults = testReporterData;
+      //TODO: think of a way to filter out the fields that are not selected from this part of the code and not from the fetchAllResultDataTestReporter function
+      if (errorFilterMode !== 'none') {
+        const onlyFailedTestCaseCondition = (result: any) =>
+          result && result.testCase?.result?.resultMessage?.includes('Failed');
+        const onlyFailedTestStepsCondition = (result: any) => result && result.stepStatus === 'Failed';
+
+        switch (errorFilterMode) {
+          case 'onlyTestCaseResult':
+            logger.debug(`Filtering test reporter results for only test case result`);
+            filteredResults = filteredResults.filter(onlyFailedTestCaseCondition);
+            break;
+          case 'onlyTestStepsResult':
+            logger.debug(`Filtering test reporter results for only test steps result`);
+            filteredResults = filteredResults.filter(onlyFailedTestStepsCondition);
+            break;
+          case 'both':
+            logger.debug(`Filtering test reporter results for both test case and test steps result`);
+            filteredResults = filteredResults
+              ?.filter(onlyFailedTestCaseCondition)
+              ?.filter(onlyFailedTestStepsCondition);
+            break;
+          default:
+            break;
+        }
+      }
 
       // filter: Test step run status
       if (enableRunStepStatusFilter) {
