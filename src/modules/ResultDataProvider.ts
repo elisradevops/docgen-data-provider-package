@@ -3,6 +3,7 @@ import { TFSServices } from '../helpers/tfs';
 import { OpenPcrRequest, TestSteps } from '../models/tfs-data';
 import logger from '../utils/logger';
 import Utils from '../utils/testStepParserHelper';
+import TicketsDataProvider from './TicketsDataProvider';
 const pLimit = require('p-limit');
 /**
  * Provides methods to fetch, process, and summarize test data from Azure DevOps.
@@ -31,10 +32,12 @@ export default class ResultDataProvider {
   token: string = '';
   private limit = pLimit(10);
   private testStepParserHelper: Utils;
+  private testToAssociatedItemMap: Map<number, Set<any>>;
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
     this.testStepParserHelper = new Utils(orgUrl, token);
+    this.testToAssociatedItemMap = new Map<number, Set<any>>();
   }
 
   /**
@@ -222,7 +225,9 @@ export default class ResultDataProvider {
     selectedFields: string[],
     allowCrossTestPlan: boolean,
     enableRunTestCaseFilter: boolean,
-    enableRunStepStatusFilter: boolean
+    enableRunStepStatusFilter: boolean,
+    linkedQueryRequest: any,
+    errorFilterMode: string = 'none'
   ) {
     const fetchedTestResults: any[] = [];
     logger.debug(
@@ -230,6 +235,7 @@ export default class ResultDataProvider {
     );
     logger.debug(`Selected suite IDs: ${selectedSuiteIds}`);
     try {
+      const ticketsDataProvider = new TicketsDataProvider(this.orgUrl, this.token);
       logger.debug(`Fetching Plan info for test plan ID: ${testPlanId}, project name: ${projectName}`);
       const plan = await this.fetchTestPlanName(testPlanId, projectName);
       logger.debug(`Fetching Test suites for test plan ID: ${testPlanId}, project name: ${projectName}`);
@@ -237,7 +243,22 @@ export default class ResultDataProvider {
       logger.debug(`Fetching test data for test plan ID: ${testPlanId}, project name: ${projectName}`);
       const testData = await this.fetchTestData(suites, projectName, testPlanId, allowCrossTestPlan);
       logger.debug(`Fetching Run results for test data, project name: ${projectName}`);
-      const runResults = await this.fetchAllResultDataTestReporter(testData, projectName, selectedFields);
+      const isQueryMode = linkedQueryRequest.linkedQueryMode === 'query';
+      if (isQueryMode) {
+        // Fetch associated items
+        await ticketsDataProvider.GetQueryResultsFromWiql(
+          linkedQueryRequest.testAssociatedQuery.wiql.href,
+          true,
+          this.testToAssociatedItemMap
+        );
+      }
+
+      const runResults = await this.fetchAllResultDataTestReporter(
+        testData,
+        projectName,
+        selectedFields,
+        isQueryMode
+      );
       logger.debug(`Aligning steps with iterations for test reporter results`);
       const testReporterData = this.alignStepsWithIterationsTestReporter(
         testData,
@@ -247,6 +268,31 @@ export default class ResultDataProvider {
       );
       // Apply filters sequentially based on enabled flags
       let filteredResults = testReporterData;
+      //TODO: think of a way to filter out the fields that are not selected from this part of the code and not from the fetchAllResultDataTestReporter function
+      if (errorFilterMode !== 'none') {
+        const onlyFailedTestCaseCondition = (result: any) =>
+          result && result.testCase?.result?.resultMessage?.includes('Failed');
+        const onlyFailedTestStepsCondition = (result: any) => result && result.stepStatus === 'Failed';
+
+        switch (errorFilterMode) {
+          case 'onlyTestCaseResult':
+            logger.debug(`Filtering test reporter results for only test case result`);
+            filteredResults = filteredResults.filter(onlyFailedTestCaseCondition);
+            break;
+          case 'onlyTestStepsResult':
+            logger.debug(`Filtering test reporter results for only test steps result`);
+            filteredResults = filteredResults.filter(onlyFailedTestStepsCondition);
+            break;
+          case 'both':
+            logger.debug(`Filtering test reporter results for both test case and test steps result`);
+            filteredResults = filteredResults
+              ?.filter(onlyFailedTestCaseCondition)
+              ?.filter(onlyFailedTestStepsCondition);
+            break;
+          default:
+            break;
+        }
+      }
 
       // filter: Test step run status
       if (enableRunStepStatusFilter) {
@@ -575,12 +621,27 @@ export default class ResultDataProvider {
     return testCases;
   }
 
+  /**
+   * Fetches result data based on the Work Item Test Reporter.
+   *
+   * This method retrieves detailed result data for a specific test run and result ID,
+   * including related work items, selected fields, and additional processing options.
+   *
+   * @param projectName - The name of the project containing the test run.
+   * @param runId - The unique identifier of the test run.
+   * @param resultId - The unique identifier of the test result.
+   * @param isTestReporter - (Optional) A flag indicating whether the result data is being fetched for the Test Reporter.
+   * @param selectedFields - (Optional) An array of field names to include in the result data.
+   * @param isQueryMode - (Optional) A flag indicating whether the result data is being fetched in query mode.
+   * @returns A promise that resolves to the fetched result data.
+   */
   private async fetchResultDataBasedOnWiBase(
     projectName: string,
     runId: string,
     resultId: string,
     isTestReporter: boolean = false,
-    selectedFields?: string[]
+    selectedFields?: string[],
+    isQueryMode?: boolean
   ): Promise<any> {
     try {
       if (runId === '0' || resultId === '0') {
@@ -602,54 +663,34 @@ export default class ResultDataProvider {
       let relatedBugs: any[] = [];
       let relatedCRs: any[] = [];
       // Process selected fields if provided
-      if (selectedFields?.length && isTestReporter) {
-        const filtered = selectedFields
-          ?.filter((field: string) => field.includes('@testCaseWorkItemField'))
-          ?.map((field: string) => field.split('@')[0]);
-        const selectedFieldSet = new Set(filtered);
-
-        if (selectedFieldSet.size !== 0) {
-          // Process related requirements if needed
+      if (isTestReporter) {
+        // Process related requirements if needed
+        if (isQueryMode) {
+          this.appendQueryRelations(resultData, relatedRequirements, relatedBugs, relatedCRs);
+        } else {
+          const filteredLinkedFields = selectedFields
+            ?.filter((field: string) => field.includes('@linked'))
+            ?.map((field: string) => field.split('@')[0]);
+          const selectedLinkedFieldSet = new Set(filteredLinkedFields);
           const { relations } = wiByRevision;
           if (relations) {
-            for (const relation of relations) {
-              if (
-                relation.rel?.includes('System.LinkTypes') ||
-                relation.rel?.includes('Microsoft.VSTS.Common.TestedBy')
-              ) {
-                const relatedUrl = relation.url;
-                try {
-                  const wi = await TFSServices.getItemContent(relatedUrl, this.token);
-                  if (wi.fields['System.WorkItemType'] === 'Requirement') {
-                    const { id, fields, _links } = wi;
-                    const requirementTitle = fields['System.Title'];
-                    const customerFieldKey = Object.keys(fields).find((key) =>
-                      key.toLowerCase().includes('customer')
-                    );
-                    const customerId = customerFieldKey ? fields[customerFieldKey] : undefined;
-                    const url = _links.html.href;
-                    relatedRequirements.push({ id, requirementTitle, customerId, url });
-                  } else if (wi.fields['System.WorkItemType'] === 'Bug') {
-                    const { id, fields, _links } = wi;
-                    const bugTitle = fields['System.Title'];
-                    const url = _links.html.href;
-                    relatedBugs.push({ id, bugTitle, url });
-                  } else if (wi.fields['System.WorkItemType'] === 'Change Request') {
-                    const { id, fields, _links } = wi;
-                    const crTitle = fields['System.Title'];
-                    const url = _links.html.href;
-                    relatedCRs.push({ id, crTitle, url });
-                  }
-                } catch (err: any) {
-                  logger.error(
-                    `Could not append related work item to test case ${wiByRevision.id}: ${err.message}`
-                  );
-                }
-              }
-            }
+            await this.appendLinkedRelations(
+              relations,
+              relatedRequirements,
+              relatedBugs,
+              relatedCRs,
+              wiByRevision,
+              selectedLinkedFieldSet
+            );
           }
-
-          // Filter fields based on selected field set
+          selectedLinkedFieldSet.clear();
+        }
+        const filteredTestCaseFields = selectedFields
+          ?.filter((field: string) => field.includes('@testCaseWorkItemField'))
+          ?.map((field: string) => field.split('@')[0]);
+        const selectedFieldSet = new Set(filteredTestCaseFields);
+        // Filter fields based on selected field set
+        if (selectedFieldSet.size !== 0) {
           filteredFields = Object.keys(wiByRevision.fields)
             .filter((key) => selectedFieldSet.has(key))
             .reduce((obj: any, key) => {
@@ -657,6 +698,7 @@ export default class ResultDataProvider {
               return obj;
             }, {});
         }
+        selectedFieldSet.clear();
       }
       return {
         ...resultData,
@@ -680,6 +722,95 @@ export default class ResultDataProvider {
   private isNotRunStep = (result: any): boolean => {
     return result && result.stepStatus === 'Not Run';
   };
+
+  private appendQueryRelations(
+    resultData: any,
+    relatedRequirements: any[],
+    relatedBugs: any[],
+    relatedCRs: any[]
+  ) {
+    if (this.testToAssociatedItemMap.size !== 0) {
+      const relatedItemSet = this.testToAssociatedItemMap.get(Number(resultData.testCase.id));
+      if (relatedItemSet) {
+        for (const relatedItem of relatedItemSet) {
+          const { id, fields, _links } = relatedItem;
+          let url = '';
+          switch (fields['System.WorkItemType']) {
+            case 'Requirement':
+              const requirementTitle = fields['System.Title'];
+              url = _links.html.href;
+              relatedRequirements.push({ id, requirementTitle, url });
+              break;
+            case 'Bug':
+              const bugTitle = fields['System.Title'];
+              url = _links.html.href;
+              relatedBugs.push({ id, bugTitle, url });
+              break;
+            case 'Change Request':
+              const crTitle = fields['System.Title'];
+              url = _links.html.href;
+              relatedCRs.push({ id, crTitle, url });
+              break;
+          }
+        }
+      }
+    }
+  }
+
+  private async appendLinkedRelations(
+    relations: any,
+    relatedRequirements: any[],
+    relatedBugs: any[],
+    relatedCRs: any[],
+    wiByRevision: any,
+    selectedLinkedFieldSet: Set<string>
+  ) {
+    for (const relation of relations) {
+      if (
+        relation.rel?.includes('System.LinkTypes') ||
+        relation.rel?.includes('Microsoft.VSTS.Common.TestedBy')
+      ) {
+        const relatedUrl = relation.url;
+        try {
+          const wi = await TFSServices.getItemContent(relatedUrl, this.token);
+          if (wi.fields['System.State'] === 'Closed') {
+            continue;
+          }
+          if (
+            selectedLinkedFieldSet.has('associatedRequirement') &&
+            wi.fields['System.WorkItemType'] === 'Requirement'
+          ) {
+            const { id, fields, _links } = wi;
+            const requirementTitle = fields['System.Title'];
+            const customerFieldKey = Object.keys(fields).find((key) =>
+              key.toLowerCase().includes('customer')
+            );
+            const customerId = customerFieldKey ? fields[customerFieldKey] : undefined;
+            const url = _links.html.href;
+            relatedRequirements.push({ id, requirementTitle, customerId, url });
+          } else if (
+            selectedLinkedFieldSet.has('associatedBug') &&
+            wi.fields['System.WorkItemType'] === 'Bug'
+          ) {
+            const { id, fields, _links } = wi;
+            const bugTitle = fields['System.Title'];
+            const url = _links.html.href;
+            relatedBugs.push({ id, bugTitle, url });
+          } else if (
+            selectedLinkedFieldSet.has('associatedCR') &&
+            wi.fields['System.WorkItemType'] === 'Change Request'
+          ) {
+            const { id, fields, _links } = wi;
+            const crTitle = fields['System.Title'];
+            const url = _links.html.href;
+            relatedCRs.push({ id, crTitle, url });
+          }
+        } catch (err: any) {
+          logger.error(`Could not append related work item to test case ${wiByRevision.id}: ${err.message}`);
+        }
+      }
+    }
+  }
 
   /**
    * Fetches result data based on the specified work item (WI) details.
@@ -1536,9 +1667,10 @@ export default class ResultDataProvider {
     projectName: string,
     runId: string,
     resultId: string,
-    selectedFields?: string[]
+    selectedFields?: string[],
+    isQueryMode?: boolean
   ): Promise<any> {
-    return this.fetchResultDataBasedOnWiBase(projectName, runId, resultId, true, selectedFields);
+    return this.fetchResultDataBasedOnWiBase(projectName, runId, resultId, true, selectedFields, isQueryMode);
   }
 
   /**
@@ -1556,14 +1688,15 @@ export default class ResultDataProvider {
   private async fetchAllResultDataTestReporter(
     testData: any[],
     projectName: string,
-    selectedFields?: string[]
+    selectedFields?: string[],
+    isQueryMode?: boolean
   ): Promise<any[]> {
     return this.fetchAllResultDataBase(
       testData,
       projectName,
-      (projectName, testSuiteId, point, selectedFields) =>
-        this.fetchResultDataForTestReporter(projectName, testSuiteId, point, selectedFields),
-      [selectedFields]
+      (projectName, testSuiteId, point, selectedFields, isQueryMode) =>
+        this.fetchResultDataForTestReporter(projectName, testSuiteId, point, selectedFields, isQueryMode),
+      [selectedFields, isQueryMode]
     );
   }
 
@@ -1573,7 +1706,7 @@ export default class ResultDataProvider {
    *
    * @param testData - An array of test data objects to be processed.
    * @param iterations - An array of iteration objects to align with the test data.
-   * @param selectedFields - An array of selected fields to determine which properties to include in the result.
+   * @param selectedFields - An array of selected fields to determine which properties to include in the response.
    * @returns An array of structured result objects containing aligned test steps and iterations.
    *
    * The method uses a base alignment function and provides custom logic for:
@@ -1604,7 +1737,7 @@ export default class ResultDataProvider {
         actionResult,
         filteredFields = new Set(),
       }) => {
-        const baseObj = {
+        const baseObj: any = {
           suiteName: testItem.testGroupName,
           testCase: {
             id: point.testCaseId,
@@ -1616,16 +1749,14 @@ export default class ResultDataProvider {
           priority: fetchedTestCase.priority,
           runBy: fetchedTestCase.runBy,
           activatedBy: fetchedTestCase.activatedBy,
-          assignedTo: fetchedTestCase.assignedTo,
-          subSystem: fetchedTestCase.subSystem,
           failureType: fetchedTestCase.failureType,
-          automationStatus: fetchedTestCase.automationStatus,
           executionDate: fetchedTestCase.executionDate,
           configurationName: fetchedTestCase.configurationName,
           errorMessage: fetchedTestCase.errorMessage,
           relatedRequirements: fetchedTestCase.relatedRequirements,
           relatedBugs: fetchedTestCase.relatedBugs,
           relatedCRs: fetchedTestCase.relatedCRs,
+          ...fetchedTestCase.customFields,
         };
 
         // If we have action results, add step-specific properties
@@ -1668,14 +1799,15 @@ export default class ResultDataProvider {
     projectName: string,
     testSuiteId: string,
     point: any,
-    selectedFields?: string[]
+    selectedFields?: string[],
+    isQueryMode?: boolean
   ) {
     return this.fetchResultDataBase(
       projectName,
       testSuiteId,
       point,
-      (project, runId, resultId, fields) =>
-        this.fetchResultDataBasedOnWiTestReporter(project, runId, resultId, fields),
+      (project, runId, resultId, fields, isQueryMode) =>
+        this.fetchResultDataBasedOnWiTestReporter(project, runId, resultId, fields, isQueryMode),
       (resultData, testSuiteId, point, selectedFields) => {
         const { lastRunId, lastResultId, configurationName, lastResultDetails } = point;
         try {
@@ -1683,7 +1815,7 @@ export default class ResultDataProvider {
             resultData.iterationDetails.length > 0
               ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
               : undefined;
-          const resultDataResponse = {
+          const resultDataResponse: any = {
             testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
             testCaseId: resultData.testCase.id,
             testSuiteName: `${resultData.testSuite.name}`,
@@ -1693,26 +1825,41 @@ export default class ResultDataProvider {
             iteration,
             testCaseRevision: resultData.testCaseRevision,
             resolution: resultData.resolutionState,
-            automationStatus: resultData.filteredFields['Microsoft.VSTS.TCM.AutomationStatus'] || undefined,
-            analysisAttachments: resultData.analysisAttachments,
             failureType: undefined as string | undefined,
             priority: undefined,
-            assignedTo: resultData.filteredFields['System.AssignedTo'],
-            subSystem: resultData.filteredFields['Custom.SubSystem'],
             runBy: undefined as string | undefined,
             executionDate: undefined as string | undefined,
             testCaseResult: undefined as any | undefined,
             comment: undefined as string | undefined,
             errorMessage: undefined as string | undefined,
             configurationName: undefined as string | undefined,
-            relatedRequirements: undefined,
-            relatedBugs: undefined,
-            relatedCRs: undefined,
+            relatedRequirements: resultData.relatedRequirements || undefined,
+            relatedBugs: resultData.relatedBugs || undefined,
+            relatedCRs: resultData.relatedCRs || undefined,
             lastRunResult: undefined as any,
+            customFields: {}, // Create an object to store custom fields
           };
 
+          // Process all custom fields from resultData.filteredFields
+          if (resultData.filteredFields) {
+            for (const [fieldName, fieldValue] of Object.entries(resultData.filteredFields)) {
+              if (fieldValue !== undefined && fieldValue !== null) {
+                // Convert Microsoft.VSTS.TCM.AutomationStatus to automationStatus
+                // or System.AssignedTo to assignedTo
+                const nameParts = fieldName.split('.');
+                let propertyName = nameParts[nameParts.length - 1];
+
+                // Convert to camelCase (first letter lowercase)
+                propertyName = propertyName.charAt(0).toLowerCase() + propertyName.slice(1);
+
+                // Add to customFields object
+                resultDataResponse.customFields[propertyName] = fieldValue;
+              }
+            }
+          }
+
           const filteredFields = selectedFields
-            ?.filter((field: string) => field.includes('@runResultField') || field.includes('@linked'))
+            ?.filter((field: string) => field.includes('@runResultField'))
             ?.map((field: string) => field.split('@')[0]);
 
           if (filteredFields && filteredFields.length > 0) {
@@ -1747,21 +1894,11 @@ export default class ResultDataProvider {
                   const runBy = lastResultDetails.runBy.displayName;
                   resultDataResponse.runBy = runBy;
                   break;
-
                 case 'executionDate':
                   resultDataResponse.executionDate = lastResultDetails.dateCompleted;
                   break;
                 case 'configurationName':
                   resultDataResponse.configurationName = configurationName;
-                  break;
-                case 'associatedRequirement':
-                  resultDataResponse.relatedRequirements = resultData.relatedRequirements;
-                  break;
-                case 'associatedBug':
-                  resultDataResponse.relatedBugs = resultData.relatedBugs;
-                  break;
-                case 'associatedCR':
-                  resultDataResponse.relatedCRs = resultData.relatedCRs;
                   break;
                 default:
                   logger.debug(`Field ${field} not handled`);
@@ -1776,7 +1913,7 @@ export default class ResultDataProvider {
           return null;
         }
       },
-      [selectedFields]
+      [selectedFields, isQueryMode]
     );
   }
 }

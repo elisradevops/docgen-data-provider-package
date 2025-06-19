@@ -118,20 +118,59 @@ export default class TicketsDataProvider {
       else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
       logger.debug(`doctype: ${docType}`);
-      switch (docType) {
-        case 'STD':
+      switch (docType?.toLowerCase()) {
+        case 'std':
           return await this.fetchLinkedReqTestQueries(queries, false);
-        case 'STR':
+        case 'str':
           const reqTestTrees = await this.fetchLinkedReqTestQueries(queries, false);
           const openPcrTestTrees = await this.fetchLinkedOpenPcrTestQueries(queries, false);
           return { reqTestTrees, openPcrTestTrees };
-        case 'SVD':
+        case 'test-reporter':
+          const testAssociatedTree = await this.fetchTestReporterQueries(queries);
+          return { testAssociatedTree };
+        case 'svd':
           return await this.fetchAnyQueries(queries);
         default:
           break;
       }
     } catch (err: any) {
       logger.error(`Error occurred during fetching shared queries: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Fetches the fields of a specific work item type.
+   *
+   * @param project - The project name.
+   * @param itemType - The work item type.
+   * @returns An array of objects containing the field name and reference name.
+   */
+
+  async GetFieldsByType(project: string, itemType: string) {
+    try {
+      let url = `${this.orgUrl}${project}/_apis/wit/workitemtypes/${itemType}/fields`;
+      const { value: fields } = await TFSServices.getItemContent(url, this.token);
+      return (
+        fields
+          // filter out the fields that are not relevant for the user
+          .filter(
+            (field: any) =>
+              field.name !== 'ID' &&
+              field.name !== 'Title' &&
+              field.name !== 'Description' &&
+              field.name !== 'Work Item Type' &&
+              field.name !== 'Steps'
+          )
+          .map((field: any) => {
+            return {
+              text: `${field.name} (${itemType})`,
+              key: field.referenceName,
+            };
+          })
+      );
+    } catch (err: any) {
+      logger.error(`Error occurred during fetching fields by type: ${err.message}`);
       throw err;
     }
   }
@@ -175,6 +214,22 @@ export default class TicketsDataProvider {
       ['Test Case']
     );
     return { OpenPcrToTestTree, TestToOpenPcrTree };
+  }
+
+  /**
+   * fetches test reporter queries
+   * @param queries  fetched queries
+   * @returns
+   */
+  private async fetchTestReporterQueries(queries: any) {
+    const { tree1: tree1, tree2: testAssociatedTree } = await this.structureFetchedQueries(
+      queries,
+      true,
+      null,
+      ['Requirement', 'Bug', 'Change Request'],
+      ['Test Case']
+    );
+    return { testAssociatedTree };
   }
 
   private async fetchAnyQueries(queries: any) {
