@@ -1680,7 +1680,7 @@ export default class ResultDataProvider {
    *
    * @param testData - An array of test data objects to be processed.
    * @param iterations - An array of iteration objects to align with the test data.
-   * @param selectedFields - An array of selected fields to determine which properties to include in the result.
+   * @param selectedFields - An array of selected fields to determine which properties to include in the response.
    * @returns An array of structured result objects containing aligned test steps and iterations.
    *
    * The method uses a base alignment function and provides custom logic for:
@@ -1711,7 +1711,7 @@ export default class ResultDataProvider {
         actionResult,
         filteredFields = new Set(),
       }) => {
-        const baseObj = {
+        const baseObj: any = {
           suiteName: testItem.testGroupName,
           testCase: {
             id: point.testCaseId,
@@ -1723,16 +1723,14 @@ export default class ResultDataProvider {
           priority: fetchedTestCase.priority,
           runBy: fetchedTestCase.runBy,
           activatedBy: fetchedTestCase.activatedBy,
-          assignedTo: fetchedTestCase.assignedTo,
-          subSystem: fetchedTestCase.subSystem,
           failureType: fetchedTestCase.failureType,
-          automationStatus: fetchedTestCase.automationStatus,
           executionDate: fetchedTestCase.executionDate,
           configurationName: fetchedTestCase.configurationName,
           errorMessage: fetchedTestCase.errorMessage,
           relatedRequirements: fetchedTestCase.relatedRequirements,
           relatedBugs: fetchedTestCase.relatedBugs,
           relatedCRs: fetchedTestCase.relatedCRs,
+          ...fetchedTestCase.customFields,
         };
 
         // If we have action results, add step-specific properties
@@ -1791,7 +1789,7 @@ export default class ResultDataProvider {
             resultData.iterationDetails.length > 0
               ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
               : undefined;
-          const resultDataResponse = {
+          const resultDataResponse: any = {
             testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
             testCaseId: resultData.testCase.id,
             testSuiteName: `${resultData.testSuite.name}`,
@@ -1801,12 +1799,8 @@ export default class ResultDataProvider {
             iteration,
             testCaseRevision: resultData.testCaseRevision,
             resolution: resultData.resolutionState,
-            automationStatus: resultData.filteredFields['Microsoft.VSTS.TCM.AutomationStatus'] || undefined,
-            analysisAttachments: resultData.analysisAttachments,
             failureType: undefined as string | undefined,
             priority: undefined,
-            assignedTo: resultData.filteredFields['System.AssignedTo'],
-            subSystem: resultData.filteredFields['Custom.SubSystem'],
             runBy: undefined as string | undefined,
             executionDate: undefined as string | undefined,
             testCaseResult: undefined as any | undefined,
@@ -1817,7 +1811,26 @@ export default class ResultDataProvider {
             relatedBugs: resultData.relatedBugs || undefined,
             relatedCRs: resultData.relatedCRs || undefined,
             lastRunResult: undefined as any,
+            customFields: {}, // Create an object to store custom fields
           };
+
+          // Process all custom fields from resultData.filteredFields
+          if (resultData.filteredFields) {
+            for (const [fieldName, fieldValue] of Object.entries(resultData.filteredFields)) {
+              if (fieldValue !== undefined && fieldValue !== null) {
+                // Convert Microsoft.VSTS.TCM.AutomationStatus to automationStatus
+                // or System.AssignedTo to assignedTo
+                const nameParts = fieldName.split('.');
+                let propertyName = nameParts[nameParts.length - 1];
+
+                // Convert to camelCase (first letter lowercase)
+                propertyName = propertyName.charAt(0).toLowerCase() + propertyName.slice(1);
+
+                // Add to customFields object
+                resultDataResponse.customFields[propertyName] = fieldValue;
+              }
+            }
+          }
 
           const filteredFields = selectedFields
             ?.filter((field: string) => field.includes('@runResultField'))
@@ -1855,22 +1868,12 @@ export default class ResultDataProvider {
                   const runBy = lastResultDetails.runBy.displayName;
                   resultDataResponse.runBy = runBy;
                   break;
-
                 case 'executionDate':
                   resultDataResponse.executionDate = lastResultDetails.dateCompleted;
                   break;
                 case 'configurationName':
                   resultDataResponse.configurationName = configurationName;
                   break;
-                // case 'associatedRequirement':
-                //   resultDataResponse.relatedRequirements = resultData.relatedRequirements;
-                //   break;
-                // case 'associatedBug':
-                //   resultDataResponse.relatedBugs = resultData.relatedBugs;
-                //   break;
-                // case 'associatedCR':
-                //   resultDataResponse.relatedCRs = resultData.relatedCRs;
-                //   break;
                 default:
                   logger.debug(`Field ${field} not handled`);
                   break;

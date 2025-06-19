@@ -140,6 +140,42 @@ export default class TicketsDataProvider {
   }
 
   /**
+   * Fetches the fields of a specific work item type.
+   *
+   * @param project - The project name.
+   * @param itemType - The work item type.
+   * @returns An array of objects containing the field name and reference name.
+   */
+
+  async GetFieldsByType(project: string, itemType: string) {
+    try {
+      let url = `${this.orgUrl}${project}/_apis/wit/workitemtypes/${itemType}/fields`;
+      const { value: fields } = await TFSServices.getItemContent(url, this.token);
+      return (
+        fields
+          // filter out the fields that are not relevant for the user
+          .filter(
+            (field: any) =>
+              field.name !== 'ID' &&
+              field.name !== 'Title' &&
+              field.name !== 'Description' &&
+              field.name !== 'Work Item Type' &&
+              field.name !== 'Steps'
+          )
+          .map((field: any) => {
+            return {
+              text: `${field.name} (${itemType})`,
+              key: field.referenceName,
+            };
+          })
+      );
+    } catch (err: any) {
+      logger.error(`Error occurred during fetching fields by type: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
    * fetches linked queries
    * @param queries fetched queries
    * @param onlyTestReq get only test req
