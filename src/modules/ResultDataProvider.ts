@@ -268,26 +268,39 @@ export default class ResultDataProvider {
       );
       // Apply filters sequentially based on enabled flags
       let filteredResults = testReporterData;
-      //TODO: think of a way to filter out the fields that are not selected from this part of the code and not from the fetchAllResultDataTestReporter function
       if (errorFilterMode !== 'none') {
-        const onlyFailedTestCaseCondition = (result: any) =>
-          result && result.testCase?.result?.resultMessage?.includes('Failed');
-        const onlyFailedTestStepsCondition = (result: any) => result && result.stepStatus === 'Failed';
-
         switch (errorFilterMode) {
           case 'onlyTestCaseResult':
             logger.debug(`Filtering test reporter results for only test case result`);
-            filteredResults = filteredResults.filter(onlyFailedTestCaseCondition);
+            filteredResults = filteredResults.filter(
+              (result: any) =>
+                result &&
+                ((result.testCase?.comment && result.testCase.comment !== '') ||
+                  result.testCase?.result?.resultMessage?.includes('Failed'))
+            );
             break;
           case 'onlyTestStepsResult':
             logger.debug(`Filtering test reporter results for only test steps result`);
-            filteredResults = filteredResults.filter(onlyFailedTestStepsCondition);
+            filteredResults = filteredResults.filter(
+              (result: any) =>
+                result &&
+                ((result.stepComments && result.stepComments !== '') || result.stepStatus === 'Failed')
+            );
             break;
           case 'both':
             logger.debug(`Filtering test reporter results for both test case and test steps result`);
             filteredResults = filteredResults
-              ?.filter(onlyFailedTestCaseCondition)
-              ?.filter(onlyFailedTestStepsCondition);
+              ?.filter(
+                (result: any) =>
+                  result &&
+                  ((result.testCase?.comment && result.testCase.comment !== '') ||
+                    result.testCase?.result?.resultMessage?.includes('Failed'))
+              )
+              ?.filter(
+                (result: any) =>
+                  result &&
+                  ((result.stepComments && result.stepComments !== '') || result.stepStatus === 'Failed')
+              );
             break;
           default:
             break;
@@ -1829,7 +1842,7 @@ export default class ResultDataProvider {
             priority: undefined,
             runBy: undefined as string | undefined,
             executionDate: undefined as string | undefined,
-            testCaseResult: undefined as any | undefined,
+            testCaseResult: undefined as any,
             comment: undefined as string | undefined,
             errorMessage: undefined as string | undefined,
             configurationName: undefined as string | undefined,
