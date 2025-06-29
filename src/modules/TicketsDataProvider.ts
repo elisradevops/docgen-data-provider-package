@@ -767,6 +767,7 @@ export default class TicketsDataProvider {
               value: rootQuery.name,
               title: rootQuery.name,
               queryType: rootQuery.queryType,
+              columns: rootQuery.columns,
               wiql: rootQuery._links.wiql ?? undefined,
               isValidQuery: true,
             };
@@ -777,6 +778,7 @@ export default class TicketsDataProvider {
             value: rootQuery.name,
             title: rootQuery.name,
             queryType: rootQuery.queryType,
+            columns: rootQuery.columns,
             wiql: rootQuery._links.wiql ?? undefined,
             isValidQuery: true,
           };
@@ -812,6 +814,7 @@ export default class TicketsDataProvider {
               value: rootQuery.name,
               title: rootQuery.name,
               children: sysOverviewNodeTreeChildren,
+              columns: rootQuery.columns,
             }
           : null;
 
@@ -826,6 +829,7 @@ export default class TicketsDataProvider {
               value: rootQuery.name,
               title: rootQuery.name,
               children: knownBugsTreeChildren,
+              columns: rootQuery.columns,
             }
           : null;
 
@@ -875,6 +879,7 @@ export default class TicketsDataProvider {
               value: rootQuery.name,
               title: rootQuery.name,
               queryType: rootQuery.queryType,
+              columns: rootQuery.columns,
               wiql: rootQuery._links.wiql ?? undefined,
               isValidQuery: true,
             };
@@ -886,6 +891,7 @@ export default class TicketsDataProvider {
               value: rootQuery.name,
               title: rootQuery.name,
               queryType: rootQuery.queryType,
+              columns: rootQuery.columns,
               wiql: rootQuery._links.wiql ?? undefined,
               isValidQuery: true,
             };
