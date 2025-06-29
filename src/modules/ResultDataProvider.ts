@@ -33,11 +33,13 @@ export default class ResultDataProvider {
   private limit = pLimit(10);
   private testStepParserHelper: Utils;
   private testToAssociatedItemMap: Map<number, Set<any>>;
+  private querySelectedColumns: any[];
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
     this.testStepParserHelper = new Utils(orgUrl, token);
     this.testToAssociatedItemMap = new Map<number, Set<any>>();
+    this.querySelectedColumns = [];
   }
 
   /**
@@ -251,6 +253,7 @@ export default class ResultDataProvider {
           true,
           this.testToAssociatedItemMap
         );
+        this.querySelectedColumns = linkedQueryRequest.testAssociatedQuery.columns;
       }
 
       const runResults = await this.fetchAllResultDataTestReporter(
@@ -747,22 +750,30 @@ export default class ResultDataProvider {
       if (relatedItemSet) {
         for (const relatedItem of relatedItemSet) {
           const { id, fields, _links } = relatedItem;
-          let url = '';
-          switch (fields['System.WorkItemType']) {
+          const itemTitle = fields['System.Title'];
+          const itemUrl = _links.html.href;
+          const workItemType = fields['System.WorkItemType'];
+          delete fields['System.Title'];
+          delete fields['System.WorkItemType'];
+
+          const customFields = this.standardCustomField(fields, this.querySelectedColumns);
+          let objectToSave = {
+            id,
+            title: itemTitle,
+            url: itemUrl,
+            workItemType,
+            ...customFields,
+          };
+
+          switch (workItemType) {
             case 'Requirement':
-              const requirementTitle = fields['System.Title'];
-              url = _links.html.href;
-              relatedRequirements.push({ id, requirementTitle, url });
+              relatedRequirements.push(objectToSave);
               break;
             case 'Bug':
-              const bugTitle = fields['System.Title'];
-              url = _links.html.href;
-              relatedBugs.push({ id, bugTitle, url });
+              relatedBugs.push(objectToSave);
               break;
             case 'Change Request':
-              const crTitle = fields['System.Title'];
-              url = _links.html.href;
-              relatedCRs.push({ id, crTitle, url });
+              relatedCRs.push(objectToSave);
               break;
           }
         }
@@ -794,29 +805,35 @@ export default class ResultDataProvider {
             wi.fields['System.WorkItemType'] === 'Requirement'
           ) {
             const { id, fields, _links } = wi;
-            const requirementTitle = fields['System.Title'];
+            const title = fields['System.Title'];
             const customerFieldKey = Object.keys(fields).find((key) =>
               key.toLowerCase().includes('customer')
             );
             const customerId = customerFieldKey ? fields[customerFieldKey] : undefined;
             const url = _links.html.href;
-            relatedRequirements.push({ id, requirementTitle, customerId, url });
+            relatedRequirements.push({
+              id,
+              title,
+              workItemType: 'Requirement',
+              customerId,
+              url,
+            });
           } else if (
             selectedLinkedFieldSet.has('associatedBug') &&
             wi.fields['System.WorkItemType'] === 'Bug'
           ) {
             const { id, fields, _links } = wi;
-            const bugTitle = fields['System.Title'];
+            const title = fields['System.Title'];
             const url = _links.html.href;
-            relatedBugs.push({ id, bugTitle, url });
+            relatedBugs.push({ id, title, workItemType: 'Bug', url });
           } else if (
             selectedLinkedFieldSet.has('associatedCR') &&
             wi.fields['System.WorkItemType'] === 'Change Request'
           ) {
             const { id, fields, _links } = wi;
-            const crTitle = fields['System.Title'];
+            const title = fields['System.Title'];
             const url = _links.html.href;
-            relatedCRs.push({ id, crTitle, url });
+            relatedCRs.push({ id, title, workItemType: 'Change Request', url });
           }
         } catch (err: any) {
           logger.error(`Could not append related work item to test case ${wiByRevision.id}: ${err.message}`);
@@ -1192,7 +1209,7 @@ export default class ResultDataProvider {
   };
 
   /**
-   * Base method for fetching result data for test points
+   * Fetches result Data for a specific test point
    */
   private async fetchResultDataBase(
     projectName: string,
@@ -1759,13 +1776,12 @@ export default class ResultDataProvider {
             result: fetchedTestCase.testCaseResult,
             comment: fetchedTestCase.comment,
           },
-          priority: fetchedTestCase.priority,
           runBy: fetchedTestCase.runBy,
-          activatedBy: fetchedTestCase.activatedBy,
           failureType: fetchedTestCase.failureType,
           executionDate: fetchedTestCase.executionDate,
-          configurationName: fetchedTestCase.configurationName,
-          errorMessage: fetchedTestCase.errorMessage,
+          testCaseResult: undefined as any,
+          comment: undefined as string | undefined,
+          configurationName: undefined as string | undefined,
           relatedRequirements: fetchedTestCase.relatedRequirements,
           relatedBugs: fetchedTestCase.relatedBugs,
           relatedCRs: fetchedTestCase.relatedCRs,
@@ -1828,6 +1844,7 @@ export default class ResultDataProvider {
             resultData.iterationDetails.length > 0
               ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
               : undefined;
+
           const resultDataResponse: any = {
             testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
             testCaseId: resultData.testCase.id,
@@ -1839,12 +1856,10 @@ export default class ResultDataProvider {
             testCaseRevision: resultData.testCaseRevision,
             resolution: resultData.resolutionState,
             failureType: undefined as string | undefined,
-            priority: undefined,
             runBy: undefined as string | undefined,
             executionDate: undefined as string | undefined,
             testCaseResult: undefined as any,
             comment: undefined as string | undefined,
-            errorMessage: undefined as string | undefined,
             configurationName: undefined as string | undefined,
             relatedRequirements: resultData.relatedRequirements || undefined,
             relatedBugs: resultData.relatedBugs || undefined,
@@ -1855,20 +1870,8 @@ export default class ResultDataProvider {
 
           // Process all custom fields from resultData.filteredFields
           if (resultData.filteredFields) {
-            for (const [fieldName, fieldValue] of Object.entries(resultData.filteredFields)) {
-              if (fieldValue !== undefined && fieldValue !== null) {
-                // Convert Microsoft.VSTS.TCM.AutomationStatus to automationStatus
-                // or System.AssignedTo to assignedTo
-                const nameParts = fieldName.split('.');
-                let propertyName = nameParts[nameParts.length - 1];
-
-                // Convert to camelCase (first letter lowercase)
-                propertyName = propertyName.charAt(0).toLowerCase() + propertyName.slice(1);
-
-                // Add to customFields object
-                resultDataResponse.customFields[propertyName] = fieldValue;
-              }
-            }
+            const customFields = this.standardCustomField(resultData.filteredFields);
+            resultDataResponse.customFields = customFields;
           }
 
           const filteredFields = selectedFields
@@ -1928,5 +1931,41 @@ export default class ResultDataProvider {
       },
       [selectedFields, isQueryMode]
     );
+  }
+
+  private standardCustomField(fieldsToProcess: any, selectedColumns?: any[]): any {
+    const customFields: any = {};
+    if (selectedColumns) {
+      const standardFields = ['id', 'title', 'workItemType'];
+
+      for (const column of selectedColumns) {
+        const fieldName = column.referenceName;
+        let propertyName = column.name.replace(/\s+/g, '');
+        if (propertyName === propertyName.toUpperCase()) {
+          propertyName = propertyName.toLowerCase();
+        } else {
+          propertyName = propertyName.charAt(0).toLowerCase() + propertyName.slice(1);
+        }
+
+        if (standardFields.includes(propertyName)) {
+          continue;
+        }
+        const fieldValue = fieldsToProcess[fieldName];
+        if (fieldValue === undefined || fieldValue === null) {
+          customFields[propertyName] = null;
+        } else {
+          customFields[propertyName] = (fieldValue as any)?.displayName ?? fieldValue;
+        }
+      }
+    } else {
+      for (const [fieldName, fieldValue] of Object.entries(fieldsToProcess)) {
+        const nameParts = fieldName.split('.');
+        let propertyName = nameParts[nameParts.length - 1];
+        propertyName = propertyName.charAt(0).toLowerCase() + propertyName.slice(1);
+        customFields[propertyName] = (fieldValue as any)?.displayName ?? fieldValue ?? '';
+      }
+    }
+
+    return customFields;
   }
 }
