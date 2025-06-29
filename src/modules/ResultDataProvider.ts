@@ -1779,7 +1779,7 @@ export default class ResultDataProvider {
           runBy: fetchedTestCase.runBy,
           failureType: fetchedTestCase.failureType,
           executionDate: fetchedTestCase.executionDate,
-          configurationName: undefined as string | undefined,
+          configurationName: fetchedTestCase.configurationName,
           relatedRequirements: fetchedTestCase.relatedRequirements,
           relatedBugs: fetchedTestCase.relatedBugs,
           relatedCRs: fetchedTestCase.relatedCRs,
