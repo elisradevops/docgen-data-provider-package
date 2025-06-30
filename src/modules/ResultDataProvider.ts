@@ -1,6 +1,6 @@
 import DataProviderUtils from '../utils/DataProviderUtils';
 import { TFSServices } from '../helpers/tfs';
-import { OpenPcrRequest, TestSteps } from '../models/tfs-data';
+import { OpenPcrRequest, PlainTestResult, TestSteps } from '../models/tfs-data';
 import logger from '../utils/logger';
 import Utils from '../utils/testStepParserHelper';
 import TicketsDataProvider from './TicketsDataProvider';
@@ -584,6 +584,7 @@ export default class ResultDataProvider {
       testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${testPoint.testCaseReference.id}`,
       configurationName: testPoint.configuration?.name,
       outcome: testPoint.results?.outcome || 'Not Run',
+      testSuite: testPoint.testSuite,
       lastRunId: testPoint.results?.lastTestRunId,
       lastResultId: testPoint.results?.lastResultId,
       lastResultDetails: testPoint.results?.lastResultDetails,
@@ -598,6 +599,7 @@ export default class ResultDataProvider {
       testCaseId: testPoint.testCase.id,
       testCaseName: testPoint.testCase.name,
       testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${testPoint.testCase.id}`,
+      testSuite: testPoint.testSuite,
       configurationName: testPoint.configuration?.name,
       outcome: testPoint.outcome || 'Not Run',
       lastRunId: testPoint.lastTestRun?.id,
@@ -657,12 +659,76 @@ export default class ResultDataProvider {
     resultId: string,
     isTestReporter: boolean = false,
     selectedFields?: string[],
-    isQueryMode?: boolean
+    isQueryMode?: boolean,
+    point?: any
   ): Promise<any> {
     try {
+      let filteredFields: any = {};
+      let relatedRequirements: any[] = [];
+      let relatedBugs: any[] = [];
+      let relatedCRs: any[] = [];
       if (runId === '0' || resultId === '0') {
-        logger.warn(`Invalid runId or resultId: ${runId}, ${resultId}`);
-        return null;
+        if (!point) {
+          logger.warn(`Invalid run result ${runId} or result ${resultId}`);
+          return null;
+        }
+        logger.warn(`Current Test point for Test case ${point.testCaseId} is in Active state`);
+        const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${point.testCaseId}?$expand=all`;
+        const testCaseData = await TFSServices.getItemContent(url, this.token);
+        const newResultData: PlainTestResult = {
+          id: 0,
+          outcome: point.outcome,
+          revision: testCaseData?.rev || 1,
+          testCase: { id: point.testCaseId, name: point.testCaseName },
+          state: testCaseData?.fields?.['System.State'] || 'Active',
+          priority: testCaseData?.fields?.['Microsoft.VSTS.TCM.Priority'] || 0,
+          createdDate: testCaseData?.fields?.['System.CreatedDate'] || '0001-01-01T00:00:00',
+          testSuite: point.testSuite,
+          failureType: 'None',
+        };
+        if (isQueryMode) {
+          this.appendQueryRelations(point.testCaseId, relatedRequirements, relatedBugs, relatedCRs);
+        } else {
+          const filteredLinkedFields = selectedFields
+            ?.filter((field: string) => field.includes('@linked'))
+            ?.map((field: string) => field.split('@')[0]);
+          const selectedLinkedFieldSet = new Set(filteredLinkedFields);
+          const { relations } = testCaseData;
+          if (relations) {
+            await this.appendLinkedRelations(
+              relations,
+              relatedRequirements,
+              relatedBugs,
+              relatedCRs,
+              testCaseData,
+              selectedLinkedFieldSet
+            );
+          }
+          selectedLinkedFieldSet.clear();
+        }
+        const filteredTestCaseFields = selectedFields
+          ?.filter((field: string) => field.includes('@testCaseWorkItemField'))
+          ?.map((field: string) => field.split('@')[0]);
+        const selectedFieldSet = new Set(filteredTestCaseFields);
+        // Filter fields based on selected field set
+        if (selectedFieldSet.size !== 0) {
+          filteredFields = Object.keys(testCaseData.fields)
+            .filter((key) => selectedFieldSet.has(key))
+            .reduce((obj: any, key) => {
+              obj[key] = testCaseData.fields[key]?.displayName ?? testCaseData.fields[key];
+              return obj;
+            }, {});
+        }
+        selectedFieldSet.clear();
+        return {
+          ...newResultData,
+          stepsResultXml: testCaseData.fields['Microsoft.VSTS.TCM.Steps'] || undefined,
+          testCaseRevision: testCaseData.rev,
+          filteredFields,
+          relatedRequirements,
+          relatedBugs,
+          relatedCRs,
+        };
       }
       const url = `${this.orgUrl}${projectName}/_apis/test/runs/${runId}/results/${resultId}?detailsToInclude=Iterations`;
       const resultData = await TFSServices.getItemContent(url, this.token);
@@ -674,15 +740,12 @@ export default class ResultDataProvider {
       const expandParam = isTestReporter ? '?$expand=all' : '';
       const wiUrl = `${this.orgUrl}${projectName}/_apis/wit/workItems/${resultData.testCase.id}/revisions/${resultData.testCaseRevision}${expandParam}`;
       const wiByRevision = await TFSServices.getItemContent(wiUrl, this.token);
-      let filteredFields: any = {};
-      let relatedRequirements: any[] = [];
-      let relatedBugs: any[] = [];
-      let relatedCRs: any[] = [];
+
       // Process selected fields if provided
       if (isTestReporter) {
         // Process related requirements if needed
         if (isQueryMode) {
-          this.appendQueryRelations(resultData, relatedRequirements, relatedBugs, relatedCRs);
+          this.appendQueryRelations(resultData.testCase.id, relatedRequirements, relatedBugs, relatedCRs);
         } else {
           const filteredLinkedFields = selectedFields
             ?.filter((field: string) => field.includes('@linked'))
@@ -718,6 +781,7 @@ export default class ResultDataProvider {
       }
       return {
         ...resultData,
+
         stepsResultXml: wiByRevision.fields['Microsoft.VSTS.TCM.Steps'] || undefined,
         analysisAttachments,
         testCaseRevision: resultData.testCaseRevision,
@@ -740,13 +804,13 @@ export default class ResultDataProvider {
   };
 
   private appendQueryRelations(
-    resultData: any,
+    testCaseId: any,
     relatedRequirements: any[],
     relatedBugs: any[],
     relatedCRs: any[]
   ) {
     if (this.testToAssociatedItemMap.size !== 0) {
-      const relatedItemSet = this.testToAssociatedItemMap.get(Number(resultData.testCase.id));
+      const relatedItemSet = this.testToAssociatedItemMap.get(Number(testCaseId));
       if (relatedItemSet) {
         for (const relatedItem of relatedItemSet) {
           const { id, fields, _links } = relatedItem;
@@ -943,6 +1007,7 @@ export default class ResultDataProvider {
         ?.filter((field: string) => field.includes('@stepsRunProperties'))
         ?.map((field: string) => field.split('@')[0]) || []
     );
+    const iterationsMap = this.createIterationsMap(iterations, isTestReporter, includeNotRunTestCases);
 
     for (const testItem of testData) {
       for (const point of testItem.testPointsItems) {
@@ -957,25 +1022,20 @@ export default class ResultDataProvider {
             continue;
           }
         }
+        const iterationKey =
+          !point.lastRunId || !point.lastResultId
+            ? `${testCase.workItem.id}`
+            : `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
+        const fetchedTestCase =
+          iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
+        // First check if fetchedTestCase exists
+        if (!fetchedTestCase) continue;
 
-        if (includeNotRunTestCases && !point.lastRunId && !point.lastResultId) {
-          this.AppendResults(options, testCase, filteredFields, testItem, point, detailedResults);
-        } else {
-          const iterationsMap = this.createIterationsMap(iterations, testCase.workItem.id, isTestReporter);
+        // Then separately check for iteration only if configured not to include items without iterations
+        if (!includeItemsWithNoIterations && !fetchedTestCase.iteration) continue;
 
-          const iterationKey = `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
-          const fetchedTestCase =
-            iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
-
-          // First check if fetchedTestCase exists
-          if (!fetchedTestCase) continue;
-
-          // Then separately check for iteration only if configured not to include items without iterations
-          if (!includeItemsWithNoIterations && !fetchedTestCase.iteration) continue;
-
-          // Determine if we should process at step level
-          this.AppendResults(options, fetchedTestCase, filteredFields, testItem, point, detailedResults);
-        }
+        // Determine if we should process at step level
+        this.AppendResults(options, fetchedTestCase, filteredFields, testItem, point, detailedResults);
       }
     }
     return detailedResults;
@@ -1090,15 +1150,18 @@ export default class ResultDataProvider {
    */
   private createIterationsMap(
     iterations: any[],
-    testCaseId: number,
-    isTestReporter: boolean
+    isTestReporter: boolean,
+    includeNotRunTestCases: boolean
   ): Record<string, any> {
     return iterations.reduce((map, iterationItem) => {
       if (
         (isTestReporter && iterationItem.lastRunId && iterationItem.lastResultId) ||
         iterationItem.iteration
       ) {
-        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${testCaseId}`;
+        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${iterationItem.testCaseId}`;
+        map[key] = iterationItem;
+      } else if (includeNotRunTestCases) {
+        const key = `${iterationItem.testCaseId}`;
         map[key] = iterationItem;
       }
       return map;
@@ -1154,6 +1217,7 @@ export default class ResultDataProvider {
   private async fetchAllResultDataBase(
     testData: any[],
     projectName: string,
+    isTestReporter: boolean,
     fetchStrategy: (projectName: string, testSuiteId: string, point: any, ...args: any[]) => Promise<any>,
     additionalArgs: any[] = []
   ): Promise<any[]> {
@@ -1164,9 +1228,9 @@ export default class ResultDataProvider {
         const { testSuiteId, testPointsItems } = item;
 
         // Filter and sort valid points
-        const validPoints = testPointsItems.filter(
-          (point: any) => point && point.lastRunId && point.lastResultId
-        );
+        const validPoints = isTestReporter
+          ? testPointsItems
+          : testPointsItems.filter((point: any) => point && point.lastRunId && point.lastResultId);
 
         // Fetch results for each point sequentially
         for (const point of validPoints) {
@@ -1185,7 +1249,7 @@ export default class ResultDataProvider {
    * Fetches result data for all test points within the given test data, sequentially to avoid context-related errors.
    */
   private async fetchAllResultData(testData: any[], projectName: string): Promise<any[]> {
-    return this.fetchAllResultDataBase(testData, projectName, (projectName, testSuiteId, point) =>
+    return this.fetchAllResultDataBase(testData, projectName, false, (projectName, testSuiteId, point) =>
       this.fetchResultData(projectName, testSuiteId, point)
     );
   }
@@ -1219,69 +1283,69 @@ export default class ResultDataProvider {
     createResponseObject: (resultData: any, testSuiteId: string, point: any, ...args: any[]) => any,
     additionalArgs: any[] = []
   ): Promise<any> {
-    const { lastRunId, lastResultId } = point;
-    if (!lastRunId || !lastResultId) {
-      logger.warn(`Invalid lastRunId or lastResultId for point: ${JSON.stringify(point)}`);
-      return null;
-    } else if (lastRunId === '0' || lastResultId === '0') {
-      logger.warn(`Invalid lastRunId or lastResultId: ${lastRunId}, ${lastResultId}`);
-      return null;
-    }
-    const resultData = await fetchResultMethod(
-      projectName,
-      lastRunId.toString(),
-      lastResultId.toString(),
-      ...additionalArgs
-    );
+    try {
+      const { lastRunId, lastResultId } = point;
 
-    const iteration =
-      resultData.iterationDetails.length > 0
-        ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
-        : undefined;
-
-    if (resultData.stepsResultXml && iteration) {
-      const actionResultsWithSharedModels = iteration.actionResults.filter(
-        (result: any) => result.sharedStepModel
+      const resultData = await fetchResultMethod(
+        projectName,
+        lastRunId?.toString() || '0',
+        lastResultId?.toString() || '0',
+        ...additionalArgs
       );
 
-      const sharedStepIdToRevisionLookupMap: Map<number, number> = new Map();
+      const iteration =
+        resultData.iterationDetails?.length > 0
+          ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
+          : undefined;
 
-      if (actionResultsWithSharedModels?.length > 0) {
-        actionResultsWithSharedModels.forEach((actionResult: any) => {
-          const { sharedStepModel } = actionResult;
-          sharedStepIdToRevisionLookupMap.set(Number(sharedStepModel.id), Number(sharedStepModel.revision));
-        });
-      }
-      const stepsList = await this.testStepParserHelper.parseTestSteps(
-        resultData.stepsResultXml,
-        sharedStepIdToRevisionLookupMap
-      );
+      if (resultData.stepsResultXml && iteration) {
+        const actionResultsWithSharedModels = iteration.actionResults.filter(
+          (result: any) => result.sharedStepModel
+        );
 
-      sharedStepIdToRevisionLookupMap.clear();
+        const sharedStepIdToRevisionLookupMap: Map<number, number> = new Map();
 
-      const stepMap = new Map<string, TestSteps>();
-      for (const step of stepsList) {
-        stepMap.set(step.stepId.toString(), step);
-      }
-
-      for (const actionResult of iteration.actionResults) {
-        const step = stepMap.get(actionResult.stepIdentifier);
-        if (step) {
-          actionResult.stepPosition = step.stepPosition;
-          actionResult.action = step.action;
-          actionResult.expected = step.expected;
-          actionResult.isSharedStepTitle = step.isSharedStepTitle;
+        if (actionResultsWithSharedModels?.length > 0) {
+          actionResultsWithSharedModels.forEach((actionResult: any) => {
+            const { sharedStepModel } = actionResult;
+            sharedStepIdToRevisionLookupMap.set(Number(sharedStepModel.id), Number(sharedStepModel.revision));
+          });
         }
-      }
-      //Sort by step position
-      iteration.actionResults = iteration.actionResults
-        .filter((result: any) => result.stepPosition)
-        .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
-    }
+        const stepsList = await this.testStepParserHelper.parseTestSteps(
+          resultData.stepsResultXml,
+          sharedStepIdToRevisionLookupMap
+        );
 
-    return resultData?.testCase
-      ? createResponseObject(resultData, testSuiteId, point, ...additionalArgs)
-      : null;
+        sharedStepIdToRevisionLookupMap.clear();
+
+        const stepMap = new Map<string, TestSteps>();
+        for (const step of stepsList) {
+          stepMap.set(step.stepId.toString(), step);
+        }
+
+        for (const actionResult of iteration.actionResults) {
+          const step = stepMap.get(actionResult.stepIdentifier);
+          if (step) {
+            actionResult.stepPosition = step.stepPosition;
+            actionResult.action = step.action;
+            actionResult.expected = step.expected;
+            actionResult.isSharedStepTitle = step.isSharedStepTitle;
+          }
+        }
+        //Sort by step position
+        iteration.actionResults = iteration.actionResults
+          .filter((result: any) => result.stepPosition)
+          .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
+      }
+
+      return resultData?.testCase
+        ? createResponseObject(resultData, testSuiteId, point, ...additionalArgs)
+        : null;
+    } catch (error: any) {
+      logger.error(`Error occurred for point ${point.testCaseId}: ${error.message}`);
+      logger.error(`Stack trace: ${error.stack}`);
+      return null;
+    }
   }
 
   /**
@@ -1301,7 +1365,7 @@ export default class ResultDataProvider {
         lastRunId: point.lastRunId,
         lastResultId: point.lastResultId,
         iteration:
-          resultData.iterationDetails.length > 0
+          resultData.iterationDetails?.length > 0
             ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
             : undefined,
         testCaseRevision: resultData.testCaseRevision,
@@ -1698,9 +1762,18 @@ export default class ResultDataProvider {
     runId: string,
     resultId: string,
     selectedFields?: string[],
-    isQueryMode?: boolean
+    isQueryMode?: boolean,
+    point?: any
   ): Promise<any> {
-    return this.fetchResultDataBasedOnWiBase(projectName, runId, resultId, true, selectedFields, isQueryMode);
+    return this.fetchResultDataBasedOnWiBase(
+      projectName,
+      runId,
+      resultId,
+      true,
+      selectedFields,
+      isQueryMode,
+      point
+    );
   }
 
   /**
@@ -1724,6 +1797,7 @@ export default class ResultDataProvider {
     return this.fetchAllResultDataBase(
       testData,
       projectName,
+      true,
       (projectName, testSuiteId, point, selectedFields, isQueryMode) =>
         this.fetchResultDataForTestReporter(projectName, testSuiteId, point, selectedFields, isQueryMode),
       [selectedFields, isQueryMode]
@@ -1833,16 +1907,15 @@ export default class ResultDataProvider {
       projectName,
       testSuiteId,
       point,
-      (project, runId, resultId, fields, isQueryMode) =>
-        this.fetchResultDataBasedOnWiTestReporter(project, runId, resultId, fields, isQueryMode),
+      (project, runId, resultId, fields, isQueryMode, point) =>
+        this.fetchResultDataBasedOnWiTestReporter(project, runId, resultId, fields, isQueryMode, point),
       (resultData, testSuiteId, point, selectedFields) => {
         const { lastRunId, lastResultId, configurationName, lastResultDetails } = point;
         try {
           const iteration =
-            resultData.iterationDetails.length > 0
-              ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
+            resultData.iterationDetails?.length > 0
+              ? resultData.iterationDetails[resultData.iterationDetails?.length - 1]
               : undefined;
-
           const resultDataResponse: any = {
             testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
             testCaseId: resultData.testCase.id,
@@ -1883,10 +1956,7 @@ export default class ResultDataProvider {
                   resultDataResponse.priority = resultData.priority;
                   break;
                 case 'testCaseResult':
-                  const outcome =
-                    resultData.iterationDetails[resultData.iterationDetails.length - 1]?.outcome ||
-                    resultData.outcome ||
-                    'NotApplicable';
+                  const outcome = this.getTestOutcome(resultData);
                   if (lastRunId === undefined || lastResultId === undefined) {
                     resultDataResponse.testCaseResult = {
                       resultMessage: `${this.convertRunStatus(outcome)}`,
@@ -1927,8 +1997,25 @@ export default class ResultDataProvider {
           return null;
         }
       },
-      [selectedFields, isQueryMode]
+      [selectedFields, isQueryMode, point]
     );
+  }
+
+  private getTestOutcome(resultData: any) {
+    // Default outcome if nothing else is available
+    const defaultOutcome = 'NotApplicable';
+
+    // Check if we have iteration details
+    const hasIterationDetails = resultData?.iterationDetails && resultData.iterationDetails.length > 0;
+
+    if (hasIterationDetails) {
+      // Get the last iteration's outcome if available
+      const lastIteration = resultData.iterationDetails[resultData.iterationDetails.length - 1];
+      return lastIteration?.outcome || resultData.outcome || defaultOutcome;
+    }
+
+    // No iteration details, use result outcome or default
+    return resultData.outcome || defaultOutcome;
   }
 
   private standardCustomField(fieldsToProcess: any, selectedColumns?: any[]): any {

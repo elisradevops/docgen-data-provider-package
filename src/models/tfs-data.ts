@@ -279,3 +279,15 @@ export interface Artifact {
   isPrimary: boolean;
   type: string;
 }
+
+export interface PlainTestResult {
+  id: number;
+  outcome: string;
+  revision: number;
+  testCase: { id: string; name: string };
+  state: string;
+  priority: number;
+  createdDate: string;
+  failureType: string;
+  testSuite: { id: string; name: string };
+}
