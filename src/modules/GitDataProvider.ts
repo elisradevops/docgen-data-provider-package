@@ -185,7 +185,6 @@ export default class GitDataProvider {
             linkedWiOptions,
             populatedItem
           );
-          logger.debug(`linked items for ${wi.id}: ${JSON.stringify(linkedItems)}`);
           let changeSet: any = { workItem: populatedItem, commit: commit, linkedItems };
           commitChangesArray.push(changeSet);
         }
@@ -289,9 +288,11 @@ export default class GitDataProvider {
     extendedCommits: any[],
     targetRepo: any,
     addedWorkItemByIdSet: Set<number>,
-    linkedWiOptions: any = undefined
+    linkedWiOptions: any = undefined,
+    includeUnlinkedCommits: boolean = false
   ) {
     let commitChangesArray: any[] = [];
+    let commitsWithNoRelations: any[] = [];
     try {
       if (extendedCommits?.length === 0) {
         throw new Error('extended commits cannot be empty');
@@ -309,8 +310,17 @@ export default class GitDataProvider {
       //Then extend the commit information with the related WIs
       for (const extendedCommit of extendedCommits) {
         const { commit } = extendedCommit;
-        if (!commit.workItems) {
-          throw new Error(`commit ${commit.commitId} does not have work items`);
+        if (!Array.isArray(commit.workItems) || commit.workItems.length === 0) {
+          if (includeUnlinkedCommits) {
+            commitsWithNoRelations.push({
+              commitId: commit.commitId,
+              commitDate: commit.committer?.date,
+              committer: commit.committer?.name,
+              comment: commit.comment,
+              url: commit.remoteUrl,
+            });
+          }
+          continue;
         }
         for (const wi of commit.workItems) {
           const populatedWorkItem = await this.ticketsDataProvider.GetWorkItem(
@@ -321,7 +331,6 @@ export default class GitDataProvider {
             linkedWiOptions,
             populatedWorkItem
           );
-          logger.debug(`linked items for ${wi.id}: ${JSON.stringify(linkedItems)}`);
           let changeSet: any = {
             workItem: populatedWorkItem,
             commit: commit,
@@ -347,8 +356,7 @@ export default class GitDataProvider {
     } catch (error: any) {
       logger.error(error.message);
     }
-
-    return commitChangesArray;
+    return { commitChangesArray, commitsWithNoRelations };
   }
 
   /**
@@ -376,7 +384,7 @@ export default class GitDataProvider {
   private async createLinkedRelatedItemsForSVD(linkedWiOptions: any, populatedWorkItem: any) {
     let linkedItems: LinkedRelation[] = [];
     try {
-      if (linkedWiOptions) {
+      if (linkedWiOptions?.isEnabled) {
         const { linkedWiTypes, linkedWiRelationship } = linkedWiOptions;
 
         // linkedWiTypes = {'none','reqOnly', 'featureOnly', 'both'};
