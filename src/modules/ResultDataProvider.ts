@@ -749,8 +749,6 @@ export default class ResultDataProvider {
       if (isTestReporter) {
         // Process related requirements if needed
         if (isQueryMode) {
-          //TODO: Delete later:
-          logger.debug(`DEBUG ONLY: resultData.testCase.id: ${resultData.testCase.id}`);
           this.appendQueryRelations(resultData.testCase.id, relatedRequirements, relatedBugs, relatedCRs);
         } else {
           const filteredLinkedFields = selectedFields
@@ -785,6 +783,10 @@ export default class ResultDataProvider {
         }
         selectedFieldSet.clear();
       }
+      //TODO: Delete later:
+      logger.debug(`DEBUG ONLY: relatedRequirements: ${JSON.stringify(relatedRequirements)}`);
+      logger.debug(`DEBUG ONLY: relatedBugs: ${JSON.stringify(relatedBugs)}`);
+      logger.debug(`DEBUG ONLY: relatedCRs: ${JSON.stringify(relatedCRs)}`);
       return {
         ...resultData,
 
@@ -815,10 +817,14 @@ export default class ResultDataProvider {
     relatedBugs: any[],
     relatedCRs: any[]
   ) {
+    logger.debug(`DEBUG ONLY: size of testToAssociatedItemMap: ${this.testToAssociatedItemMap.size}`);
     if (this.testToAssociatedItemMap.size !== 0) {
       const relatedItemSet = this.testToAssociatedItemMap.get(Number(testCaseId));
-      //TODO: Delete later:
-      logger.debug(`DEBUG ONLY: relatedItemSet: ${JSON.stringify(relatedItemSet)}`);
+      if (relatedItemSet) {
+        for (const relatedItem of relatedItemSet) {
+          logger.debug(`DEBUG ONLY: relatedItem for test case ${testCaseId}: ${JSON.stringify(relatedItem)}`);
+        }
+      }
       if (relatedItemSet) {
         for (const relatedItem of relatedItemSet) {
           const { id, fields, _links } = relatedItem;
