@@ -1002,8 +1002,18 @@ export default class TicketsDataProvider {
       for (const fieldName of Object.keys(item.fields)) {
         const value = item.fields[fieldName];
 
-        if (columnsToFilterMap.has(fieldName)) {
-          resultedRefNameMap.set(fieldName, columnsToFilterMap.get(fieldName) || '');
+        // Always include System.WorkItemType and System.Title
+        if (
+          columnsToFilterMap.has(fieldName) ||
+          fieldName === 'System.WorkItemType' ||
+          fieldName === 'System.Title'
+        ) {
+          // If it's not in the map but we're including it anyway, add it to the resulted map
+          if (!columnsToFilterMap.has(fieldName)) {
+            resultedRefNameMap.set(fieldName, fieldName);
+          } else {
+            resultedRefNameMap.set(fieldName, columnsToFilterMap.get(fieldName) || '');
+          }
           parsedFields[fieldName] = value;
         }
       }
