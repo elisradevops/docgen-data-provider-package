@@ -305,8 +305,6 @@ export default class TicketsDataProvider {
     if (workItemRelations) {
       for (const relation of workItemRelations) {
         //if relation.Source is null and target has a valid value then the target is the source
-        logger.debug(`DEBUG ONLY: relation.source: ${JSON.stringify(relation.source)}`);
-        logger.debug(`DEBUG ONLY: relation.target: ${JSON.stringify(relation.target)}`);
         if (!relation.source) {
           // Root link
           const wi: any = await this.fetchWIForQueryResult(relation, columnsToShowMap, columnSourceMap, true);
@@ -339,9 +337,7 @@ export default class TicketsDataProvider {
         //In case of target is a test case
         this.mapTestCaseToRequirement(targetWi, testCaseToRequirementMap, sourceWorkItem);
         const targets: any = sourceTargetsMap.get(sourceWorkItem) || [];
-        logger.debug(`DEBUG ONLY: targets: ${JSON.stringify(targets)}`);
         targets.push(targetWi);
-        logger.debug(`DEBUG ONLY: targets after push: ${JSON.stringify(targets)}`);
         sourceTargetsMap.set(sourceWorkItem, targets);
       }
     }
@@ -359,9 +355,7 @@ export default class TicketsDataProvider {
     testCaseToRequirementMap: Map<number, Set<any>>,
     RequirementWi: any
   ) {
-    logger.debug(`DEBUG ONLY: workItemType: ${testCaseItem?.fields['System.WorkItemType']}`);
     if (testCaseItem.fields['System.WorkItemType'] == 'Test Case') {
-      logger.debug(`DEBUG ONLY: testCaseItem: ${JSON.stringify(testCaseItem)}`);
       if (!testCaseToRequirementMap.has(testCaseItem.id)) {
         testCaseToRequirementMap.set(testCaseItem.id, new Set());
       }
@@ -369,9 +363,7 @@ export default class TicketsDataProvider {
       if (requirementSet) {
         // Check if there's already an item with the same ID
         const alreadyExists = [...requirementSet].some((reqItem) => reqItem.id === RequirementWi.id);
-        logger.debug(`DEBUG ONLY: alreadyExists: ${alreadyExists}`);
         if (!alreadyExists) {
-          logger.debug(`DEBUG ONLY: adding requirement ${RequirementWi.id} to test case ${testCaseItem.id}`);
           requirementSet.add(RequirementWi);
         }
       }

@@ -248,10 +248,6 @@ export default class ResultDataProvider {
       const isQueryMode = linkedQueryRequest.linkedQueryMode === 'query';
       if (isQueryMode) {
         // Fetch associated items
-        //TODO: Delete later:
-        logger.debug(
-          `DEBUG ONLY: linkedQueryRequest.testAssociatedQuery.wiql.href: ${linkedQueryRequest.testAssociatedQuery.wiql.href}`
-        );
         await ticketsDataProvider.GetQueryResultsFromWiql(
           linkedQueryRequest.testAssociatedQuery.wiql.href,
           true,
@@ -783,10 +779,6 @@ export default class ResultDataProvider {
         }
         selectedFieldSet.clear();
       }
-      //TODO: Delete later:
-      logger.debug(`DEBUG ONLY: relatedRequirements: ${JSON.stringify(relatedRequirements)}`);
-      logger.debug(`DEBUG ONLY: relatedBugs: ${JSON.stringify(relatedBugs)}`);
-      logger.debug(`DEBUG ONLY: relatedCRs: ${JSON.stringify(relatedCRs)}`);
       return {
         ...resultData,
 
@@ -817,7 +809,6 @@ export default class ResultDataProvider {
     relatedBugs: any[],
     relatedCRs: any[]
   ) {
-    logger.debug(`DEBUG ONLY: size of testToAssociatedItemMap: ${this.testToAssociatedItemMap.size}`);
     if (this.testToAssociatedItemMap.size !== 0) {
       const relatedItemSet = this.testToAssociatedItemMap.get(Number(testCaseId));
       if (relatedItemSet) {
@@ -830,8 +821,6 @@ export default class ResultDataProvider {
           delete fields['System.WorkItemType'];
 
           const customFields = this.standardCustomField(fields, this.querySelectedColumns);
-          //TODO: Delete later:
-          logger.debug(`DEBUG ONLY: customFields: ${JSON.stringify(customFields)}`);
           let objectToSave = {
             id,
             title: itemTitle,
