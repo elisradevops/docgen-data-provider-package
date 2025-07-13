@@ -305,6 +305,8 @@ export default class TicketsDataProvider {
     if (workItemRelations) {
       for (const relation of workItemRelations) {
         //if relation.Source is null and target has a valid value then the target is the source
+        logger.debug(`DEBUG ONLY: relation.source: ${JSON.stringify(relation.source)}`);
+        logger.debug(`DEBUG ONLY: relation.target: ${JSON.stringify(relation.target)}`);
         if (!relation.source) {
           // Root link
           const wi: any = await this.fetchWIForQueryResult(relation, columnsToShowMap, columnSourceMap, true);
@@ -337,7 +339,9 @@ export default class TicketsDataProvider {
         //In case of target is a test case
         this.mapTestCaseToRequirement(targetWi, testCaseToRequirementMap, sourceWorkItem);
         const targets: any = sourceTargetsMap.get(sourceWorkItem) || [];
+        logger.debug(`DEBUG ONLY: targets: ${JSON.stringify(targets)}`);
         targets.push(targetWi);
+        logger.debug(`DEBUG ONLY: targets after push: ${JSON.stringify(targets)}`);
         sourceTargetsMap.set(sourceWorkItem, targets);
       }
     }
