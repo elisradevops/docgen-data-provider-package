@@ -822,11 +822,6 @@ export default class ResultDataProvider {
       const relatedItemSet = this.testToAssociatedItemMap.get(Number(testCaseId));
       if (relatedItemSet) {
         for (const relatedItem of relatedItemSet) {
-          logger.debug(`DEBUG ONLY: relatedItem for test case ${testCaseId}: ${JSON.stringify(relatedItem)}`);
-        }
-      }
-      if (relatedItemSet) {
-        for (const relatedItem of relatedItemSet) {
           const { id, fields, _links } = relatedItem;
           const itemTitle = fields['System.Title'];
           const itemUrl = _links.html.href;
