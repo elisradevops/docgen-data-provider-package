@@ -820,8 +820,11 @@ export default class ResultDataProvider {
     logger.debug(`DEBUG ONLY: size of testToAssociatedItemMap: ${this.testToAssociatedItemMap.size}`);
     if (this.testToAssociatedItemMap.size !== 0) {
       const relatedItemSet = this.testToAssociatedItemMap.get(Number(testCaseId));
-      //TODO: Delete later:
-      logger.debug(`DEBUG ONLY: relatedItemSet: ${JSON.stringify(relatedItemSet)}`);
+      if (relatedItemSet) {
+        for (const relatedItem of relatedItemSet) {
+          logger.debug(`DEBUG ONLY: relatedItem for test case ${testCaseId}: ${JSON.stringify(relatedItem)}`);
+        }
+      }
       if (relatedItemSet) {
         for (const relatedItem of relatedItemSet) {
           const { id, fields, _links } = relatedItem;
