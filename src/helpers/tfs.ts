@@ -13,6 +13,8 @@ export class TFSServices {
       keepAlive: true,
       maxSockets: 50,
       keepAliveMsecs: 300000,
+      // PAT handles authentication, so we can safely disable cert validation
+      rejectUnauthorized: false,
     }),
   };
 
