@@ -14,11 +14,13 @@ export default class TestDataProvider {
   private testStepParserHelper: Utils;
   private cache = new Map<string, any>(); // Cache for API responses
   private limit = pLimit(10);
+  private linkedMomLookupMap: Map<string, any>;
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
     this.testStepParserHelper = new Utils(orgUrl, token);
+    this.linkedMomLookupMap = new Map<string, any>();
   }
 
   private async fetchWithCache(url: string, ttlMs = 60000): Promise<any> {
@@ -105,8 +107,9 @@ export default class TestDataProvider {
     recursive: boolean,
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
-    includeLinkedMom: boolean,
-    stepResultDetailsMap?: Map<string, any>
+    isByRelatedLinkedMom: boolean,
+    stepResultDetailsMap?: Map<string, any>,
+    testCaseToLinkedMomLookup?: Map<number, any>
   ): Promise<any> {
     let testCasesList: Array<any> = new Array<any>();
     const requirementToTestCaseTraceMap: Map<string, string[]> = new Map();
@@ -132,10 +135,11 @@ export default class TestDataProvider {
             suite,
             includeRequirements,
             CustomerRequirementId,
-            includeLinkedMom,
+            isByRelatedLinkedMom,
             requirementToTestCaseTraceMap,
             testCaseToRequirementsTraceMap,
-            stepResultDetailsMap
+            stepResultDetailsMap,
+            testCaseToLinkedMomLookup
           );
           // logger.debug(
           //   `Performance: structured suite ${suite.id} in ${performance.now() - structureStartTime}ms`
@@ -163,10 +167,11 @@ export default class TestDataProvider {
     suite: suiteData,
     includeRequirements: boolean,
     CustomerRequirementId: boolean,
-    includeLinkedMom: boolean,
+    isByRelatedLinkedMom: boolean,
     requirementToTestCaseTraceMap: Map<string, string[]>,
     testCaseToRequirementsTraceMap: Map<string, string[]>,
-    stepResultDetailsMap?: Map<string, any>
+    stepResultDetailsMap?: Map<string, any>,
+    testCaseToLinkedMomLookup?: Map<number, Set<any>>
   ): Promise<any[]> {
     let url = this.orgUrl + project + '/_workitems/edit/';
     let testCasesUrlList: any[] = [];
@@ -244,10 +249,26 @@ export default class TestDataProvider {
                       testCase.relations.push(newRequirementRelation);
                     }
                   }
-                  if (includeLinkedMom) {
+                  if (isByRelatedLinkedMom) {
                     const workItemType = relatedItemContent.fields['System.WorkItemType'] || '';
-                    if (workItemType === 'Task' || workItemType === 'Bug') {
-                      const momRequirement = createMomRelation(
+                    if (
+                      workItemType === 'Task' ||
+                      workItemType === 'Bug' ||
+                      workItemType === 'Code Review Request' ||
+                      workItemType === 'Change Request' ||
+                      workItemType === 'Code Review Response' ||
+                      workItemType === 'Epic' ||
+                      workItemType === 'Feature' ||
+                      workItemType === 'User Story' ||
+                      workItemType === 'Feedback Request' ||
+                      workItemType === 'Feedback Response' ||
+                      workItemType === 'Issue' ||
+                      workItemType === 'Risk' ||
+                      workItemType === 'Review' ||
+                      workItemType === 'Test Plan' ||
+                      workItemType === 'Test Suite'
+                    ) {
+                      const momRelation = createMomRelation(
                         relatedItemContent.id,
                         workItemType,
                         relatedItemContent.fields['System.Title'],
@@ -255,7 +276,7 @@ export default class TestDataProvider {
                         //TODO: consult for more fields to add
                         relatedItemContent.fields['System.State']
                       );
-                      testCase.relations.push(momRequirement);
+                      testCase.relations.push(momRelation);
                     }
                   }
                 } catch (fetchError) {
@@ -263,6 +284,21 @@ export default class TestDataProvider {
                   console.error('Failed to fetch relation content', fetchError);
                   logger.error(`Failed to fetch relation content for URL ${relation.url}: ${fetchError}`);
                 }
+              }
+            }
+          }
+          if (testCaseToLinkedMomLookup?.size) {
+            const momItems = testCaseToLinkedMomLookup.get(Number(testCase.id));
+            if (momItems) {
+              for (const momItem of momItems) {
+                const momRelation = createMomRelation(
+                  momItem.id,
+                  momItem.fields['System.WorkItemType'],
+                  momItem.fields['System.Title'],
+                  momItem._links['html'].href,
+                  momItem.fields['System.State']
+                );
+                testCase.relations.push(momRelation);
               }
             }
           }

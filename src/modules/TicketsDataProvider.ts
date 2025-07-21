@@ -120,7 +120,9 @@ export default class TicketsDataProvider {
       logger.debug(`doctype: ${docType}`);
       switch (docType?.toLowerCase()) {
         case 'std':
-          return await this.fetchLinkedReqTestQueries(queries, false);
+          const reqTestQueries = await this.fetchLinkedReqTestQueries(queries, false);
+          const linkedMomQueries = await this.fetchLinkedMomQueries(queries);
+          return { reqTestQueries, linkedMomQueries };
         case 'str':
           const reqTestTrees = await this.fetchLinkedReqTestQueries(queries, false);
           const openPcrTestTrees = await this.fetchLinkedOpenPcrTestQueries(queries, false);
@@ -193,6 +195,40 @@ export default class TicketsDataProvider {
   }
 
   /**
+   * fetches linked mom queries
+   * @param queries fetched queries
+   * @returns linkedMomTree
+   */
+
+  private async fetchLinkedMomQueries(queries: any) {
+    const { tree1: linkedMomTree } = await this.structureFetchedQueries(
+      queries,
+      false,
+      null,
+      ['Test Case'],
+      [
+        'Task',
+        'Bug',
+        'Code Review Request',
+        'Change Request',
+        'Code Review Response',
+        'Epic',
+        'Feature',
+        'User Story',
+        'Feedback Request',
+        'Feedback Response',
+        'Issue',
+        'Risk',
+        'Review',
+        'Test Plan',
+        'Test Suite',
+      ]
+    );
+    logger.debug(`Linked mom tree: ${JSON.stringify(linkedMomTree)}`);
+    return { linkedMomTree };
+  }
+
+  /**
    * Fetches and structures linked queries related to open PCR (Problem Change Request) tests.
    *
    * This method retrieves and organizes the relationships between "Test Case" and
@@ -242,7 +278,7 @@ export default class TicketsDataProvider {
   async GetQueryResultsFromWiql(
     wiqlHref: string = '',
     displayAsTable: boolean = false,
-    testCaseToRequirementMap: Map<number, Set<any>>
+    testCaseToRelatedWiMap: Map<number, Set<any>>
   ): Promise<any> {
     try {
       if (!wiqlHref) {
@@ -257,7 +293,7 @@ export default class TicketsDataProvider {
       switch (queryResult.queryType) {
         case QueryType.OneHop:
           return displayAsTable
-            ? await this.parseDirectLinkedQueryResultForTableFormat(queryResult, testCaseToRequirementMap)
+            ? await this.parseDirectLinkedQueryResultForTableFormat(queryResult, testCaseToRelatedWiMap)
             : await this.parseTreeQueryResult(queryResult);
         case QueryType.Tree:
           return await this.parseTreeQueryResult(queryResult);
@@ -275,7 +311,7 @@ export default class TicketsDataProvider {
 
   private async parseDirectLinkedQueryResultForTableFormat(
     queryResult: QueryTree,
-    testCaseToRequirementMap: Map<number, Set<any>>
+    testCaseToRelatedWiMap: Map<number, Set<any>>
   ) {
     const { columns, workItemRelations } = queryResult;
 
@@ -332,10 +368,10 @@ export default class TicketsDataProvider {
           true
         );
         //In case if source is a test case
-        this.mapTestCaseToRequirement(sourceWorkItem, testCaseToRequirementMap, targetWi);
+        this.mapTestCaseToRelatedItem(sourceWorkItem, targetWi, testCaseToRelatedWiMap);
 
         //In case of target is a test case
-        this.mapTestCaseToRequirement(targetWi, testCaseToRequirementMap, sourceWorkItem);
+        this.mapTestCaseToRelatedItem(targetWi, sourceWorkItem, testCaseToRelatedWiMap);
         const targets: any = sourceTargetsMap.get(sourceWorkItem) || [];
         targets.push(targetWi);
         sourceTargetsMap.set(sourceWorkItem, targets);
@@ -350,21 +386,21 @@ export default class TicketsDataProvider {
     };
   }
 
-  private mapTestCaseToRequirement(
-    testCaseItem: any,
-    testCaseToRequirementMap: Map<number, Set<any>>,
-    RequirementWi: any
+  private mapTestCaseToRelatedItem(
+    sourceWi: any,
+    targetWi: any,
+    testCaseToRelatedItemMap: Map<number, Set<any>>
   ) {
-    if (testCaseItem.fields['System.WorkItemType'] == 'Test Case') {
-      if (!testCaseToRequirementMap.has(testCaseItem.id)) {
-        testCaseToRequirementMap.set(testCaseItem.id, new Set());
+    if (sourceWi.fields['System.WorkItemType'] == 'Test Case') {
+      if (!testCaseToRelatedItemMap.has(sourceWi.id)) {
+        testCaseToRelatedItemMap.set(sourceWi.id, new Set());
       }
-      const requirementSet = testCaseToRequirementMap.get(testCaseItem.id);
-      if (requirementSet) {
+      const relatedItemsSet = testCaseToRelatedItemMap.get(sourceWi.id);
+      if (relatedItemsSet) {
         // Check if there's already an item with the same ID
-        const alreadyExists = [...requirementSet].some((reqItem) => reqItem.id === RequirementWi.id);
+        const alreadyExists = [...relatedItemsSet].some((reqItem) => reqItem.id === targetWi.id);
         if (!alreadyExists) {
-          requirementSet.add(RequirementWi);
+          relatedItemsSet.add(targetWi);
         }
       }
     }
@@ -974,14 +1010,19 @@ export default class TicketsDataProvider {
         break;
       }
     }
-
-    for (const tgt of target) {
-      if (wiql.includes(`Target.[System.WorkItemType] = '${tgt}'`)) {
+    // if target is empty, return true to support all target work item types
+    if (target.length === 0) {
+      if (wiql.includes(`Target.[System.WorkItemType]`)) {
         isTargetIncluded = true;
-        break;
+      }
+    } else {
+      for (const tgt of target) {
+        if (wiql.includes(`Target.[System.WorkItemType] = '${tgt}'`)) {
+          isTargetIncluded = true;
+          break;
+        }
       }
     }
-
     return isSourceIncluded && isTargetIncluded;
   }
 
