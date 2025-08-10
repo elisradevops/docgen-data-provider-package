@@ -171,14 +171,16 @@ export default class GitDataProvider {
     projectId: string,
     repositoryId: string,
     commitRange: any,
-    linkedWiOptions: any
+    linkedWiOptions: any,
+    includeUnlinkedCommits: boolean = false
   ) {
     //get all items linked to commits
     let res: any = [];
     let commitChangesArray: any = [];
+    let commitsWithNoRelations: any[] = [];
     //extract linked items and append them to result
     for (const commit of commitRange.value) {
-      if (commit.workItems) {
+      if (commit.workItems && commit.workItems.length > 0) {
         for (const wi of commit.workItems) {
           let populatedItem = await this.ticketsDataProvider.GetWorkItem(projectId, wi.id);
           let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
@@ -187,6 +189,17 @@ export default class GitDataProvider {
           );
           let changeSet: any = { workItem: populatedItem, commit: commit, linkedItems };
           commitChangesArray.push(changeSet);
+        }
+      } else {
+        // Handle commits with no linked work items
+        if (includeUnlinkedCommits) {
+          commitsWithNoRelations.push({
+            commitId: commit.commitId,
+            commitDate: commit.committer?.date,
+            committer: commit.committer?.name,
+            comment: commit.comment,
+            url: commit.remoteUrl,
+          });
         }
       }
     }
@@ -208,7 +221,7 @@ export default class GitDataProvider {
         workItemIds.push(res[index].workItem.id);
       }
     }
-    return res;
+    return { commitChangesArray: res, commitsWithNoRelations };
   } //GetItemsInCommitRange
 
   async GetPullRequestsInCommitRangeWithoutLinkedItems(
