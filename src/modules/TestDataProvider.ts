@@ -84,11 +84,10 @@ export default class TestDataProvider {
     project: string,
     planId: string,
     recursive: boolean,
-    flatTreeByOneLevel: boolean = false,
-    suiteIdsFilter?: number[]  // NEW: Pass through suite filter
+    suiteIdsFilter?: number[] // NEW: Pass through suite filter
   ): Promise<any> {
     let suiteId = Number(planId) + 1;
-    return this.GetTestSuiteById(project, planId, suiteId.toString(), recursive, flatTreeByOneLevel, suiteIdsFilter);
+    return this.GetTestSuiteById(project, planId, suiteId.toString(), recursive, suiteIdsFilter);
   }
 
   async GetTestSuiteById(
@@ -96,7 +95,6 @@ export default class TestDataProvider {
     planId: string,
     suiteId: string,
     recursive: boolean,
-    flatTreeByOneLevel: boolean = false,
     suiteIdsFilter?: number[]
   ): Promise<any> {
     let testSuites = await this.GetTestSuitesForPlan(project, planId);
@@ -107,17 +105,17 @@ export default class TestDataProvider {
     // Filter by specific suite IDs if provided (e.g., testSuiteArray: [30,32,33,34,31])
     if (suiteIdsFilter && suiteIdsFilter.length > 0) {
       // Convert filter IDs to strings once for efficient comparison
-      const filterAsStrings = suiteIdsFilter.map(id => id.toString());
-      
+      const filterAsStrings = suiteIdsFilter.map((id) => id.toString());
+
       filteredSuites = filteredSuites.filter((suite: any) => {
         const suiteIdString = suite.id.toString();
-        
+
         // Always include the starting suite (needed for findSuitesRecursive to work)
         const isStartingSuite = suiteIdString === suiteId;
-        
+
         // Check if suite ID is in the target filter list
         const isTargetSuite = filterAsStrings.includes(suiteIdString);
-        
+
         return isStartingSuite || isTargetSuite;
       });
     }
@@ -128,8 +126,7 @@ export default class TestDataProvider {
       project,
       filteredSuites,
       suiteId,
-      recursive,
-      flatTreeByOneLevel
+      recursive
     );
 
     return dataSuites;
@@ -157,12 +154,7 @@ export default class TestDataProvider {
     if (preFilteredSuites && preFilteredSuites.length > 0) {
       suitesTestCasesList = preFilteredSuites;
     } else {
-      suitesTestCasesList = await this.GetTestSuiteById(
-        project,
-        planId,
-        suiteId,
-        recursive
-      );
+      suitesTestCasesList = await this.GetTestSuiteById(project, planId, suiteId, recursive);
     }
 
     // Create array of promises that each return their test cases
