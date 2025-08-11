@@ -80,23 +80,58 @@ export default class TestDataProvider {
     return await this.fetchWithCache(url);
   }
 
-  async GetTestSuitesByPlan(project: string, planId: string, recursive: boolean): Promise<any> {
+  async GetTestSuitesByPlan(
+    project: string,
+    planId: string,
+    recursive: boolean,
+    flatTreeByOneLevel: boolean = false,
+    suiteIdsFilter?: number[]  // NEW: Pass through suite filter
+  ): Promise<any> {
     let suiteId = Number(planId) + 1;
-    return this.GetTestSuiteById(project, planId, suiteId.toString(), recursive);
+    return this.GetTestSuiteById(project, planId, suiteId.toString(), recursive, flatTreeByOneLevel, suiteIdsFilter);
   }
 
-  async GetTestSuiteById(project: string, planId: string, suiteId: string, recursive: boolean): Promise<any> {
+  async GetTestSuiteById(
+    project: string,
+    planId: string,
+    suiteId: string,
+    recursive: boolean,
+    flatTreeByOneLevel: boolean = false,
+    suiteIdsFilter?: number[]
+  ): Promise<any> {
     let testSuites = await this.GetTestSuitesForPlan(project, planId);
-    Helper.suitList = [];
+
+    // Start with all suites
+    let filteredSuites = testSuites.testSuites;
+
+    // Filter by specific suite IDs if provided (e.g., testSuiteArray: [30,32,33,34,31])
+    if (suiteIdsFilter && suiteIdsFilter.length > 0) {
+      // Convert filter IDs to strings once for efficient comparison
+      const filterAsStrings = suiteIdsFilter.map(id => id.toString());
+      
+      filteredSuites = filteredSuites.filter((suite: any) => {
+        const suiteIdString = suite.id.toString();
+        
+        // Always include the starting suite (needed for findSuitesRecursive to work)
+        const isStartingSuite = suiteIdString === suiteId;
+        
+        // Check if suite ID is in the target filter list
+        const isTargetSuite = filterAsStrings.includes(suiteIdString);
+        
+        return isStartingSuite || isTargetSuite;
+      });
+    }
+
     let dataSuites: any = Helper.findSuitesRecursive(
       planId,
       this.orgUrl,
       project,
-      testSuites.testSuites,
+      filteredSuites,
       suiteId,
-      recursive
+      recursive,
+      flatTreeByOneLevel
     );
-    Helper.first = true;
+
     return dataSuites;
   }
 
@@ -109,19 +144,26 @@ export default class TestDataProvider {
     CustomerRequirementId: boolean,
     isByRelatedLinkedMom: boolean,
     stepResultDetailsMap?: Map<string, any>,
-    testCaseToLinkedMomLookup?: Map<number, any>
+    testCaseToLinkedMomLookup?: Map<number, any>,
+    preFilteredSuites?: Array<suiteData>
   ): Promise<any> {
     let testCasesList: Array<any> = new Array<any>();
     const requirementToTestCaseTraceMap: Map<string, string[]> = new Map();
     const testCaseToRequirementsTraceMap: Map<string, string[]> = new Map();
     // const startTime = performance.now();
 
-    let suitesTestCasesList: Array<suiteData> = await this.GetTestSuiteById(
-      project,
-      planId,
-      suiteId,
-      recursive
-    );
+    // Use pre-filtered suites if provided, otherwise fetch them (for backward compatibility)
+    let suitesTestCasesList: Array<suiteData>;
+    if (preFilteredSuites && preFilteredSuites.length > 0) {
+      suitesTestCasesList = preFilteredSuites;
+    } else {
+      suitesTestCasesList = await this.GetTestSuiteById(
+        project,
+        planId,
+        suiteId,
+        recursive
+      );
+    }
 
     // Create array of promises that each return their test cases
     const testCaseListPromises = suitesTestCasesList.map((suite) =>
