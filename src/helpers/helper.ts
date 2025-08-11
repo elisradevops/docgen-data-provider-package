@@ -43,7 +43,7 @@ export class Helper {
    * @param suits - Array of all test suites
    * @param foundId - Starting suite ID to search from
    * @param recursive - Whether to search recursively or just direct children
-   * @param flatTreeByOneLevel - If true and there's only one level 1 suite with children, flatten the hierarchy by one level
+   * @param flatSuiteTestCases - If true and there's only one level 1 suite with children, flatten the hierarchy by one level
    * @returns Array of suiteData objects representing the hierarchy
    */
   public static findSuitesRecursive(
@@ -52,12 +52,8 @@ export class Helper {
     project: string,
     suits: any[],
     foundId: string,
-    recursive: boolean,
-    flatTreeByOneLevel: boolean = false
+    recursive: boolean
   ): Array<suiteData> {
-    console.log(`[findSuitesRecursive] Starting with foundId: ${foundId}, flatTreeByOneLevel: ${flatTreeByOneLevel}`);
-    console.log(`[findSuitesRecursive] Total suits provided: ${suits.length}`);
-    
     // Create a map for faster lookups
     const suiteMap = new Map<string, any>();
     suits.forEach((suite) => suiteMap.set(suite.id.toString(), suite));
@@ -68,23 +64,18 @@ export class Helper {
     // Find the starting suite
     const startingSuite = suiteMap.get(foundId);
     if (!startingSuite) {
-      console.log(`[findSuitesRecursive] ERROR: Starting suite ${foundId} not found in suite map`);
       return result;
     }
-
-    console.log(`[findSuitesRecursive] Starting suite found: ${startingSuite.title} (ID: ${startingSuite.id}, parentSuiteId: ${startingSuite.parentSuiteId})`);
 
     // Skip root suites (parentSuiteId = 0) - we don't want them in results
     // Just mark them as visited so we can process their children
     if (startingSuite.parentSuiteId === 0) {
-      console.log(`[findSuitesRecursive] Starting suite is root (parentSuiteId = 0), marking as visited`);
       visited.add(foundId);
     }
 
     // Build the hierarchy
     const startingLevel = startingSuite.parentSuiteId === 0 ? 1 : 0;
-    console.log(`[findSuitesRecursive] Building hierarchy starting at level: ${startingLevel}`);
-    
+
     this.buildSuiteHierarchy(
       suiteMap,
       foundId,
@@ -97,23 +88,6 @@ export class Helper {
       recursive
     );
 
-    console.log(`[findSuitesRecursive] Hierarchy built, result count: ${result.length}`);
-    console.log(`[findSuitesRecursive] Result suites:`, result.map(s => `${s.name} (ID: ${s.id}, level: ${s.level}, parent: ${s.parent})`));
-
-    // Apply flattening if conditions are met
-    if (flatTreeByOneLevel) {
-      console.log(`[findSuitesRecursive] Checking flattening conditions...`);
-      if (this.shouldFlattenHierarchy(result, suiteMap, foundId)) {
-        console.log(`[findSuitesRecursive] Flattening conditions met, applying flattening...`);
-        const flattened = this.flattenHierarchyByOneLevel(result, foundId);
-        console.log(`[findSuitesRecursive] After flattening:`, flattened.map(s => `${s.name} (ID: ${s.id}, level: ${s.level}, parent: ${s.parent})`));
-        return flattened;
-      } else {
-        console.log(`[findSuitesRecursive] Flattening conditions NOT met`);
-      }
-    }
-
-    console.log(`[findSuitesRecursive] Returning ${result.length} suites (no flattening applied)`);
     return result;
   }
 
@@ -197,86 +171,6 @@ export class Helper {
     }
 
     return suite;
-  }
-
-  /**
-   * Determines if hierarchy should be flattened based on conditions:
-   * - There is exactly one level 1 suite (direct child of root)
-   * - That suite has children (level 2+ suites)
-   */
-  private static shouldFlattenHierarchy(
-    result: Array<suiteData>,
-    suiteMap: Map<string, any>,
-    rootId: string
-  ): boolean {
-    console.log(`[shouldFlattenHierarchy] Checking flattening conditions for rootId: ${rootId}`);
-    console.log(`[shouldFlattenHierarchy] Total result suites: ${result.length}`);
-    
-    // Find all level 1 suites (direct children of root) - they have level 1
-    const level1Suites = result.filter((suite) => suite.level === 1);
-    console.log(`[shouldFlattenHierarchy] Found ${level1Suites.length} level 1 suites:`, level1Suites.map(s => `${s.name} (ID: ${s.id})`));
-
-    // Must have exactly one level 1 suite
-    if (level1Suites.length !== 1) {
-      console.log(`[shouldFlattenHierarchy] CONDITION FAILED: Not exactly one level 1 suite (found ${level1Suites.length})`);
-      return false;
-    }
-
-    const singleLevel1Suite = level1Suites[0];
-    console.log(`[shouldFlattenHierarchy] Single level 1 suite: ${singleLevel1Suite.name} (ID: ${singleLevel1Suite.id})`);
-
-    // Check if this suite has children by looking for suites with this suite as parent
-    const childrenInResult = result.filter((suite) => suite.parent === singleLevel1Suite.id);
-    console.log(`[shouldFlattenHierarchy] Found ${childrenInResult.length} children of level 1 suite:`, childrenInResult.map(s => `${s.name} (ID: ${s.id}, level: ${s.level})`));
-
-    // The suite must have children
-    const hasChildren = childrenInResult.length > 0;
-    console.log(`[shouldFlattenHierarchy] Suite has children: ${hasChildren}`);
-    console.log(`[shouldFlattenHierarchy] FLATTENING CONDITIONS ${hasChildren ? 'MET' : 'NOT MET'}`);
-    
-    return hasChildren;
-  }
-
-  /**
-   * Flattens the hierarchy by one level:
-   * - Removes the single level 1 suite
-   * - Promotes all level 2+ suites up by one level
-   * - Updates parentSuiteId of new level 1 suites to point to root
-   */
-  private static flattenHierarchyByOneLevel(result: Array<suiteData>, rootId: string): Array<suiteData> {
-    console.log(`[flattenHierarchyByOneLevel] Starting flattening process for rootId: ${rootId}`);
-    console.log(`[flattenHierarchyByOneLevel] Input suites:`, result.map(s => `${s.name} (ID: ${s.id}, level: ${s.level}, parent: ${s.parent})`));
-    
-    // Find the single level 1 suite to remove (level = 1)
-    const level1Suite = result.find((suite) => suite.level === 1);
-    if (!level1Suite) {
-      console.log(`[flattenHierarchyByOneLevel] ERROR: No level 1 suite found to remove`);
-      return result;
-    }
-
-    const level1SuiteId = level1Suite.id;
-    console.log(`[flattenHierarchyByOneLevel] Removing level 1 suite: ${level1Suite.name} (ID: ${level1SuiteId})`);
-
-    // Filter out the level 1 suite and adjust levels/parents for remaining suites
-    const flattenedResult = result
-      .filter((suite) => suite.id !== level1SuiteId) // Remove the level 1 suite
-      .map((suite) => {
-        const newSuite = new suiteData(suite.name, suite.id, suite.parent, suite.level - 1);
-        newSuite.url = suite.url;
-
-        // If this was a level 2 suite (child of the removed level 1 suite),
-        // update its parent to point to the root
-        if (suite.parent === level1SuiteId) {
-          console.log(`[flattenHierarchyByOneLevel] Updating parent of ${suite.name} from ${level1SuiteId} to ${rootId}`);
-          newSuite.parent = rootId;
-        }
-
-        console.log(`[flattenHierarchyByOneLevel] Processed suite: ${newSuite.name} (ID: ${newSuite.id}, level: ${suite.level} -> ${newSuite.level}, parent: ${suite.parent} -> ${newSuite.parent})`);
-        return newSuite;
-      });
-
-    console.log(`[flattenHierarchyByOneLevel] Flattening complete. Result:`, flattenedResult.map(s => `${s.name} (ID: ${s.id}, level: ${s.level}, parent: ${s.parent})`));
-    return flattenedResult;
   }
 
   public static levelList: Array<Workitem> = new Array<Workitem>();
