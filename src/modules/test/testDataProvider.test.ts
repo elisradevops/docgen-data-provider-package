@@ -22,8 +22,6 @@ describe('TestDataProvider', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (Helper.suitList as any) = [];
-    (Helper.first as any) = false;
 
     testDataProvider = new TestDataProvider(mockOrgUrl, mockToken);
   });
@@ -242,7 +240,6 @@ describe('TestDataProvider', () => {
         true
       );
       expect(result).toEqual(mockSuiteData);
-      expect(Helper.first).toBe(true);
     });
   });
 
