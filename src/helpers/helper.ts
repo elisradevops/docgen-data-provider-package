@@ -73,9 +73,19 @@ export class Helper {
       if (suits[i].parentSuiteId != 0) {
         // Child suites (parentSuiteId != 0)
         if (suits[i].parentSuiteId == foundId) {
+          // Find the parent suite's level in our current results
+          let parentLevel = this.level + 1; // Default fallback
+          for (let j = 0; j < this.suitList.length; j++) {
+            if (this.suitList[j].id == foundId) {
+              parentLevel = this.suitList[j].level + 1;
+              break;
+            }
+          }
+          
+
 
           // Found children of the selected suite - add them to results
-          let suit: suiteData = new suiteData(suits[i].title, suits[i].id, foundId, this.level + 2);
+          let suit: suiteData = new suiteData(suits[i].title, suits[i].id, foundId, parentLevel);
           suit.url =
             url + project + '/_testManagement?planId=' + planId + '&suiteId=' + suits[i].id + '&_a=tests';
           this.suitList.push(suit);
@@ -86,6 +96,7 @@ export class Helper {
           this.findSuitesRecursive(planId, url, project, suits, suits[i].id, true, false);
           this.level--; // Decrement level after recursive call
         } else if (suits[i].id == foundId && this.first) {
+
 
           // Found the selected nested suite itself - add it to results
           let suit: suiteData = new suiteData(
@@ -105,7 +116,7 @@ export class Helper {
       } else {
         // Root suites (parentSuiteId = 0) - these do NOT get added to results
         if (suits[i].id == foundId && Helper.first) {
-          console.log(`[findSuitesRecursive] DEBUG: Found root suite - NOT adding to results, just marking as processed: ${suits[i].title}`);
+
           let suit: suiteData = new suiteData(suits[i].title, suits[i].id, foundId, this.level);
           suit.url = url + project + '/_workitems/edit/' + suits[i].id;
           Helper.first = false;
