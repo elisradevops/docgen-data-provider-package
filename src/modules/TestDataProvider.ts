@@ -87,49 +87,40 @@ export default class TestDataProvider {
     suiteIdsFilter?: number[] // NEW: Pass through suite filter
   ): Promise<any> {
     let suiteId: string;
-    
+
     if (suiteIdsFilter && suiteIdsFilter.length > 0) {
       // When we have suite filtering, we need to find the "root" suite among the filtered suites
       // This is the suite that is highest in the hierarchy (i.e., its parent is not in the filter)
-      
 
-      
       // First get all suites to analyze the hierarchy
       let allTestSuites = await this.GetTestSuitesForPlan(project, planId);
       let allSuites = allTestSuites.testSuites;
-      
+
       // Create a map for quick lookup
       const suiteMap = new Map();
       allSuites.forEach((suite: any) => suiteMap.set(suite.id, suite));
-      
 
-      
       // Find ALL top-level suites in the filter (those whose parent is not in the filter)
       // These represent separate hierarchies that need to be processed independently
 
-      
       const topLevelSuites: string[] = [];
-      
+
       for (const filterSuiteId of suiteIdsFilter) {
         const suite = suiteMap.get(filterSuiteId) || suiteMap.get(parseInt(filterSuiteId.toString()));
         if (suite) {
-
-          
           // Check if this suite's parent is NOT in our filter (making it a top-level suite for our selection)
-          const parentInFilter = suiteIdsFilter.some(id => 
-            id.toString() === suite.parentSuiteId.toString() || 
-            parseInt(id.toString()) === suite.parentSuiteId
+          const parentInFilter = suiteIdsFilter.some(
+            (id) =>
+              id.toString() === suite.parentSuiteId.toString() ||
+              parseInt(id.toString()) === suite.parentSuiteId
           );
-          
-          if (!parentInFilter && suite.parentSuiteId !== 0) {
 
+          if (!parentInFilter && suite.parentSuiteId !== 0) {
             topLevelSuites.push(filterSuiteId.toString());
           }
         }
       }
-      
 
-      
       if (topLevelSuites.length === 0) {
         // Fallback: use first suite if no clear top-level suites found
         const selectedSuiteId = suiteIdsFilter[0].toString();
@@ -144,21 +135,25 @@ export default class TestDataProvider {
         // Multiple hierarchies: process each separately and combine results
 
         const allSuites: any[] = [];
-        
-        for (const topLevelSuiteId of topLevelSuites) {
 
-          const hierarchySuites = await this.GetTestSuiteById(project, planId, topLevelSuiteId, recursive, suiteIdsFilter);
+        for (const topLevelSuiteId of topLevelSuites) {
+          const hierarchySuites = await this.GetTestSuiteById(
+            project,
+            planId,
+            topLevelSuiteId,
+            recursive,
+            suiteIdsFilter
+          );
 
           allSuites.push(...hierarchySuites);
         }
-        
 
         return allSuites;
       }
     } else {
       suiteId = (Number(planId) + 1).toString();
     }
-    
+
     return this.GetTestSuiteById(project, planId, suiteId, recursive, suiteIdsFilter);
   }
 
@@ -169,37 +164,27 @@ export default class TestDataProvider {
     recursive: boolean,
     suiteIdsFilter?: number[]
   ): Promise<any> {
-
-    
     let testSuites = await this.GetTestSuitesForPlan(project, planId);
     let filteredSuites = testSuites.testSuites;
-    
-
 
     // Apply suite filtering if provided
     if (suiteIdsFilter && suiteIdsFilter.length > 0) {
-      const filterAsStrings = suiteIdsFilter.map(id => id.toString());
+      const filterAsStrings = suiteIdsFilter.map((id) => id.toString());
 
-      
       filteredSuites = testSuites.testSuites.filter((suite: any) => {
         const suiteIdString = suite.id.toString();
-        
+
         // Check if suite ID matches the starting suite
         const isStartingSuite = suiteIdString === suiteId;
-        
+
         // Check if suite ID is in the target filter list
         const isTargetSuite = filterAsStrings.includes(suiteIdString);
-        
-        const shouldInclude = isStartingSuite || isTargetSuite;
 
+        const shouldInclude = isStartingSuite || isTargetSuite;
 
         return shouldInclude;
       });
-      
-
     }
-
-
 
     let dataSuites: any = Helper.findSuitesRecursive(
       planId,
