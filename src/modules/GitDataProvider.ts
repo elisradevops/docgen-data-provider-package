@@ -40,6 +40,16 @@ export default class GitDataProvider {
     return jsonObject;
   } //GetJsonFileFromGitRepo
 
+  async GetTag(gitRepoUrl: string, tag: string) {
+    let url = `${gitRepoUrl}/refs/tags/${tag}?peelTags=true&api-version=5.1`;
+    return TFSServices.getItemContent(url, this.token, 'get');
+  } //GetTag
+
+  async GetBranch(gitRepoUrl: string, branch: string) {
+    let url = `${gitRepoUrl}/refs/heads/${branch}?api-version=5.1`;
+    return TFSServices.getItemContent(url, this.token, 'get');
+  } //GetBranch
+
   async GetFileFromGitRepo(
     projectName: string,
     repoId: string,
