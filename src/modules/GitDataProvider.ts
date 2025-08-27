@@ -578,7 +578,8 @@ export default class GitDataProvider {
     let url: string = '';
     switch (gitObjectType) {
       case 'tag':
-        url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repoId}/refs/tags?api-version=5.1`;
+        // peelTags=true ensures annotated tags are dereferenced to their target commit (peeledObjectId)
+        url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repoId}/refs/tags?peelTags=true&api-version=5.1`;
         break;
       case 'branch':
         url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repoId}/refs/heads?api-version=5.1`;
@@ -593,6 +594,57 @@ export default class GitDataProvider {
       return [];
     }
 
+    // For tags, sort by the commit date that the tag points to (most recent first).
+    if (gitObjectType === 'tag') {
+      // Resolve each tag to its commitId and fetch commit metadata for sorting
+      const taggedWithDates = await Promise.all(
+        res.value.map(async (refItem: any) => {
+          // For annotated tags, prefer peeledObjectId; for lightweight tags, objectId is the commit
+          const commitId = refItem.peeledObjectId || refItem.objectId;
+          let ts = 0;
+          try {
+            const commit = await this.GetCommitByCommitId(projectId, repoId, commitId);
+            const dateStr = commit?.committer?.date || commit?.author?.date;
+            ts = dateStr ? new Date(dateStr).getTime() : 0;
+          } catch {
+            // If commit cannot be resolved, leave timestamp as 0
+          }
+          return { refItem, ts };
+        })
+      );
+
+      taggedWithDates.sort((a: any, b: any) => b.ts - a.ts);
+      return taggedWithDates.map(({ refItem }: any) => ({
+        name: refItem.name.replace('refs/heads/', '').replace('refs/tags/', ''),
+        value: refItem.name,
+      }));
+    }
+
+    // For branches, sort by the tip commit date (most recent first)
+    if (gitObjectType === 'branch') {
+      const branchesWithDates = await Promise.all(
+        res.value.map(async (refItem: any) => {
+          const commitId = refItem.objectId; // branch tip sha
+          let ts = 0;
+          try {
+            const commit = await this.GetCommitByCommitId(projectId, repoId, commitId);
+            const dateStr = commit?.committer?.date || commit?.author?.date;
+            ts = dateStr ? new Date(dateStr).getTime() : 0;
+          } catch {
+            // ignore and keep ts=0
+          }
+          return { refItem, ts };
+        })
+      );
+
+      branchesWithDates.sort((a: any, b: any) => b.ts - a.ts);
+      return branchesWithDates.map(({ refItem }: any) => ({
+        name: refItem.name.replace('refs/heads/', '').replace('refs/tags/', ''),
+        value: refItem.name,
+      }));
+    }
+
+    // Default: return as-is
     return res.value.map((refItem: any) => ({
       name: refItem.name.replace('refs/heads/', '').replace('refs/tags/', ''),
       value: refItem.name,
