@@ -507,10 +507,14 @@ export default class GitDataProvider {
       return [];
     }
 
-    return res.value.map((commit: any) => ({
-      name: `${commit.commitId.slice(0, 7)} - ${commit.comment}`,
-      value: commit.commitId,
-    }));
+    return res.value.map((commit: any) => {
+      const dateStr = commit?.committer?.date || commit?.author?.date || undefined;
+      return {
+        name: `${commit.commitId.slice(0, 7)} - ${commit.comment}`,
+        value: commit.commitId,
+        date: dateStr,
+      };
+    });
   }
 
   async GetPullRequestsForRepo(projectName: string, repoID: string) {
@@ -602,21 +606,24 @@ export default class GitDataProvider {
           // For annotated tags, prefer peeledObjectId; for lightweight tags, objectId is the commit
           const commitId = refItem.peeledObjectId || refItem.objectId;
           let ts = 0;
+          let dateStr: string | null = null;
           try {
             const commit = await this.GetCommitByCommitId(projectId, repoId, commitId);
-            const dateStr = commit?.committer?.date || commit?.author?.date;
-            ts = dateStr ? new Date(dateStr).getTime() : 0;
+            const d = commit?.committer?.date || commit?.author?.date;
+            ts = d ? new Date(d).getTime() : 0;
+            dateStr = d || null;
           } catch {
             // If commit cannot be resolved, leave timestamp as 0
           }
-          return { refItem, ts };
+          return { refItem, ts, dateStr };
         })
       );
 
       taggedWithDates.sort((a: any, b: any) => b.ts - a.ts);
-      return taggedWithDates.map(({ refItem }: any) => ({
+      return taggedWithDates.map(({ refItem, dateStr }: any) => ({
         name: refItem.name.replace('refs/heads/', '').replace('refs/tags/', ''),
         value: refItem.name,
+        date: dateStr || undefined,
       }));
     }
 
@@ -626,21 +633,24 @@ export default class GitDataProvider {
         res.value.map(async (refItem: any) => {
           const commitId = refItem.objectId; // branch tip sha
           let ts = 0;
+          let dateStr: string | null = null;
           try {
             const commit = await this.GetCommitByCommitId(projectId, repoId, commitId);
-            const dateStr = commit?.committer?.date || commit?.author?.date;
-            ts = dateStr ? new Date(dateStr).getTime() : 0;
+            const d = commit?.committer?.date || commit?.author?.date;
+            ts = d ? new Date(d).getTime() : 0;
+            dateStr = d || null;
           } catch {
             // ignore and keep ts=0
           }
-          return { refItem, ts };
+          return { refItem, ts, dateStr };
         })
       );
 
       branchesWithDates.sort((a: any, b: any) => b.ts - a.ts);
-      return branchesWithDates.map(({ refItem }: any) => ({
+      return branchesWithDates.map(({ refItem, dateStr }: any) => ({
         name: refItem.name.replace('refs/heads/', '').replace('refs/tags/', ''),
         value: refItem.name,
+        date: dateStr || undefined,
       }));
     }
 
