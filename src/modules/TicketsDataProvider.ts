@@ -130,6 +130,16 @@ export default class TicketsDataProvider {
         case 'test-reporter':
           const testAssociatedTree = await this.fetchTestReporterQueries(queries);
           return { testAssociatedTree };
+        case 'srs':
+          //Based on fetch any queries by limited to Epic/Feature/Requirement
+          const systemRequirementsQueries = await this.fetchSystemRequirementQueries(queries);
+          const { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree } =
+            await this.fetchLinkedRequirementsTraceQueries(queries);
+          return {
+            systemRequirementsQueries,
+            systemToSoftwareRequirementsQueries: SystemToSoftwareRequirementsTree,
+            softwareToSystemRequirementsQueries: SoftwareToSystemRequirementsTree,
+          };
         case 'svd':
           return await this.fetchAnyQueries(queries);
         default:
@@ -273,6 +283,49 @@ export default class TicketsDataProvider {
       queries
     );
     return { systemOverviewQueryTree, knownBugsQueryTree };
+  }
+
+  private async fetchSystemRequirementQueries(queries: any) {
+    const { tree1: systemRequirementsQueryTree } = await this.structureFetchedQueries(
+      queries,
+      false,
+      null,
+      ['Epic', 'Feature', 'Requirement'],
+      [],
+      undefined,
+      undefined,
+      true // Enable processing of both tree and direct link queries (excluding flat queries)
+    );
+    return { systemRequirementsQueryTree };
+  }
+
+  /**
+   * Fetches and structures linked queries related to requirements traceability with area path filtering.
+   *
+   * This method retrieves and organizes the bidirectional relationships between
+   * Epic/Features/Requirements into two tree structures for traceability analysis.
+   * - Tree 1: Sources from area path containing "System" → Targets from area path containing "Software"
+   * - Tree 2: Sources from area path containing "Software" → Targets from area path containing "System" (reverse)
+   *
+   * @param queries - The input queries to be processed and structured.
+   * @param onlySourceSide - A flag indicating whether to process only the source side of the queries.
+   *                          Defaults to `false`.
+   * @returns An object containing two tree structures:
+   *          - `SystemToSoftwareRequirementsTree`: The tree representing System → Software Requirements traceability.
+   *          - `SoftwareToSystemRequirementsTree`: The tree representing Software → System Requirements traceability.
+   */
+  private async fetchLinkedRequirementsTraceQueries(queries: any, onlySourceSide: boolean = false) {
+    const { tree1: SystemToSoftwareRequirementsTree, tree2: SoftwareToSystemRequirementsTree } =
+      await this.structureFetchedQueries(
+        queries,
+        onlySourceSide,
+        null,
+        ['Epic', 'Feature', 'Requirement'],
+        ['Epic', 'Feature', 'Requirement'],
+        'System', // Source area filter for tree1: System area paths
+        'Software' // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
+      );
+    return { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree };
   }
 
   async GetQueryResultsFromWiql(
@@ -889,6 +942,9 @@ export default class TicketsDataProvider {
    * @param parentId - The ID of the parent node, used to maintain the hierarchy. Defaults to `null`.
    * @param sources - An array of source strings used to match queries.
    * @param targets - An array of target strings used to match queries.
+   * @param sourceAreaFilter - Optional area path filter for source (e.g., "System")
+   * @param targetAreaFilter - Optional area path filter for target (e.g., "Software")
+   * @param includeTreeQueries - Optional flag to include 'tree' queries in addition to 'oneHop' queries. Defaults to `false`.
    * @returns A promise that resolves to an object containing two trees (`tree1` and `tree2`),
    *          or `null` for each tree if no valid nodes are found.
    * @throws Logs an error if an exception occurs during processing.
@@ -898,38 +954,57 @@ export default class TicketsDataProvider {
     onlyTestReq: boolean,
     parentId: any = null,
     sources: string[],
-    targets: string[]
+    targets: string[],
+    sourceAreaFilter?: string,
+    targetAreaFilter?: string,
+    includeTreeQueries: boolean = false
   ): Promise<any> {
     try {
       if (!rootQuery.hasChildren) {
-        if (!rootQuery.isFolder && rootQuery.queryType === 'oneHop') {
+        if (!rootQuery.isFolder && (rootQuery.queryType === 'oneHop' || (includeTreeQueries && rootQuery.queryType === 'tree'))) {
           const wiql = rootQuery.wiql;
           let tree1Node = null;
           let tree2Node = null;
           // Check if the query is a requirement to test case query
           if (!onlyTestReq && this.matchesSourceTargetCondition(wiql, sources, targets)) {
-            tree1Node = {
-              id: rootQuery.id,
-              pId: parentId,
-              value: rootQuery.name,
-              title: rootQuery.name,
-              queryType: rootQuery.queryType,
-              columns: rootQuery.columns,
-              wiql: rootQuery._links.wiql ?? undefined,
-              isValidQuery: true,
-            };
+            // Additional area path filtering if specified
+            const matchesAreaPath =
+              sourceAreaFilter || targetAreaFilter
+                ? this.matchesAreaPathCondition(wiql, sourceAreaFilter || '', targetAreaFilter || '')
+                : true;
+
+            if (matchesAreaPath) {
+              tree1Node = {
+                id: rootQuery.id,
+                pId: parentId,
+                value: rootQuery.name,
+                title: rootQuery.name,
+                queryType: rootQuery.queryType,
+                columns: rootQuery.columns,
+                wiql: rootQuery._links.wiql ?? undefined,
+                isValidQuery: true,
+              };
+            }
           }
           if (this.matchesSourceTargetCondition(wiql, targets, sources)) {
-            tree2Node = {
-              id: rootQuery.id,
-              pId: parentId,
-              value: rootQuery.name,
-              title: rootQuery.name,
-              queryType: rootQuery.queryType,
-              columns: rootQuery.columns,
-              wiql: rootQuery._links.wiql ?? undefined,
-              isValidQuery: true,
-            };
+            // Additional area path filtering for reverse direction if specified
+            const matchesReverseAreaPath =
+              sourceAreaFilter || targetAreaFilter
+                ? this.matchesAreaPathCondition(wiql, targetAreaFilter || '', sourceAreaFilter || '')
+                : true;
+
+            if (matchesReverseAreaPath) {
+              tree2Node = {
+                id: rootQuery.id,
+                pId: parentId,
+                value: rootQuery.name,
+                title: rootQuery.name,
+                queryType: rootQuery.queryType,
+                columns: rootQuery.columns,
+                wiql: rootQuery._links.wiql ?? undefined,
+                isValidQuery: true,
+              };
+            }
           }
           return { tree1: tree1Node, tree2: tree2Node };
         } else {
@@ -941,14 +1016,32 @@ export default class TicketsDataProvider {
         const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
         const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
         return currentQuery
-          ? await this.structureFetchedQueries(currentQuery, onlyTestReq, currentQuery.id, sources, targets)
+          ? await this.structureFetchedQueries(
+              currentQuery,
+              onlyTestReq,
+              currentQuery.id,
+              sources,
+              targets,
+              sourceAreaFilter,
+              targetAreaFilter,
+              includeTreeQueries
+            )
           : { tree1: null, tree2: null };
       }
 
       // Process children recursively
       const childResults = await Promise.all(
         rootQuery.children.map((child: any) =>
-          this.structureFetchedQueries(child, onlyTestReq, rootQuery.id, sources, targets)
+          this.structureFetchedQueries(
+            child,
+            onlyTestReq,
+            rootQuery.id,
+            sources,
+            targets,
+            sourceAreaFilter,
+            targetAreaFilter,
+            includeTreeQueries
+          )
         )
       );
 
@@ -987,6 +1080,54 @@ export default class TicketsDataProvider {
       );
       logger.error(`Error stack ${err.message}`);
     }
+  }
+
+  /**
+   * Checks if WIQL matches area path conditions for System/Software requirements filtering
+   * @param wiql - The WIQL string to evaluate
+   * @param sourceAreaFilter - Area path filter for source (e.g., "System" or "Software")
+   * @param targetAreaFilter - Area path filter for target (e.g., "Software" or "System")
+   * @returns Boolean indicating if the WIQL matches the area path conditions
+   */
+  private matchesAreaPathCondition(
+    wiql: string,
+    sourceAreaFilter: string,
+    targetAreaFilter: string
+  ): boolean {
+    let hasSourceAreaPath = false;
+    let hasTargetAreaPath = false;
+
+    // Check for source area path condition
+    if (sourceAreaFilter) {
+      const sourceAreaPattern = new RegExp(
+        `Source\\.[^\\]]*AreaPath[^\\]]*[^']*'[^']*${sourceAreaFilter}[^']*'`,
+        'i'
+      );
+      const sourceUnderPattern = new RegExp(
+        `Source\\.[^\\]]*AreaPath[^\\]]*UNDER[^']*'[^']*${sourceAreaFilter}[^']*'`,
+        'i'
+      );
+      hasSourceAreaPath = sourceAreaPattern.test(wiql) || sourceUnderPattern.test(wiql);
+    } else {
+      hasSourceAreaPath = true; // No filter means match all
+    }
+
+    // Check for target area path condition
+    if (targetAreaFilter) {
+      const targetAreaPattern = new RegExp(
+        `Target\\.[^\\]]*AreaPath[^\\]]*[^']*'[^']*${targetAreaFilter}[^']*'`,
+        'i'
+      );
+      const targetUnderPattern = new RegExp(
+        `Target\\.[^\\]]*AreaPath[^\\]]*UNDER[^']*'[^']*${targetAreaFilter}[^']*'`,
+        'i'
+      );
+      hasTargetAreaPath = targetAreaPattern.test(wiql) || targetUnderPattern.test(wiql);
+    } else {
+      hasTargetAreaPath = true; // No filter means match all
+    }
+
+    return hasSourceAreaPath && hasTargetAreaPath;
   }
 
   /**
