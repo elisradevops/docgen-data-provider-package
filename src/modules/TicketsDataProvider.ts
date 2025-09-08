@@ -322,8 +322,8 @@ export default class TicketsDataProvider {
         null,
         ['Epic', 'Feature', 'Requirement'],
         ['Epic', 'Feature', 'Requirement'],
-        'System', // Source area filter for tree1: System area paths
-        'Software' // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
+        'sys', // Source area filter for tree1: System area paths
+        'soft' // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
       );
     return { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree };
   }
@@ -503,40 +503,56 @@ export default class TicketsDataProvider {
 
   private async parseTreeQueryResult(queryResult: QueryTree) {
     const { workItemRelations } = queryResult;
-    if (!workItemRelations) {
-      logger.warn(`No work items were found for this requested query`);
-      return null;
-    }
+    if (!workItemRelations) return null;
 
-    try {
-      // Step 1: Identify roots and prepare a map of all nodes
-      const allItems: any = {};
-      const roots = [];
-      for (const relation of workItemRelations) {
-        const target = relation.target;
-        // Initialize the node if it doesn't exist yet
-        if (!allItems[target.id]) {
-          await this.initTreeQueryResultItem(target, allItems);
-        }
+    const allItems: Record<number, any> = {};
+    const rootOrder: number[] = [];
+    const rootSet = new Set<number>(); // track roots for dedupe
 
-        if (relation.rel === null && relation.source === null) {
-          roots.push(allItems[target.id]);
-        } else if (relation.source) {
-          // This means target is a child of source
-          const parentId = relation.source.id;
-          if (!allItems[parentId]) {
-            const source = relation.source;
-            await this.initTreeQueryResultItem(source, allItems);
-          }
-          // Add the target as a child of the parent
-          allItems[parentId].children.push(allItems[target.id]);
+    // Initialize nodes and collect roots (the rows with rel === null && source === null)
+    for (const rel of workItemRelations) {
+      const t = rel.target;
+      if (!allItems[t.id]) await this.initTreeQueryResultItem(t, allItems);
+
+      if (rel.rel === null && rel.source === null) {
+        if (!rootSet.has(t.id)) {
+          rootSet.add(t.id);
+          rootOrder.push(t.id);
         }
       }
-
-      return roots;
-    } catch (error: any) {
-      logger.error(`could not parse requested tree query: ${error.message}`);
     }
+
+    // Attach only forward hierarchy edges; dedupe children by id per parent
+    for (const rel of workItemRelations) {
+      if (!rel.source) continue;
+      const linkType = (rel.rel || '').toLowerCase();
+      if (!linkType.includes('hierarchy-forward')) continue; // skip reverse/others
+
+      const parentId = rel.source.id;
+      const childId = rel.target.id;
+
+      if (!allItems[parentId]) await this.initTreeQueryResultItem(rel.source, allItems);
+      if (!allItems[childId]) await this.initTreeQueryResultItem(rel.target, allItems);
+
+      const parent = allItems[parentId];
+      parent._childrenSet ||= new Set<number>();
+      if (!parent._childrenSet.has(childId)) {
+        parent._childrenSet.add(childId);
+        parent.children.push(allItems[childId]);
+      }
+      // If this child was previously considered a root, remove it from roots
+      if (rootSet.has(childId)) rootSet.delete(childId);
+    }
+
+    // Return roots in original order, excluding those that became children
+    const roots = rootOrder.filter((id) => rootSet.has(id)).map((id) => allItems[id]);
+    // Optional: clean helper sets
+    for (const id in allItems) delete allItems[id]._childrenSet;
+
+    return {
+      roots, // your parsed tree (what you currently return)
+      workItemRelations, // add this line
+    };
   }
 
   private async initTreeQueryResultItem(item: any, allItems: any) {
@@ -961,7 +977,10 @@ export default class TicketsDataProvider {
   ): Promise<any> {
     try {
       if (!rootQuery.hasChildren) {
-        if (!rootQuery.isFolder && (rootQuery.queryType === 'oneHop' || (includeTreeQueries && rootQuery.queryType === 'tree'))) {
+        if (
+          !rootQuery.isFolder &&
+          (rootQuery.queryType === 'oneHop' || (includeTreeQueries && rootQuery.queryType === 'tree'))
+        ) {
           const wiql = rootQuery.wiql;
           let tree1Node = null;
           let tree2Node = null;
@@ -1094,38 +1113,32 @@ export default class TicketsDataProvider {
     sourceAreaFilter: string,
     targetAreaFilter: string
   ): boolean {
-    let hasSourceAreaPath = false;
-    let hasTargetAreaPath = false;
+    const wiqlLower = (wiql || '').toLowerCase();
+    const srcFilter = (sourceAreaFilter || '').toLowerCase().trim();
+    const tgtFilter = (targetAreaFilter || '').toLowerCase().trim();
 
-    // Check for source area path condition
-    if (sourceAreaFilter) {
-      const sourceAreaPattern = new RegExp(
-        `Source\\.[^\\]]*AreaPath[^\\]]*[^']*'[^']*${sourceAreaFilter}[^']*'`,
-        'i'
-      );
-      const sourceUnderPattern = new RegExp(
-        `Source\\.[^\\]]*AreaPath[^\\]]*UNDER[^']*'[^']*${sourceAreaFilter}[^']*'`,
-        'i'
-      );
-      hasSourceAreaPath = sourceAreaPattern.test(wiql) || sourceUnderPattern.test(wiql);
-    } else {
-      hasSourceAreaPath = true; // No filter means match all
-    }
+    const extractAreaPaths = (owner: 'source' | 'target'): string[] => {
+      const re = new RegExp(`${owner}\\.\\[system\\.areapath\\][^']*'([^']+)'`, 'gi');
+      const results: string[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(wiqlLower)) !== null) {
+        // match[1] is the quoted area path value already in lowercase (because wiqlLower)
+        results.push(match[1]);
+      }
+      return results;
+    };
 
-    // Check for target area path condition
-    if (targetAreaFilter) {
-      const targetAreaPattern = new RegExp(
-        `Target\\.[^\\]]*AreaPath[^\\]]*[^']*'[^']*${targetAreaFilter}[^']*'`,
-        'i'
-      );
-      const targetUnderPattern = new RegExp(
-        `Target\\.[^\\]]*AreaPath[^\\]]*UNDER[^']*'[^']*${targetAreaFilter}[^']*'`,
-        'i'
-      );
-      hasTargetAreaPath = targetAreaPattern.test(wiql) || targetUnderPattern.test(wiql);
-    } else {
-      hasTargetAreaPath = true; // No filter means match all
-    }
+    const getLeaf = (p: string): string => {
+      const parts = p.split(/[\\/]/); // supports both \\ and /
+      return parts[parts.length - 1] || p;
+    };
+
+    const sourceAreaPaths = extractAreaPaths('source');
+    const targetAreaPaths = extractAreaPaths('target');
+
+    // Match only against the sub-area (leaf) name, e.g. Test CMMI\\Software_Requirement -> Software_Requirement
+    const hasSourceAreaPath = !srcFilter || sourceAreaPaths.some((p) => getLeaf(p).includes(srcFilter));
+    const hasTargetAreaPath = !tgtFilter || targetAreaPaths.some((p) => getLeaf(p).includes(tgtFilter));
 
     return hasSourceAreaPath && hasTargetAreaPath;
   }
