@@ -19,7 +19,6 @@
     "@types/caseless": "^0.12.5",
     "@types/istanbul-lib-report": "^3.0.3",
     "@types/jest": "^29.5.12",
-    "@types/request": "^2.48.5",
     "@types/tough-cookie": "^4.0.5",
     "@types/yargs-parser": "^21.0.3",
     "dotenv": "^16.4.5",
@@ -33,7 +32,6 @@
     "@types/xml2js": "^0.4.5",
     "axios": "^1.7.2",
     "p-limit": "^3.1.0",
-    "request": "^2.88.2",
     "winston": "^3.13.1",
     "winston-transport-browserconsole": "^1.0.5",
     "xml2js": "^0.6.2"

@@ -234,7 +234,6 @@ export default class TicketsDataProvider {
         'Test Suite',
       ]
     );
-    logger.debug(`Linked mom tree: ${JSON.stringify(linkedMomTree)}`);
     return { linkedMomTree };
   }
 
