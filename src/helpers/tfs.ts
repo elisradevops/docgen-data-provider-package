@@ -1,28 +1,35 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import logger from '../utils/logger';
 
-export class TFSServices {
-  // Connection pooling
-  private static connectionPool = {
-    httpAgent: new (require('http').Agent)({
-      keepAlive: true,
-      maxSockets: 50, // Allow more connections
-      keepAliveMsecs: 300000, // Keep connections alive longer
-    }),
-    httpsAgent: new (require('https').Agent)({
-      keepAlive: true,
-      maxSockets: 50,
-      keepAliveMsecs: 300000,
-      // PAT handles authentication, so we can safely disable cert validation
-      rejectUnauthorized: false,
-    }),
-  };
+// Environment detection
+const isNode = typeof window === 'undefined' && typeof process !== 'undefined' && process.versions?.node;
 
-  // Axios instance with connection reuse
-  private static axiosInstance: AxiosInstance = axios.create({
-    httpAgent: this.connectionPool.httpAgent,
-    httpsAgent: this.connectionPool.httpsAgent,
-  });
+export class TFSServices {
+  // Universal axios instance with environment-specific configuration
+  private static axiosInstance: AxiosInstance = axios.create(
+    isNode
+      ? {
+          // Node.js configuration with connection pooling and HTTPS handling
+          httpAgent: new (require('http').Agent)({
+            keepAlive: true,
+            maxSockets: 50,
+            keepAliveMsecs: 300000,
+          }),
+          httpsAgent: new (require('https').Agent)({
+            keepAlive: true,
+            maxSockets: 50,
+            keepAliveMsecs: 300000,
+            // Disable SSL certificate validation
+            rejectUnauthorized: false,
+          }),
+          timeout: 30000,
+        }
+      : {
+          // Browser configuration - browsers handle HTTPS automatically
+          timeout: 30000,
+          maxRedirects: 5,
+        }
+  );
 
   public static async downloadZipFile(url: string, pat: string): Promise<any> {
     try {
