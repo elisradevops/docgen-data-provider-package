@@ -66,6 +66,9 @@ export class TFSServices {
       const base64String = Buffer.from(response.data, 'binary').toString('base64');
       const contentType = response.headers['content-type'] || 'application/octet-stream';
       const mimeType = contentType.split(';')[0].trim();
+      if (!mimeType.startsWith('image/')) {
+        throw new Error(`Expected image content but received '${mimeType}'`);
+      }
       return `data:${mimeType};base64,${base64String}`;
     });
   }

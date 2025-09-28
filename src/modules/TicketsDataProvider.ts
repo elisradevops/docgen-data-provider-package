@@ -1216,4 +1216,58 @@ export default class TicketsDataProvider {
       throw err;
     }
   }
+
+  public async GetWorkItemTypeList(project: string) {
+    try {
+      let url = `${this.orgUrl}${project}/_apis/wit/workitemtypes?api-version=5.1`;
+      const { value: workItemTypes } = await TFSServices.getItemContent(url, this.token);
+      const workItemTypesWithIcons = await Promise.all(
+        workItemTypes.map(async (workItemType: any) => {
+          let iconDataUrl: string | null = null;
+          const iconUrl = workItemType?.icon?.url;
+
+          if (iconUrl) {
+            const acceptHeaders = ['image/svg+xml', 'image/png'];
+            for (const accept of acceptHeaders) {
+              try {
+                iconDataUrl = await TFSServices.fetchAzureDevOpsImageAsBase64(
+                  iconUrl,
+                  this.token,
+                  'get',
+                  {},
+                  { Accept: accept }
+                );
+                if (iconDataUrl) break;
+              } catch (error: any) {
+                logger.warn(
+                  `Failed to download icon (${accept}) for work item type ${
+                    workItemType?.name ?? 'unknown'
+                  }: ${error?.message || error}`
+                );
+              }
+            }
+          }
+
+          const iconPayload = workItemType.icon
+            ? { ...workItemType.icon, dataUrl: iconDataUrl }
+            : iconDataUrl
+            ? { id: undefined, url: undefined, dataUrl: iconDataUrl }
+            : workItemType.icon;
+
+          return {
+            name: workItemType.name,
+            referenceName: workItemType.referenceName,
+            color: workItemType.color,
+            icon: iconPayload,
+            states: workItemType.states,
+          };
+        })
+      );
+
+      return workItemTypesWithIcons;
+    } catch (err: any) {
+      logger.error(`Error occurred during fetching work item types: ${err.message}`);
+      throw err;
+    }
+  }
 }
