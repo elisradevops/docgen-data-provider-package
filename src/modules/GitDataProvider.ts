@@ -320,7 +320,9 @@ export default class GitDataProvider {
       if (extendedCommits?.length === 0) {
         throw new Error('extended commits cannot be empty');
       }
-      logger.debug(`getItemsForPipelineRange: ${extendedCommits?.length} commits for ${targetRepo?.name}`);
+      logger.debug(
+        `getItemsForPipelineRange: ${extendedCommits?.length} commits for ${JSON.stringify(targetRepo)}`
+      );
       //First fetch the repo web url
       if (targetRepo.url) {
         const repoData = await TFSServices.getItemContent(targetRepo.url, this.token);
