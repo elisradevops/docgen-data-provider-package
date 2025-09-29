@@ -131,15 +131,7 @@ export default class TicketsDataProvider {
           const testAssociatedTree = await this.fetchTestReporterQueries(queries);
           return { testAssociatedTree };
         case 'srs':
-          //Based on fetch any queries by limited to Epic/Feature/Requirement
-          const systemRequirementsQueries = await this.fetchSystemRequirementQueries(queries);
-          const { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree } =
-            await this.fetchLinkedRequirementsTraceQueries(queries);
-          return {
-            systemRequirementsQueries,
-            systemToSoftwareRequirementsQueries: SystemToSoftwareRequirementsTree,
-            softwareToSystemRequirementsQueries: SoftwareToSystemRequirementsTree,
-          };
+          return await this.fetchSrsQueries(queries);
         case 'svd':
           return await this.fetchAnyQueries(queries);
         default:
@@ -284,7 +276,7 @@ export default class TicketsDataProvider {
     return { systemOverviewQueryTree, knownBugsQueryTree };
   }
 
-  private async fetchSystemRequirementQueries(queries: any) {
+  private async fetchSystemRequirementQueries(queries: any, excludedFolderNames: string[] = []) {
     const { tree1: systemRequirementsQueryTree } = await this.structureFetchedQueries(
       queries,
       false,
@@ -293,9 +285,52 @@ export default class TicketsDataProvider {
       [],
       undefined,
       undefined,
-      true // Enable processing of both tree and direct link queries (excluding flat queries)
+      true, // Enable processing of both tree and direct link queries (excluding flat queries)
+      excludedFolderNames
     );
     return { systemRequirementsQueryTree };
+  }
+
+  private async fetchSrsQueries(rootQueries: any) {
+    const srsFolder = await this.findQueryFolderByName(rootQueries, 'srs');
+    if (!srsFolder) {
+      const systemRequirementsQueries = await this.fetchSystemRequirementQueries(rootQueries);
+      const { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree } =
+        await this.fetchLinkedRequirementsTraceQueries(rootQueries);
+      return {
+        systemRequirementsQueries,
+        systemToSoftwareRequirementsQueries: SystemToSoftwareRequirementsTree,
+        softwareToSystemRequirementsQueries: SoftwareToSystemRequirementsTree,
+      };
+    }
+
+    const srsFolderWithChildren = await this.ensureQueryChildren(srsFolder);
+    const systemRequirementsQueries = await this.fetchSystemRequirementQueries(srsFolderWithChildren, [
+      'System to Software',
+      'Software to System',
+    ]);
+
+    const systemToSoftwareFolder = await this.findChildFolderByName(
+      srsFolderWithChildren,
+      'System to Software'
+    );
+    const softwareToSystemFolder = await this.findChildFolderByName(
+      srsFolderWithChildren,
+      'Software to System'
+    );
+
+    const systemToSoftwareRequirementsQueries = await this.fetchRequirementsTraceQueriesForFolder(
+      systemToSoftwareFolder
+    );
+    const softwareToSystemRequirementsQueries = await this.fetchRequirementsTraceQueriesForFolder(
+      softwareToSystemFolder
+    );
+
+    return {
+      systemRequirementsQueries,
+      systemToSoftwareRequirementsQueries,
+      softwareToSystemRequirementsQueries,
+    };
   }
 
   /**
@@ -325,6 +360,86 @@ export default class TicketsDataProvider {
         'soft' // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
       );
     return { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree };
+  }
+
+  private async fetchRequirementsTraceQueriesForFolder(folder: any) {
+    if (!folder) {
+      return null;
+    }
+
+    const { tree1 } = await this.structureFetchedQueries(
+      folder,
+      false,
+      null,
+      ['Epic', 'Feature', 'Requirement'],
+      ['Epic', 'Feature', 'Requirement'],
+      undefined,
+      undefined,
+      true
+    );
+    return tree1;
+  }
+
+  private async findQueryFolderByName(rootQuery: any, folderName: string): Promise<any | null> {
+    if (!rootQuery || !folderName) {
+      return null;
+    }
+
+    const normalizedName = folderName.toLowerCase();
+    const queue: any[] = [rootQuery];
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
+
+      if (current.isFolder && (current.name || '').toLowerCase() === normalizedName) {
+        return current;
+      }
+
+      if (current.hasChildren) {
+        const currentWithChildren = await this.ensureQueryChildren(current);
+        if (currentWithChildren?.children?.length) {
+          queue.push(...currentWithChildren.children);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private async findChildFolderByName(parent: any, childName: string): Promise<any | null> {
+    if (!parent || !childName) {
+      return null;
+    }
+
+    const parentWithChildren = await this.ensureQueryChildren(parent);
+    if (!parentWithChildren?.children?.length) {
+      return null;
+    }
+
+    const normalizedName = childName.toLowerCase();
+    return (
+      parentWithChildren.children.find(
+        (child: any) => child.isFolder && (child.name || '').toLowerCase() === normalizedName
+      ) || null
+    );
+  }
+
+  private async ensureQueryChildren(node: any): Promise<any> {
+    if (!node || !node.hasChildren || node.children) {
+      return node;
+    }
+
+    if (!node.url) {
+      return node;
+    }
+
+    const queryUrl = `${node.url}?$depth=2&$expand=all`;
+    const refreshedNode = await TFSServices.getItemContent(queryUrl, this.token);
+    Object.assign(node, refreshedNode);
+    return node;
   }
 
   async GetQueryResultsFromWiql(
@@ -972,9 +1087,20 @@ export default class TicketsDataProvider {
     targets: string[],
     sourceAreaFilter?: string,
     targetAreaFilter?: string,
-    includeTreeQueries: boolean = false
+    includeTreeQueries: boolean = false,
+    excludedFolderNames: string[] = []
   ): Promise<any> {
     try {
+      const shouldSkipFolder =
+        rootQuery?.isFolder &&
+        excludedFolderNames.some(
+          (folderName) => folderName.toLowerCase() === (rootQuery.name || '').toLowerCase()
+        );
+
+      if (shouldSkipFolder) {
+        return { tree1: null, tree2: null };
+      }
+
       if (!rootQuery.hasChildren) {
         if (
           !rootQuery.isFolder &&
@@ -1042,7 +1168,8 @@ export default class TicketsDataProvider {
               targets,
               sourceAreaFilter,
               targetAreaFilter,
-              includeTreeQueries
+              includeTreeQueries,
+              excludedFolderNames
             )
           : { tree1: null, tree2: null };
       }
@@ -1058,7 +1185,8 @@ export default class TicketsDataProvider {
             targets,
             sourceAreaFilter,
             targetAreaFilter,
-            includeTreeQueries
+            includeTreeQueries,
+            excludedFolderNames
           )
         )
       );
