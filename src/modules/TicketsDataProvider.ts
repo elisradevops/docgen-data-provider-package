@@ -619,14 +619,22 @@ export default class TicketsDataProvider {
     const { workItemRelations } = queryResult;
     if (!workItemRelations) return null;
 
+    logger.debug(`parseTreeQueryResult: Processing ${workItemRelations.length} workItemRelations`);
+
     const allItems: Record<number, any> = {};
     const rootOrder: number[] = [];
     const rootSet = new Set<number>(); // track roots for dedupe
 
-    // Initialize nodes and collect roots (the rows with rel === null && source === null)
+    // Initialize ALL nodes from workItemRelations (not just hierarchy ones)
+    // This ensures nodes with non-hierarchy links are also available
     for (const rel of workItemRelations) {
       const t = rel.target;
       if (!allItems[t.id]) await this.initTreeQueryResultItem(t, allItems);
+      
+      // Also initialize source nodes if they exist
+      if (rel.source && !allItems[rel.source.id]) {
+        await this.initTreeQueryResultItem(rel.source, allItems);
+      }
 
       if (rel.rel === null && rel.source === null) {
         if (!rootSet.has(t.id)) {
@@ -635,37 +643,57 @@ export default class TicketsDataProvider {
         }
       }
     }
+    logger.debug(`parseTreeQueryResult: Found ${rootOrder.length} roots, ${Object.keys(allItems).length} total nodes`);
 
     // Attach only forward hierarchy edges; dedupe children by id per parent
+    let hierarchyCount = 0;
+    let skippedNonHierarchy = 0;
     for (const rel of workItemRelations) {
       if (!rel.source) continue;
       const linkType = (rel.rel || '').toLowerCase();
-      if (!linkType.includes('hierarchy-forward')) continue; // skip reverse/others
+      if (!linkType.includes('hierarchy-forward')) {
+        skippedNonHierarchy++;
+        continue; // skip reverse/others
+      }
 
       const parentId = rel.source.id;
       const childId = rel.target.id;
 
-      if (!allItems[parentId]) await this.initTreeQueryResultItem(rel.source, allItems);
-      if (!allItems[childId]) await this.initTreeQueryResultItem(rel.target, allItems);
+      // Nodes should already be initialized, but double-check
+      if (!allItems[parentId]) {
+        logger.warn(`Parent ${parentId} not found, initializing now`);
+        await this.initTreeQueryResultItem(rel.source, allItems);
+      }
+      if (!allItems[childId]) {
+        logger.warn(`Child ${childId} not found, initializing now`);
+        await this.initTreeQueryResultItem(rel.target, allItems);
+      }
 
       const parent = allItems[parentId];
       parent._childrenSet ||= new Set<number>();
       if (!parent._childrenSet.has(childId)) {
         parent._childrenSet.add(childId);
         parent.children.push(allItems[childId]);
+        hierarchyCount++;
       }
       // If this child was previously considered a root, remove it from roots
-      if (rootSet.has(childId)) rootSet.delete(childId);
+      if (rootSet.has(childId)) {
+        rootSet.delete(childId);
+      }
     }
+    logger.debug(`parseTreeQueryResult: ${hierarchyCount} hierarchy links, ${skippedNonHierarchy} non-hierarchy links skipped`);
 
     // Return roots in original order, excluding those that became children
     const roots = rootOrder.filter((id) => rootSet.has(id)).map((id) => allItems[id]);
+    logger.debug(`parseTreeQueryResult: Returning ${roots.length} roots with ${Object.keys(allItems).length} total items`);
+    
     // Optional: clean helper sets
     for (const id in allItems) delete allItems[id]._childrenSet;
 
     return {
       roots, // your parsed tree (what you currently return)
-      workItemRelations, // add this line
+      workItemRelations, // all relations for link-driven rendering
+      allItems, // all fetched items (including those not in hierarchy)
     };
   }
 
@@ -1274,37 +1302,79 @@ export default class TicketsDataProvider {
    * Determines whether the given WIQL (Work Item Query Language) string matches the specified
    * source and target conditions. It checks if the WIQL contains references to the specified
    * source and target work item types.
+   * 
+   * Supports both equality (=) and IN operators:
+   * - Source.[System.WorkItemType] = 'Epic'
+   * - Source.[System.WorkItemType] IN ('Epic', 'Feature', 'Requirement')
    *
    * @param wiql - The WIQL string to evaluate.
    * @param source - An array of source work item types to check for in the WIQL.
    * @param target - An array of target work item types to check for in the WIQL.
-   * @returns A boolean indicating whether the WIQL includes at least one source work item type
-   *          and at least one target work item type.
+   * @returns A boolean indicating whether the WIQL includes at least one valid source work item type
+   *          and at least one valid target work item type.
    */
   private matchesSourceTargetCondition(wiql: string, source: string[], target: string[]): boolean {
-    let isSourceIncluded = false;
-    let isTargetIncluded = false;
-
-    for (const src of source) {
-      if (wiql.includes(`Source.[System.WorkItemType] = '${src}'`)) {
-        isSourceIncluded = true;
-        break;
-      }
-    }
-    // if target is empty, return true to support all target work item types
-    if (target.length === 0) {
-      if (wiql.includes(`Target.[System.WorkItemType]`)) {
-        isTargetIncluded = true;
-      }
-    } else {
-      for (const tgt of target) {
-        if (wiql.includes(`Target.[System.WorkItemType] = '${tgt}'`)) {
-          isTargetIncluded = true;
-          break;
-        }
-      }
-    }
+    const isSourceIncluded = this.matchesWorkItemTypeCondition(wiql, 'Source', source);
+    const isTargetIncluded = this.matchesWorkItemTypeCondition(wiql, 'Target', target);
     return isSourceIncluded && isTargetIncluded;
+  }
+
+  /**
+   * Helper method to check if a WIQL contains valid work item types for a given context (Source/Target).
+   * Supports both = and IN operators.
+   * 
+   * @param wiql - The WIQL string to evaluate
+   * @param context - Either 'Source' or 'Target'
+   * @param allowedTypes - Array of allowed work item types
+   * @returns true if all work item types in the WIQL are in the allowedTypes array
+   */
+  private matchesWorkItemTypeCondition(wiql: string, context: 'Source' | 'Target', allowedTypes: string[]): boolean {
+    // If allowedTypes is empty, accept any work item type (for backward compatibility)
+    if (allowedTypes.length === 0) {
+      return wiql.includes(`${context}.[System.WorkItemType]`);
+    }
+
+    const fieldPattern = `${context}.\\[System.WorkItemType\\]`;
+    
+    // Pattern for equality: Source.[System.WorkItemType] = 'Epic'
+    const equalityRegex = new RegExp(`${fieldPattern}\\s*=\\s*'([^']+)'`, 'gi');
+    
+    // Pattern for IN operator: Source.[System.WorkItemType] IN ('Epic', 'Feature', 'Requirement')
+    const inRegex = new RegExp(`${fieldPattern}\\s+IN\\s*\\(([^)]+)\\)`, 'gi');
+
+    const foundTypes = new Set<string>();
+
+    // Extract types from equality operators
+    let match;
+    while ((match = equalityRegex.exec(wiql)) !== null) {
+      foundTypes.add(match[1].trim());
+    }
+
+    // Extract types from IN operators
+    while ((match = inRegex.exec(wiql)) !== null) {
+      const typesString = match[1];
+      // Extract all quoted values from the IN clause
+      const typeMatches = typesString.matchAll(/'([^']+)'/g);
+      for (const typeMatch of typeMatches) {
+        foundTypes.add(typeMatch[1].trim());
+      }
+    }
+
+    // If no work item types found in WIQL, return false
+    if (foundTypes.size === 0) {
+      return false;
+    }
+
+    // Check if all found types are in the allowedTypes array
+    for (const type of foundTypes) {
+      if (!allowedTypes.includes(type)) {
+        // Found a type that's not in the allowed list - reject this query
+        return false;
+      }
+    }
+
+    // All found types are valid
+    return true;
   }
 
   // check if the query is a bug query
