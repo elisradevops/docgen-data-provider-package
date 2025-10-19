@@ -630,7 +630,7 @@ export default class TicketsDataProvider {
     for (const rel of workItemRelations) {
       const t = rel.target;
       if (!allItems[t.id]) await this.initTreeQueryResultItem(t, allItems);
-      
+
       // Also initialize source nodes if they exist
       if (rel.source && !allItems[rel.source.id]) {
         await this.initTreeQueryResultItem(rel.source, allItems);
@@ -643,7 +643,9 @@ export default class TicketsDataProvider {
         }
       }
     }
-    logger.debug(`parseTreeQueryResult: Found ${rootOrder.length} roots, ${Object.keys(allItems).length} total nodes`);
+    logger.debug(
+      `parseTreeQueryResult: Found ${rootOrder.length} roots, ${Object.keys(allItems).length} total nodes`
+    );
 
     // Attach only forward hierarchy edges; dedupe children by id per parent
     let hierarchyCount = 0;
@@ -681,12 +683,16 @@ export default class TicketsDataProvider {
         rootSet.delete(childId);
       }
     }
-    logger.debug(`parseTreeQueryResult: ${hierarchyCount} hierarchy links, ${skippedNonHierarchy} non-hierarchy links skipped`);
+    logger.debug(
+      `parseTreeQueryResult: ${hierarchyCount} hierarchy links, ${skippedNonHierarchy} non-hierarchy links skipped`
+    );
 
     // Return roots in original order, excluding those that became children
     const roots = rootOrder.filter((id) => rootSet.has(id)).map((id) => allItems[id]);
-    logger.debug(`parseTreeQueryResult: Returning ${roots.length} roots with ${Object.keys(allItems).length} total items`);
-    
+    logger.debug(
+      `parseTreeQueryResult: Returning ${roots.length} roots with ${Object.keys(allItems).length} total items`
+    );
+
     // Optional: clean helper sets
     for (const id in allItems) delete allItems[id]._childrenSet;
 
@@ -1302,7 +1308,7 @@ export default class TicketsDataProvider {
    * Determines whether the given WIQL (Work Item Query Language) string matches the specified
    * source and target conditions. It checks if the WIQL contains references to the specified
    * source and target work item types.
-   * 
+   *
    * Supports both equality (=) and IN operators:
    * - Source.[System.WorkItemType] = 'Epic'
    * - Source.[System.WorkItemType] IN ('Epic', 'Feature', 'Requirement')
@@ -1322,23 +1328,27 @@ export default class TicketsDataProvider {
   /**
    * Helper method to check if a WIQL contains valid work item types for a given context (Source/Target).
    * Supports both = and IN operators.
-   * 
+   *
    * @param wiql - The WIQL string to evaluate
    * @param context - Either 'Source' or 'Target'
    * @param allowedTypes - Array of allowed work item types
    * @returns true if all work item types in the WIQL are in the allowedTypes array
    */
-  private matchesWorkItemTypeCondition(wiql: string, context: 'Source' | 'Target', allowedTypes: string[]): boolean {
+  private matchesWorkItemTypeCondition(
+    wiql: string,
+    context: 'Source' | 'Target',
+    allowedTypes: string[]
+  ): boolean {
     // If allowedTypes is empty, accept any work item type (for backward compatibility)
     if (allowedTypes.length === 0) {
       return wiql.includes(`${context}.[System.WorkItemType]`);
     }
 
     const fieldPattern = `${context}.\\[System.WorkItemType\\]`;
-    
+
     // Pattern for equality: Source.[System.WorkItemType] = 'Epic'
     const equalityRegex = new RegExp(`${fieldPattern}\\s*=\\s*'([^']+)'`, 'gi');
-    
+
     // Pattern for IN operator: Source.[System.WorkItemType] IN ('Epic', 'Feature', 'Requirement')
     const inRegex = new RegExp(`${fieldPattern}\\s+IN\\s*\\(([^)]+)\\)`, 'gi');
 
@@ -1467,5 +1477,208 @@ export default class TicketsDataProvider {
       logger.error(`Error occurred during fetching work item types: ${err.message}`);
       throw err;
     }
+  }
+
+  /**
+   * Fetches query results and categorizes requirements by their Requirement Type field.
+   * This method filters for Requirement work items only and groups them by their requirement type.
+   *
+   * Rules:
+   * 1. Requirements are mapped to standardized category headers based on their Requirement Type field
+   * 2. Requirements with no type or empty type are placed in "Other Requirements"
+   * 3. Requirements with Priority=1 are ALSO added to "Precedence and Criticality of Requirements"
+   *
+   * @param wiqlHref - The WIQL query URL to execute
+   * @returns An object with categorized requirements grouped by requirement type in the specified order
+   */
+  async GetCategorizedRequirementsByType(wiqlHref: string): Promise<any> {
+    try {
+      if (!wiqlHref) {
+        throw new Error('Incorrect WIQL Link');
+      }
+
+      logger.debug('Fetching query results for categorization');
+      const queryResult: QueryTree = await TFSServices.getItemContent(wiqlHref, this.token);
+
+      if (!queryResult) {
+        throw new Error('Query result failed');
+      }
+
+      // Get work item IDs from the query result
+      let workItemIds: number[] = [];
+
+      if (queryResult.workItems && Array.isArray(queryResult.workItems)) {
+        // Extract IDs from the workItems array
+        workItemIds = queryResult.workItems.map((wi: any) => wi.id).filter((id: number) => id);
+      } else if (queryResult.workItemRelations && Array.isArray(queryResult.workItemRelations)) {
+        // Extract IDs from workItemRelations (for OneHop queries)
+        const idSet = new Set<number>();
+        queryResult.workItemRelations.forEach((rel: any) => {
+          if (rel.source?.id) idSet.add(rel.source.id);
+          if (rel.target?.id) idSet.add(rel.target.id);
+        });
+        workItemIds = Array.from(idSet);
+      } else {
+        logger.warn('No work items found in query result');
+        return { categories: {}, totalCount: 0 };
+      }
+
+      if (workItemIds.length === 0) {
+        logger.warn('No work item IDs extracted from query result');
+        return { categories: {}, totalCount: 0 };
+      }
+
+      logger.debug(`Found ${workItemIds.length} work items to categorize`);
+
+      // Define the mapping from requirement type keys to standard headers
+      const typeToHeaderMap: Record<string, string> = {
+        Adaptation: 'Adaptation Requirements',
+        'Computer Resource': 'Computer Resource Requirements',
+        'System Environment': 'CSCI Environment Requirements',
+        Constraints: 'Design and Implementation Constraints',
+        'Design Constrains': 'Design and Implementation Constraints',
+        'Physical Constraints': 'Design and Implementation Constraints',
+        'External Interface': 'External Interfaces Requirements',
+        'Internal Data': 'Internal Data Requirements',
+        'Internal Interface': 'Internal Interfaces Requirements',
+        Logistics: 'Logistics-Related Requirements',
+        Packaging: 'Packaging Requirements',
+        'Human Factors': 'Personnel-Related Requirements',
+        Safety: 'Safety Requirements',
+        Security: 'Security and Privacy Requirements',
+        'Security and Privacy': 'Security and Privacy Requirements',
+        'Quality of Service': 'Software Quality Factors',
+        Reliability: 'Software Quality Factors',
+        'System Quality Factors': 'Software Quality Factors',
+        Training: 'Training-Related Requirements',
+      };
+
+      // Define the desired order of categories
+      const categoryOrder = [
+        'External Interfaces Requirements',
+        'Internal Interfaces Requirements',
+        'Internal Data Requirements',
+        'Adaptation Requirements',
+        'Safety Requirements',
+        'Security and Privacy Requirements',
+        'CSCI Environment Requirements',
+        'Computer Resource Requirements',
+        'Software Quality Factors',
+        'Design and Implementation Constraints',
+        'Personnel-Related Requirements',
+        'Training-Related Requirements',
+        'Logistics-Related Requirements',
+        'Other Requirements',
+        'Packaging Requirements',
+        'Precedence and Criticality of Requirements',
+      ];
+
+      // Initialize all categories as empty arrays (for consistent ordering)
+      const categorizedRequirements: Record<string, any[]> = {};
+      categoryOrder.forEach((category) => {
+        categorizedRequirements[category] = [];
+      });
+
+      // Process each work item
+      for (const workItemId of workItemIds) {
+        try {
+          // Fetch full work item with all fields
+          const wiUrl = `${this.orgUrl}_apis/wit/workitems/${workItemId}?$expand=All&api-version=6.0`;
+          const fullWi = await TFSServices.getItemContent(wiUrl, this.token);
+
+          // Check if it's a Requirement work item type
+          const workItemType = fullWi.fields['System.WorkItemType'];
+          logger.debug(`Work item ${workItemId} type: ${workItemType}`);
+          if (workItemType !== 'Requirement') {
+            logger.debug(`Skipping work item ${workItemId} - not a Requirement type`);
+            continue; // Skip non-requirement work items
+          }
+
+          // Get the requirement type field (check both possible reference names)
+          const rawRequirementType =
+            fullWi.fields['Custom.Requirement_Type'] ||
+            fullWi.fields['Microsoft.VSTS.CMMI.RequirementType'] ||
+            '';
+
+          logger.debug(`Work item ${workItemId} requirement type: "${rawRequirementType}"`);
+
+          // Normalize and trim the requirement type
+          const trimmedType = String(rawRequirementType).trim();
+
+          // Map to standard header or use "Other Requirements" as default
+          const categoryHeader = trimmedType
+            ? typeToHeaderMap[trimmedType] || 'Other Requirements'
+            : 'Other Requirements';
+
+          // Create the requirement object
+          const requirementItem = {
+            id: workItemId,
+            title: fullWi.fields['System.Title'] || '',
+            description:
+              fullWi.fields['Microsoft.VSTS.CMMI.Symptom'] || fullWi.fields['System.Description'] || '',
+            htmlUrl: fullWi._links?.html?.href || '',
+          };
+
+          // Add to the appropriate category
+          categorizedRequirements[categoryHeader].push(requirementItem);
+
+          // Check if Priority is 1 - if so, also add to "Precedence and Criticality"
+          const priority = fullWi.fields['Microsoft.VSTS.Common.Priority'];
+          if (priority === 1) {
+            categorizedRequirements['Precedence and Criticality of Requirements'].push(requirementItem);
+          }
+        } catch (err: any) {
+          logger.warn(`Could not fetch work item ${workItemId}: ${err.message}`);
+        }
+      }
+
+      // Sort items within each category by ID and remove empty categories
+      const finalCategories: Record<string, any[]> = {};
+      categoryOrder.forEach((category) => {
+        const items = categorizedRequirements[category];
+        if (items && items.length > 0) {
+          // Sort by ID for consistent ordering
+          finalCategories[category] = items.sort((a, b) => a.id - b.id);
+        }
+      });
+
+      logger.debug(
+        `Categorized ${workItemIds.length} work items into ${Object.keys(finalCategories).length} categories`
+      );
+
+      return {
+        categories: finalCategories,
+        totalCount: workItemIds.length,
+      };
+    } catch (err: any) {
+      logger.error(`Could not fetch categorized requirements: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Helper method to flatten a tree structure into a flat array of work items
+   */
+  private flattenTreeToWorkItems(roots: any[]): any[] {
+    const result: any[] = [];
+
+    const traverse = (node: any) => {
+      if (!node) return;
+
+      result.push({
+        id: node.id,
+        title: node.title,
+        description: node.description,
+        htmlUrl: node.htmlUrl,
+        url: node.htmlUrl, // Some nodes might use url instead
+      });
+
+      if (Array.isArray(node.children)) {
+        node.children.forEach(traverse);
+      }
+    };
+
+    roots.forEach(traverse);
+    return result;
   }
 }
