@@ -48,4 +48,13 @@ export default class MangementDataProvider {
     let url: string = `${this.orgUrl}_api/_common/GetUserProfile?__v=5`;
     return TFSServices.getItemContent(url, this.token);
   }
+
+  // Check if organization URL is valid and optionally validate PAT
+  // Without token: checks if organization URL exists
+  // With token: checks both URL validity AND PAT validity
+  async CheckOrgUrlValidity(token?: string): Promise<any> {
+    let url: string = `${this.orgUrl}_apis/connectionData`;
+    // Use provided token or empty string for URL-only validation
+    return TFSServices.getItemContent(url, token || '', 'get', null, null, false);
+  }
 }
