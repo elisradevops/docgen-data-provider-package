@@ -8,11 +8,13 @@ import { Column } from '../models/tfs-data';
 import { value } from '../models/tfs-data';
 
 import logger from '../utils/logger';
+const pLimit = require('p-limit');
 
 export default class TicketsDataProvider {
   orgUrl: string = '';
   token: string = '';
   queriesList: Array<any> = new Array<any>();
+  private limit = pLimit(10);
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
@@ -505,40 +507,95 @@ export default class TicketsDataProvider {
     // Initialize maps
     const sourceTargetsMap: Map<any, any[]> = new Map();
     const lookupMap: Map<number, any> = new Map();
+    
     if (workItemRelations) {
+      // Step 1: Collect all unique work item IDs that need to be fetched
+      const sourceIds = new Set<number>();
+      const targetIds = new Set<number>();
+      
       for (const relation of workItemRelations) {
-        //if relation.Source is null and target has a valid value then the target is the source
+        if (!relation.source) {
+          // Root link - target is actually the source
+          sourceIds.add(relation.target.id);
+        } else {
+          sourceIds.add(relation.source.id);
+          if (relation.target) {
+            targetIds.add(relation.target.id);
+          }
+        }
+      }
+
+      // Step 2: Fetch all work items in parallel with concurrency limit
+      const allSourcePromises = Array.from(sourceIds).map(id =>
+        this.limit(() => {
+          const relation = workItemRelations.find(r => 
+            (!r.source && r.target.id === id) || (r.source?.id === id)
+          );
+          return this.fetchWIForQueryResult(relation, columnsToShowMap, columnSourceMap, true);
+        })
+      );
+
+      const allTargetPromises = Array.from(targetIds).map(id =>
+        this.limit(() => {
+          const relation = workItemRelations.find(r => r.target?.id === id);
+          return this.fetchWIForQueryResult(relation, columnsToShowMap, columnTargetsMap, true);
+        })
+      );
+
+      // Wait for all fetches to complete in parallel (with concurrency control)
+      const [sourceWorkItems, targetWorkItems] = await Promise.all([
+        Promise.all(allSourcePromises),
+        Promise.all(allTargetPromises)
+      ]);
+
+      // Build lookup maps
+      const sourceWorkItemMap = new Map<number, any>();
+      sourceWorkItems.forEach(wi => {
+        sourceWorkItemMap.set(wi.id, wi);
+        if (!lookupMap.has(wi.id)) {
+          lookupMap.set(wi.id, wi);
+        }
+      });
+
+      const targetWorkItemMap = new Map<number, any>();
+      targetWorkItems.forEach(wi => {
+        targetWorkItemMap.set(wi.id, wi);
+        if (!lookupMap.has(wi.id)) {
+          lookupMap.set(wi.id, wi);
+        }
+      });
+
+      // Step 3: Build the sourceTargetsMap using the fetched work items
+      for (const relation of workItemRelations) {
         if (!relation.source) {
           // Root link
-          const wi: any = await this.fetchWIForQueryResult(relation, columnsToShowMap, columnSourceMap, true);
-          if (!lookupMap.has(wi.id)) {
+          const wi = sourceWorkItemMap.get(relation.target.id);
+          if (wi && !sourceTargetsMap.has(wi)) {
             sourceTargetsMap.set(wi, []);
-            lookupMap.set(wi.id, wi);
           }
-          continue; // Move to the next relation
+          continue;
         }
 
         if (!relation.target) {
           throw new Error('Target relation is missing');
         }
 
-        // Get relation source from lookup
-        const sourceWorkItem = lookupMap.get(relation.source.id);
+        const sourceWorkItem = sourceWorkItemMap.get(relation.source.id);
         if (!sourceWorkItem) {
           throw new Error('Source relation has no mapping');
         }
 
-        const targetWi: any = await this.fetchWIForQueryResult(
-          relation,
-          columnsToShowMap,
-          columnTargetsMap,
-          true
-        );
-        //In case if source is a test case
+        const targetWi = targetWorkItemMap.get(relation.target.id);
+        if (!targetWi) {
+          throw new Error('Target work item not found');
+        }
+
+        // In case if source is a test case
         this.mapTestCaseToRelatedItem(sourceWorkItem, targetWi, testCaseToRelatedWiMap);
 
-        //In case of target is a test case
+        // In case of target is a test case
         this.mapTestCaseToRelatedItem(targetWi, sourceWorkItem, testCaseToRelatedWiMap);
+        
         const targets: any = sourceTargetsMap.get(sourceWorkItem) || [];
         targets.push(targetWi);
         sourceTargetsMap.set(sourceWorkItem, targets);
@@ -594,18 +651,17 @@ export default class TicketsDataProvider {
       }
     });
 
-    // Initialize maps
+    // Fetch all work items in parallel with concurrency limit
     const wiSet: Set<any> = new Set();
     if (workItems) {
-      for (const workItem of workItems) {
-        const wi: any = await this.fetchWIForQueryResult(
-          workItem,
-          columnsToShowMap,
-          fieldsToIncludeMap,
-          false
-        );
-        wiSet.add(wi);
-      }
+      const fetchPromises = workItems.map(workItem =>
+        this.limit(() =>
+          this.fetchWIForQueryResult(workItem, columnsToShowMap, fieldsToIncludeMap, false)
+        )
+      );
+      
+      const fetchedWorkItems = await Promise.all(fetchPromises);
+      fetchedWorkItems.forEach(wi => wiSet.add(wi));
     }
 
     columnsToShowMap.clear();
@@ -1528,8 +1584,6 @@ export default class TicketsDataProvider {
         return { categories: {}, totalCount: 0 };
       }
 
-      logger.debug(`Found ${workItemIds.length} work items to categorize`);
-
       // Define the mapping from requirement type keys to standard headers
       const typeToHeaderMap: Record<string, string> = {
         Adaptation: 'Adaptation Requirements',
@@ -1583,31 +1637,26 @@ export default class TicketsDataProvider {
       for (const workItemId of workItemIds) {
         try {
           // Fetch full work item with all fields
-          const wiUrl = `${this.orgUrl}_apis/wit/workitems/${workItemId}?$expand=All&api-version=6.0`;
+          const wiUrl = `${this.orgUrl}_apis/wit/workitems/${workItemId}?$expand=All`;
           const fullWi = await TFSServices.getItemContent(wiUrl, this.token);
 
           // Check if it's a Requirement work item type
           const workItemType = fullWi.fields['System.WorkItemType'];
-          logger.debug(`Work item ${workItemId} type: ${workItemType}`);
           if (workItemType !== 'Requirement') {
-            logger.debug(`Skipping work item ${workItemId} - not a Requirement type`);
             continue; // Skip non-requirement work items
           }
 
-          // Get the requirement type field (check both possible reference names)
-          const rawRequirementType =
-            fullWi.fields['Custom.Requirement_Type'] ||
+          // Get the requirement type field
+          const rawRequirementType: string =
             fullWi.fields['Microsoft.VSTS.CMMI.RequirementType'] ||
             '';
-
-          logger.debug(`Work item ${workItemId} requirement type: "${rawRequirementType}"`);
 
           // Normalize and trim the requirement type
           const trimmedType = String(rawRequirementType).trim();
 
-          // Map to standard header or use "Other Requirements" as default
-          const categoryHeader = trimmedType
-            ? typeToHeaderMap[trimmedType] || 'Other Requirements'
+          // Map to the standard category header
+          const categoryHeader = typeToHeaderMap[trimmedType]
+            ? typeToHeaderMap[trimmedType]
             : 'Other Requirements';
 
           // Create the requirement object
