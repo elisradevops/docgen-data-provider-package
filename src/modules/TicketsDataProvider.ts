@@ -10,6 +10,23 @@ import { value } from '../models/tfs-data';
 import logger from '../utils/logger';
 const pLimit = require('p-limit');
 
+type FallbackFetchOutcome = {
+  result: any;
+  usedFolder: any;
+};
+
+type DocTypeBranchConfig = {
+  id: string;
+  label: string;
+  // Candidate folder names (case-insensitive). If none resolve, fallback starts from `fallbackStart`.
+  folderNames?: string[];
+  fetcher: (folder: any) => Promise<any>;
+  // Optional validator to determine whether the fetch produced any usable queries.
+  validator?: (result: any) => boolean;
+  // Optional explicit starting folder for the fallback chain.
+  fallbackStart?: any;
+};
+
 export default class TicketsDataProvider {
   orgUrl: string = '';
   token: string = '';
@@ -120,22 +137,197 @@ export default class TicketsDataProvider {
       else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
       logger.debug(`doctype: ${docType}`);
-      switch (docType?.toLowerCase()) {
-        case 'std':
-          const reqTestQueries = await this.fetchLinkedReqTestQueries(queries, false);
-          const linkedMomQueries = await this.fetchLinkedMomQueries(queries);
+      const normalizedDocType = (docType || '').toLowerCase();
+      const queriesWithChildren = await this.ensureQueryChildren(queries);
+
+      switch (normalizedDocType) {
+        case 'std': {
+          const { root: stdRoot, found: stdRootFound } = await this.getDocTypeRoot(
+            queriesWithChildren,
+            'std'
+          );
+          logger.debug(`[GetSharedQueries][std] using ${stdRootFound ? 'dedicated folder' : 'root queries'}`);
+          // Each branch describes the dedicated folder names, the fetch routine, and how to validate results.
+          const stdBranches = await this.fetchDocTypeBranches(queriesWithChildren, stdRoot, [
+            {
+              id: 'reqToTest',
+              label: '[GetSharedQueries][std][req-to-test]',
+              folderNames: [
+                'requirement - test',
+                'requirement to test case',
+                'requirement to test',
+                'req to test',
+              ],
+              fetcher: (folder: any) => this.fetchLinkedReqTestQueries(folder, false),
+              validator: (result: any) => this.hasAnyQueryTree(result?.reqTestTree),
+            },
+            {
+              id: 'testToReq',
+              label: '[GetSharedQueries][std][test-to-req]',
+              folderNames: [
+                'test - requirement',
+                'test to requirement',
+                'test case to requirement',
+                'test to req',
+              ],
+              fetcher: (folder: any) => this.fetchLinkedReqTestQueries(folder, true),
+              validator: (result: any) => this.hasAnyQueryTree(result?.testReqTree),
+            },
+            {
+              id: 'mom',
+              label: '[GetSharedQueries][std][mom]',
+              folderNames: ['linked mom', 'mom'],
+              fetcher: (folder: any) => this.fetchLinkedMomQueries(folder),
+              validator: (result: any) => this.hasAnyQueryTree(result?.linkedMomTree),
+            },
+          ]);
+
+          const reqToTestResult = stdBranches['reqToTest'];
+          const testToReqResult = stdBranches['testToReq'];
+          const momResult = stdBranches['mom'];
+
+          const reqTestQueries = {
+            reqTestTree: reqToTestResult?.result?.reqTestTree ?? null,
+            testReqTree: testToReqResult?.result?.testReqTree ?? reqToTestResult?.result?.testReqTree ?? null,
+          };
+
+          const linkedMomQueries = {
+            linkedMomTree: momResult?.result?.linkedMomTree ?? null,
+          };
+
           return { reqTestQueries, linkedMomQueries };
-        case 'str':
-          const reqTestTrees = await this.fetchLinkedReqTestQueries(queries, false);
-          const openPcrTestTrees = await this.fetchLinkedOpenPcrTestQueries(queries, false);
+        }
+        case 'str': {
+          const { root: strRoot, found: strRootFound } = await this.getDocTypeRoot(
+            queriesWithChildren,
+            'str'
+          );
+          logger.debug(`[GetSharedQueries][str] using ${strRootFound ? 'dedicated folder' : 'root queries'}`);
+          const strBranches = await this.fetchDocTypeBranches(queriesWithChildren, strRoot, [
+            {
+              id: 'reqToTest',
+              label: '[GetSharedQueries][str][req-to-test]',
+              folderNames: [
+                'requirement - test',
+                'requirement to test case',
+                'requirement to test',
+                'req to test',
+              ],
+              fetcher: (folder: any) => this.fetchLinkedReqTestQueries(folder, false),
+              validator: (result: any) => this.hasAnyQueryTree(result?.reqTestTree),
+            },
+            {
+              id: 'testToReq',
+              label: '[GetSharedQueries][str][test-to-req]',
+              folderNames: [
+                'test - requirement',
+                'test to requirement',
+                'test case to requirement',
+                'test to req',
+              ],
+              fetcher: (folder: any) => this.fetchLinkedReqTestQueries(folder, true),
+              validator: (result: any) => this.hasAnyQueryTree(result?.testReqTree),
+            },
+            {
+              id: 'openPcrToTest',
+              label: '[GetSharedQueries][str][open-pcr-to-test]',
+              folderNames: ['open pcr to test case', 'open pcr to test', 'open pcr - test', 'open pcr'],
+              fetcher: (folder: any) => this.fetchLinkedOpenPcrTestQueries(folder, false),
+              validator: (result: any) => this.hasAnyQueryTree(result?.OpenPcrToTestTree),
+            },
+            {
+              id: 'testToOpenPcr',
+              label: '[GetSharedQueries][str][test-to-open-pcr]',
+              folderNames: ['test case to open pcr', 'test to open pcr', 'test - open pcr', 'open pcr'],
+              fetcher: (folder: any) => this.fetchLinkedOpenPcrTestQueries(folder, true),
+              validator: (result: any) => this.hasAnyQueryTree(result?.TestToOpenPcrTree),
+            },
+          ]);
+
+          const strReqToTest = strBranches['reqToTest'];
+          const strTestToReq = strBranches['testToReq'];
+          const strOpenPcrToTest = strBranches['openPcrToTest'];
+          const strTestToOpenPcr = strBranches['testToOpenPcr'];
+
+          const reqTestTrees = {
+            reqTestTree: strReqToTest?.result?.reqTestTree ?? null,
+            testReqTree: strTestToReq?.result?.testReqTree ?? strReqToTest?.result?.testReqTree ?? null,
+          };
+
+          const openPcrTestTrees = {
+            OpenPcrToTestTree: strOpenPcrToTest?.result?.OpenPcrToTestTree ?? null,
+            TestToOpenPcrTree:
+              strTestToOpenPcr?.result?.TestToOpenPcrTree ??
+              strOpenPcrToTest?.result?.TestToOpenPcrTree ??
+              null,
+          };
+
           return { reqTestTrees, openPcrTestTrees };
-        case 'test-reporter':
-          const testAssociatedTree = await this.fetchTestReporterQueries(queries);
-          return { testAssociatedTree };
+        }
+        case 'test-reporter': {
+          const { root: testReporterRoot, found: testReporterFound } = await this.getDocTypeRoot(
+            queriesWithChildren,
+            'test-reporter'
+          );
+          logger.debug(
+            `[GetSharedQueries][test-reporter] using ${
+              testReporterFound ? 'dedicated folder' : 'root queries'
+            }`
+          );
+          const testReporterBranches = await this.fetchDocTypeBranches(
+            queriesWithChildren,
+            testReporterRoot,
+            [
+              {
+                id: 'testReporter',
+                label: '[GetSharedQueries][test-reporter]',
+                folderNames: ['test reporter', 'test-reporter'],
+                fetcher: (folder: any) => this.fetchTestReporterQueries(folder),
+                validator: (result: any) => this.hasAnyQueryTree(result?.testAssociatedTree),
+              },
+            ]
+          );
+          const testReporterFetch = testReporterBranches['testReporter'];
+          return testReporterFetch?.result ?? { testAssociatedTree: null };
+        }
         case 'srs':
-          return await this.fetchSrsQueries(queries);
-        case 'svd':
-          return await this.fetchAnyQueries(queries);
+          return await this.fetchSrsQueries(queriesWithChildren);
+        case 'svd': {
+          const { root: svdRoot, found } = await this.getDocTypeRoot(queriesWithChildren, 'svd');
+          if (!found) {
+            logger.debug('[GetSharedQueries][svd] dedicated folder not found, using fallback tree');
+          }
+          const svdBranches = await this.fetchDocTypeBranches(queriesWithChildren, svdRoot, [
+            {
+              id: 'systemOverview',
+              label: '[GetSharedQueries][svd][system-overview]',
+              folderNames: ['system overview'],
+              fetcher: async (folder: any) => {
+                const { tree1 } = await this.structureAllQueryPath(folder);
+                return tree1;
+              },
+              validator: (result: any) => !!result,
+            },
+            {
+              id: 'knownBugs',
+              label: '[GetSharedQueries][svd][known-bugs]',
+              folderNames: ['known bugs', 'known bug'],
+              fetcher: async (folder: any) => {
+                const { tree2 } = await this.structureAllQueryPath(folder);
+                return tree2;
+              },
+              validator: (result: any) => !!result,
+            },
+          ]);
+
+          const systemOverviewFetch = svdBranches['systemOverview'];
+          const knownBugsFetch = svdBranches['knownBugs'];
+
+          return {
+            systemOverviewQueryTree: systemOverviewFetch?.result ?? null,
+            knownBugsQueryTree: knownBugsFetch?.result ?? null,
+          };
+        }
         default:
           break;
       }
@@ -231,6 +423,38 @@ export default class TicketsDataProvider {
     return { linkedMomTree };
   }
 
+  private hasAnyQueryTree(result: any): boolean {
+    const inspect = (value: any): boolean => {
+      if (!value) {
+        return false;
+      }
+
+      if (Array.isArray(value)) {
+        return value.some(inspect);
+      }
+
+      if (typeof value === 'object') {
+        if (value.isValidQuery || value.wiql || value.queryType) {
+          return true;
+        }
+
+        if ('roots' in value && Array.isArray(value.roots) && value.roots.length > 0) {
+          return true;
+        }
+
+        if ('children' in value && Array.isArray(value.children) && value.children.length > 0) {
+          return true;
+        }
+
+        return Object.values(value).some(inspect);
+      }
+
+      return false;
+    };
+
+    return inspect(result);
+  }
+
   /**
    * Fetches and structures linked queries related to open PCR (Problem Change Request) tests.
    *
@@ -269,13 +493,6 @@ export default class TicketsDataProvider {
       ['Test Case']
     );
     return { testAssociatedTree };
-  }
-
-  private async fetchAnyQueries(queries: any) {
-    const { tree1: systemOverviewQueryTree, tree2: knownBugsQueryTree } = await this.structureAllQueryPath(
-      queries
-    );
-    return { systemOverviewQueryTree, knownBugsQueryTree };
   }
 
   private async fetchSystemRequirementQueries(queries: any, excludedFolderNames: string[] = []) {
@@ -429,6 +646,278 @@ export default class TicketsDataProvider {
     );
   }
 
+  /**
+   * Performs a breadth-first walk starting at `parent` to locate the nearest folder whose
+   * name matches any of the provided candidates (case-insensitive). Exact matches win; if none
+   * are found the first partial match encountered is returned. When no candidates are located,
+   * the method yields `null`.
+   */
+  private async findChildFolderByPossibleNames(parent: any, possibleNames: string[]): Promise<any | null> {
+    if (!parent || !possibleNames?.length) {
+      return null;
+    }
+
+    const normalizedNames = possibleNames.map((name) => name.toLowerCase());
+
+    const isMatch = (candidate: string, value: string) => value === candidate;
+    const isPartialMatch = (candidate: string, value: string) => value.includes(candidate);
+
+    const tryMatch = (folder: any, matcher: (candidate: string, value: string) => boolean) => {
+      const folderName = (folder?.name || '').toLowerCase();
+      return normalizedNames.some((candidate) => matcher(candidate, folderName));
+    };
+
+    const parentWithChildren = await this.ensureQueryChildren(parent);
+    if (!parentWithChildren?.children?.length) {
+      return null;
+    }
+
+    const queue: any[] = [];
+    const visited = new Set<string>();
+    let partialCandidate: any = null;
+
+    // Seed the queue with direct children so we prefer closer matches before walking deeper.
+    for (const child of parentWithChildren.children) {
+      if (!child?.isFolder) {
+        continue;
+      }
+      const childId = child.id ?? `${child.name}-${Math.random()}`;
+      queue.push(child);
+      visited.add(childId);
+    }
+
+    const considerFolder = async (folder: any): Promise<any | null> => {
+      if (tryMatch(folder, isMatch)) {
+        return await this.ensureQueryChildren(folder);
+      }
+
+      if (!partialCandidate && tryMatch(folder, isPartialMatch)) {
+        partialCandidate = await this.ensureQueryChildren(folder);
+      }
+
+      return null;
+    };
+
+    for (const child of queue) {
+      const match = await considerFolder(child);
+      if (match) {
+        return match;
+      }
+    }
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
+
+      const currentWithChildren = await this.ensureQueryChildren(current);
+      if (!currentWithChildren) {
+        continue;
+      }
+
+      const match = await considerFolder(currentWithChildren);
+      if (match) {
+        return match;
+      }
+
+      // Breadth-first expansion so we climb the hierarchy gradually.
+      if (currentWithChildren.children?.length) {
+        for (const child of currentWithChildren.children) {
+          if (!child?.isFolder) {
+            continue;
+          }
+          const childId = child.id ?? `${child.name}-${Math.random()}`;
+          if (!visited.has(childId)) {
+            visited.add(childId);
+            queue.push(child);
+          }
+        }
+      }
+    }
+
+    return partialCandidate;
+  }
+
+  /**
+   * Executes `fetcher` against `startingFolder` and, if the validator deems the result empty,
+   * climbs ancestor folders toward `rootQueries` until a satisfactory result is produced.
+   * The first successful folder short-circuits the search; otherwise the final attempt is
+   * returned to preserve legacy behavior.
+   */
+  private async fetchWithAncestorFallback(
+    rootQueries: any,
+    startingFolder: any,
+    fetcher: (folder: any) => Promise<any>,
+    logContext: string,
+    validator?: (result: any) => boolean
+  ): Promise<{ result: any; usedFolder: any }> {
+    const rootWithChildren = await this.ensureQueryChildren(rootQueries);
+    const candidates = await this.buildFallbackChain(rootWithChildren, startingFolder);
+    const evaluate = validator ?? ((res: any) => this.hasAnyQueryTree(res));
+
+    let lastResult: any = null;
+    let lastFolder: any = startingFolder ?? rootWithChildren;
+
+    for (const candidate of candidates) {
+      const enrichedCandidate = await this.ensureQueryChildren(candidate);
+      const candidateName = enrichedCandidate?.name ?? '<root>';
+      logger.debug(`${logContext} trying folder: ${candidateName}`);
+      lastResult = await fetcher(enrichedCandidate);
+      lastFolder = enrichedCandidate;
+      if (evaluate(lastResult)) {
+        logger.debug(`${logContext} using folder: ${candidateName}`);
+        return { result: lastResult, usedFolder: enrichedCandidate };
+      }
+      logger.debug(`${logContext} folder ${candidateName} produced no results, ascending`);
+    }
+
+    logger.debug(`${logContext} no folders yielded results, returning last attempt`);
+    return { result: lastResult, usedFolder: lastFolder };
+  }
+
+  /**
+   * Applies `fetchWithAncestorFallback` to each configured branch, resolving dedicated folders
+   * when available and emitting a map keyed by branch id. Each outcome includes both the
+   * resulting payload and the specific folder that satisfied the fallback chain.
+   */
+  private async fetchDocTypeBranches(
+    queriesWithChildren: any,
+    docRoot: any,
+    branches: DocTypeBranchConfig[]
+  ): Promise<Record<string, FallbackFetchOutcome>> {
+    const results: Record<string, FallbackFetchOutcome> = {};
+    const effectiveDocRoot = docRoot ?? queriesWithChildren;
+
+    for (const branch of branches) {
+      const fallbackStart = branch.fallbackStart ?? effectiveDocRoot;
+      let startingFolder = fallbackStart;
+      let startingName = startingFolder?.name ?? '<root>';
+
+      // Attempt to locate a more specific child folder, falling back to the provided root if absent.
+      if (branch.folderNames?.length && effectiveDocRoot) {
+        const resolvedFolder = await this.findChildFolderByPossibleNames(
+          effectiveDocRoot,
+          branch.folderNames
+        );
+        if (resolvedFolder) {
+          startingFolder = resolvedFolder;
+          startingName = resolvedFolder?.name ?? '<root>';
+        }
+      }
+
+      logger.debug(`${branch.label} starting folder: ${startingName}`);
+
+      const fetchOutcome = await this.fetchWithAncestorFallback(
+        queriesWithChildren,
+        startingFolder,
+        branch.fetcher,
+        branch.label,
+        branch.validator
+      );
+
+      logger.debug(`${branch.label} final folder: ${fetchOutcome.usedFolder?.name ?? '<root>'}`);
+
+      results[branch.id] = fetchOutcome;
+    }
+
+    return results;
+  }
+
+  /**
+   * Constructs an ordered list of folders to probe during fallback. The sequence starts at
+   * `startingFolder` (if provided) and walks upward through ancestors to the root query tree,
+   * ensuring no folder id appears twice.
+   */
+  private async buildFallbackChain(rootQueries: any, startingFolder: any): Promise<any[]> {
+    const chain: any[] = [];
+    const seen = new Set<string>();
+    const pushUnique = (node: any) => {
+      if (!node) {
+        return;
+      }
+      const id = node.id ?? '__root__';
+      if (seen.has(id)) {
+        return;
+      }
+      seen.add(id);
+      chain.push(node);
+    };
+
+    if (startingFolder?.id) {
+      const path = await this.findPathToNode(rootQueries, startingFolder.id);
+      if (path) {
+        for (let i = path.length - 1; i >= 0; i--) {
+          pushUnique(path[i]);
+        }
+      } else {
+        pushUnique(startingFolder);
+      }
+    } else if (startingFolder) {
+      pushUnique(startingFolder);
+    }
+
+    pushUnique(rootQueries);
+    return chain;
+  }
+
+  /**
+   * Recursively searches the query tree for the node with the provided id and returns the
+   * path (root → target). Nodes are enriched with children on demand and a visited set guards
+   * against cycles within malformed data.
+   */
+  private async findPathToNode(
+    currentNode: any,
+    targetId: string,
+    visited: Set<string> = new Set<string>()
+  ): Promise<any[] | null> {
+    if (!currentNode) {
+      return null;
+    }
+
+    const currentId = currentNode.id ?? '__root__';
+    if (visited.has(currentId)) {
+      return null;
+    }
+    visited.add(currentId);
+
+    if (currentNode.id === targetId) {
+      return [currentNode];
+    }
+
+    const enrichedNode = await this.ensureQueryChildren(currentNode);
+    const children = enrichedNode?.children;
+    if (!children?.length) {
+      return null;
+    }
+
+    for (const child of children) {
+      const path = await this.findPathToNode(child, targetId, visited);
+      if (path) {
+        return [enrichedNode, ...path];
+      }
+    }
+
+    return null;
+  }
+
+  private async getDocTypeRoot(
+    rootQueries: any,
+    docTypeName: string
+  ): Promise<{ root: any; found: boolean }> {
+    if (!rootQueries) {
+      return { root: rootQueries, found: false };
+    }
+
+    const docTypeFolder = await this.findQueryFolderByName(rootQueries, docTypeName);
+    if (docTypeFolder) {
+      const folderWithChildren = await this.ensureQueryChildren(docTypeFolder);
+      return { root: folderWithChildren, found: true };
+    }
+
+    return { root: rootQueries, found: false };
+  }
+
   private async ensureQueryChildren(node: any): Promise<any> {
     if (!node || !node.hasChildren || node.children) {
       return node;
@@ -507,12 +996,12 @@ export default class TicketsDataProvider {
     // Initialize maps
     const sourceTargetsMap: Map<any, any[]> = new Map();
     const lookupMap: Map<number, any> = new Map();
-    
+
     if (workItemRelations) {
       // Step 1: Collect all unique work item IDs that need to be fetched
       const sourceIds = new Set<number>();
       const targetIds = new Set<number>();
-      
+
       for (const relation of workItemRelations) {
         if (!relation.source) {
           // Root link - target is actually the source
@@ -526,18 +1015,18 @@ export default class TicketsDataProvider {
       }
 
       // Step 2: Fetch all work items in parallel with concurrency limit
-      const allSourcePromises = Array.from(sourceIds).map(id =>
+      const allSourcePromises = Array.from(sourceIds).map((id) =>
         this.limit(() => {
-          const relation = workItemRelations.find(r => 
-            (!r.source && r.target.id === id) || (r.source?.id === id)
+          const relation = workItemRelations.find(
+            (r) => (!r.source && r.target.id === id) || r.source?.id === id
           );
           return this.fetchWIForQueryResult(relation, columnsToShowMap, columnSourceMap, true);
         })
       );
 
-      const allTargetPromises = Array.from(targetIds).map(id =>
+      const allTargetPromises = Array.from(targetIds).map((id) =>
         this.limit(() => {
-          const relation = workItemRelations.find(r => r.target?.id === id);
+          const relation = workItemRelations.find((r) => r.target?.id === id);
           return this.fetchWIForQueryResult(relation, columnsToShowMap, columnTargetsMap, true);
         })
       );
@@ -545,12 +1034,12 @@ export default class TicketsDataProvider {
       // Wait for all fetches to complete in parallel (with concurrency control)
       const [sourceWorkItems, targetWorkItems] = await Promise.all([
         Promise.all(allSourcePromises),
-        Promise.all(allTargetPromises)
+        Promise.all(allTargetPromises),
       ]);
 
       // Build lookup maps
       const sourceWorkItemMap = new Map<number, any>();
-      sourceWorkItems.forEach(wi => {
+      sourceWorkItems.forEach((wi) => {
         sourceWorkItemMap.set(wi.id, wi);
         if (!lookupMap.has(wi.id)) {
           lookupMap.set(wi.id, wi);
@@ -558,7 +1047,7 @@ export default class TicketsDataProvider {
       });
 
       const targetWorkItemMap = new Map<number, any>();
-      targetWorkItems.forEach(wi => {
+      targetWorkItems.forEach((wi) => {
         targetWorkItemMap.set(wi.id, wi);
         if (!lookupMap.has(wi.id)) {
           lookupMap.set(wi.id, wi);
@@ -595,7 +1084,7 @@ export default class TicketsDataProvider {
 
         // In case of target is a test case
         this.mapTestCaseToRelatedItem(targetWi, sourceWorkItem, testCaseToRelatedWiMap);
-        
+
         const targets: any = sourceTargetsMap.get(sourceWorkItem) || [];
         targets.push(targetWi);
         sourceTargetsMap.set(sourceWorkItem, targets);
@@ -654,14 +1143,12 @@ export default class TicketsDataProvider {
     // Fetch all work items in parallel with concurrency limit
     const wiSet: Set<any> = new Set();
     if (workItems) {
-      const fetchPromises = workItems.map(workItem =>
-        this.limit(() =>
-          this.fetchWIForQueryResult(workItem, columnsToShowMap, fieldsToIncludeMap, false)
-        )
+      const fetchPromises = workItems.map((workItem) =>
+        this.limit(() => this.fetchWIForQueryResult(workItem, columnsToShowMap, fieldsToIncludeMap, false))
       );
-      
+
       const fetchedWorkItems = await Promise.all(fetchPromises);
-      fetchedWorkItems.forEach(wi => wiSet.add(wi));
+      fetchedWorkItems.forEach((wi) => wiSet.add(wi));
     }
 
     columnsToShowMap.clear();
@@ -1647,9 +2134,7 @@ export default class TicketsDataProvider {
           }
 
           // Get the requirement type field
-          const rawRequirementType: string =
-            fullWi.fields['Microsoft.VSTS.CMMI.RequirementType'] ||
-            '';
+          const rawRequirementType: string = fullWi.fields['Microsoft.VSTS.CMMI.RequirementType'] || '';
 
           // Normalize and trim the requirement type
           const trimmedType = String(rawRequirementType).trim();
