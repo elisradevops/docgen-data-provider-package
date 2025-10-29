@@ -98,6 +98,30 @@ export class TFSServices {
     });
   }
 
+  public static async getItemContentWithHeaders(
+    url: string,
+    pat: string,
+    requestMethod: string = 'get',
+    data: any = {},
+    customHeaders: any = {},
+    printError: boolean = true
+  ): Promise<{ data: any; headers: any }> {
+    // Clean URL
+    const cleanUrl = url.replace(/ /g, '%20');
+
+    const config: AxiosRequestConfig = {
+      headers: customHeaders,
+      method: requestMethod,
+      auth: { username: '', password: pat },
+      data: data,
+      timeout: requestMethod.toLocaleLowerCase() === 'get' ? 10000 : undefined,
+    };
+
+    return this.executeWithRetry(cleanUrl, config, printError, (response) => {
+      return { data: response.data, headers: response.headers };
+    });
+  }
+
   public static async getJfrogRequest(url: string, header?: any) {
     const config: AxiosRequestConfig = {
       url: url,

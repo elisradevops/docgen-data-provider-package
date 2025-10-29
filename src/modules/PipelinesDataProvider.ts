@@ -344,6 +344,40 @@ export default class PipelinesDataProvider {
     return res;
   }
 
+  /**
+   * Fetch all releases for a definition using continuation tokens.
+   */
+  async GetAllReleaseHistory(projectName: string, definitionId: string) {
+    let baseUrl: string = `${this.orgUrl}${projectName}/_apis/release/releases?definitionId=${definitionId}&api-version=6.0`;
+    if (baseUrl.startsWith('https://dev.azure.com')) {
+      baseUrl = baseUrl.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com');
+    }
+
+    const all: any[] = [];
+    let continuationToken: string | undefined = undefined;
+    let page = 0;
+    do {
+      let url = `${baseUrl}&$top=200`;
+      if (continuationToken) {
+        url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
+      }
+      try {
+        const { data, headers } = await TFSServices.getItemContentWithHeaders(url, this.token, 'get', null, null);
+        const { value = [] } = data || {};
+        all.push(...value);
+        // Azure DevOps returns continuation token header for next page
+        continuationToken = headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
+        page++;
+        logger.debug(`GetAllReleaseHistory: fetched page ${page}, cumulative ${all.length} releases`);
+      } catch (err: any) {
+        logger.error(`GetAllReleaseHistory failed: ${err.message}`);
+        break;
+      }
+    } while (continuationToken);
+
+    return { count: all.length, value: all };
+  }
+
   async GetAllPipelines(projectName: string) {
     let url: string = `${this.orgUrl}${projectName}/_apis/pipelines?$top=2000`;
     let res: any = await TFSServices.getItemContent(url, this.token, 'get', null, null);
