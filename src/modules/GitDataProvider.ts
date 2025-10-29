@@ -184,6 +184,9 @@ export default class GitDataProvider {
     linkedWiOptions: any,
     includeUnlinkedCommits: boolean = false
   ) {
+    logger.info(
+      `GetItemsInCommitRange: includeUnlinkedCommits=${includeUnlinkedCommits}, commits=${commitRange?.value?.length || 0}`
+    );
     //get all items linked to commits
     let res: any = [];
     let commitChangesArray: any = [];
@@ -213,6 +216,9 @@ export default class GitDataProvider {
         }
       }
     }
+    logger.info(
+      `GetItemsInCommitRange: produced ${commitChangesArray.length} linked changes and ${commitsWithNoRelations.length} unlinked commits`
+    );
     //get all items and pr data from pr's in commit range - using the above function
     let pullRequestsChangesArray = await this.GetPullRequestsLinkedItemsInCommitRange(
       projectId,
@@ -314,6 +320,9 @@ export default class GitDataProvider {
     linkedWiOptions: any = undefined,
     includeUnlinkedCommits: boolean = false
   ) {
+    logger.info(
+      `getItemsForPipelineRange: includeUnlinkedCommits=${includeUnlinkedCommits}, extendedCommits=${extendedCommits?.length || 0}`
+    );
     let commitChangesArray: any[] = [];
     let commitsWithNoRelations: any[] = [];
     try {
@@ -382,6 +391,9 @@ export default class GitDataProvider {
     } catch (error: any) {
       logger.error(error.message);
     }
+    logger.info(
+      `getItemsForPipelineRange: produced ${commitChangesArray.length} linked changes and ${commitsWithNoRelations.length} unlinked commits`
+    );
     return { commitChangesArray, commitsWithNoRelations };
   }
 
