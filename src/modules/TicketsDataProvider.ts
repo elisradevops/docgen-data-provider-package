@@ -38,6 +38,62 @@ export default class TicketsDataProvider {
     this.token = token;
   }
 
+  /**
+   * Extracts the Azure DevOps project name from a WIQL URL.
+   *
+   * @param wiqlHref - Full WIQL href (may or may not start with orgUrl)
+   * @returns The project name if present; otherwise null
+   */
+  private getProjectFromWiqlHref(wiqlHref: string): string | null {
+    if (!wiqlHref) return null;
+    const href = wiqlHref.startsWith(this.orgUrl) ? wiqlHref.substring(this.orgUrl.length) : wiqlHref;
+    const beforeApis = href.split('/_apis')[0] || '';
+    const segs = beforeApis.split('/').filter(Boolean);
+    return segs[0] || null;
+  }
+
+  /**
+   * Retrieves reference names of fields on the Requirement work item type whose display name
+   * indicates a "requirement type" field, ordered by priority.
+   * Priority: Microsoft.VSTS.CMMI.RequirementType first (when present), then other matches
+   * in the order returned by the API. Falls back to the known ref when no matches are found.
+   *
+   * @param project - Azure DevOps project name
+   * @returns Ordered list of candidate reference names to inspect on each work item
+   */
+  private async getRequirementTypeFieldRefs(project: string): Promise<string[]> {
+    const result: string[] = [];
+    try {
+      const fieldsUrl = `${this.orgUrl}${project}/_apis/wit/workitemtypes/Requirement/fields`;
+      const fieldsResp = await TFSServices.getItemContent(fieldsUrl, this.token);
+      const fieldsArr = Array.isArray(fieldsResp?.value) ? fieldsResp.value : [];
+      const candidates = fieldsArr
+        .filter((f: any) => {
+          const nm = String(f?.name || '').toLowerCase().replace(/_/g, ' ');
+          return nm.includes('requirement type');
+        })
+        .map((f: any) => f?.referenceName)
+        .filter((x: any) => typeof x === 'string' && x.length > 0);
+
+      const knownRef = 'Microsoft.VSTS.CMMI.RequirementType';
+      const unique = new Set<string>();
+      if (candidates.includes(knownRef)) {
+        result.push(knownRef);
+        unique.add(knownRef);
+      }
+      for (const c of candidates) {
+        if (!unique.has(c)) {
+          unique.add(c);
+          result.push(c);
+        }
+      }
+    } catch (e) {}
+    if (result.length === 0) {
+      result.push('Microsoft.VSTS.CMMI.RequirementType');
+    }
+    return result;
+  }
+
   async FetchImageAsBase64(url: string): Promise<string> {
     let image = await TFSServices.fetchAzureDevOpsImageAsBase64(url, this.token, 'get', null);
     return image;
@@ -2023,16 +2079,22 @@ export default class TicketsDataProvider {
   }
 
   /**
-   * Fetches query results and categorizes requirements by their Requirement Type field.
-   * This method filters for Requirement work items only and groups them by their requirement type.
+   * Fetches query results and categorizes Requirement work items by their Requirement Type value.
    *
-   * Rules:
-   * 1. Requirements are mapped to standardized category headers based on their Requirement Type field
-   * 2. Requirements with no type or empty type are placed in "Other Requirements"
-   * 3. Requirements with Priority=1 are ALSO added to "Precedence and Criticality of Requirements"
+   * Behavior:
+   * - Detects Requirement items by checking if `System.WorkItemType` contains "requirement" (case-insensitive).
+   * - Resolves candidate Requirement Type fields by calling the Work Item Type Fields API for the
+   *   current project (Requirement type), selecting all fields whose display name (lowercased, underscores
+   *   normalized to spaces) includes "requirement type". If available, `Microsoft.VSTS.CMMI.RequirementType`
+   *   is prioritized first. If no candidates are found, falls back to that known reference name.
+   * - For each Requirement, uses the first non-empty value among the discovered fields as the type value.
+   * - Maps the value to a standardized category header; when unmapped or empty, places the item under
+   *   "Other Requirements".
+   * - When `Microsoft.VSTS.Common.Priority` equals 1, the item is also added to
+   *   "Precedence and Criticality of Requirements".
    *
-   * @param wiqlHref - The WIQL query URL to execute
-   * @returns An object with categorized requirements grouped by requirement type in the specified order
+   * @param wiqlHref - The WIQL query URL to execute.
+   * @returns An object containing the categorized requirements and total processed count.
    */
   async GetCategorizedRequirementsByType(wiqlHref: string): Promise<any> {
     try {
@@ -2120,31 +2182,35 @@ export default class TicketsDataProvider {
         categorizedRequirements[category] = [];
       });
 
+      const project = this.getProjectFromWiqlHref(wiqlHref);
+      const reqTypeFieldRefNames: string[] = project
+        ? await this.getRequirementTypeFieldRefs(project)
+        : ['Microsoft.VSTS.CMMI.RequirementType'];
+
       // Process each work item
       for (const workItemId of workItemIds) {
         try {
-          // Fetch full work item with all fields
           const wiUrl = `${this.orgUrl}_apis/wit/workitems/${workItemId}?$expand=All`;
           const fullWi = await TFSServices.getItemContent(wiUrl, this.token);
 
-          // Check if it's a Requirement work item type
           const workItemType = fullWi.fields['System.WorkItemType'];
-          if (workItemType !== 'Requirement') {
-            continue; // Skip non-requirement work items
+          if (!(typeof workItemType === 'string' && /requirement/i.test(workItemType))) {
+            continue;
           }
 
-          // Get the requirement type field
-          const rawRequirementType: string = fullWi.fields['Microsoft.VSTS.CMMI.RequirementType'] || '';
+          let trimmedType = '';
+          for (const refName of reqTypeFieldRefNames) {
+            const val = fullWi.fields ? fullWi.fields[refName] : undefined;
+            if (val != null && String(val).trim() !== '') {
+              trimmedType = String(val).trim();
+              break;
+            }
+          }
 
-          // Normalize and trim the requirement type
-          const trimmedType = String(rawRequirementType).trim();
-
-          // Map to the standard category header
           const categoryHeader = typeToHeaderMap[trimmedType]
             ? typeToHeaderMap[trimmedType]
             : 'Other Requirements';
 
-          // Create the requirement object
           const requirementItem = {
             id: workItemId,
             title: fullWi.fields['System.Title'] || '',
@@ -2153,10 +2219,8 @@ export default class TicketsDataProvider {
             htmlUrl: fullWi._links?.html?.href || '',
           };
 
-          // Add to the appropriate category
           categorizedRequirements[categoryHeader].push(requirementItem);
 
-          // Check if Priority is 1 - if so, also add to "Precedence and Criticality"
           const priority = fullWi.fields['Microsoft.VSTS.Common.Priority'];
           if (priority === 1) {
             categorizedRequirements['Precedence and Criticality of Requirements'].push(requirementItem);
@@ -2171,7 +2235,6 @@ export default class TicketsDataProvider {
       categoryOrder.forEach((category) => {
         const items = categorizedRequirements[category];
         if (items && items.length > 0) {
-          // Sort by ID for consistent ordering
           finalCategories[category] = items.sort((a, b) => a.id - b.id);
         }
       });
