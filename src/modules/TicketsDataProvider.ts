@@ -554,7 +554,7 @@ export default class TicketsDataProvider {
   }
 
   /**
-   * Fetches System Requirements queries and structures them into a single tree. :)
+   * Fetches System Requirements queries and structures them into a single tree.
    *
    * Behavior:
    * - Includes oneHop queries.
