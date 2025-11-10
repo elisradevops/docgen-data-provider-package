@@ -551,19 +551,6 @@ export default class TicketsDataProvider {
     return { testAssociatedTree };
   }
 
-  /**
-   * Fetches System Requirements queries and structures them into a single tree.
-   *
-   * Behavior:
-   * - Includes oneHop queries.
-   * - Includes tree queries (includeTreeQueries = true).
-   * - Includes flat queries (includeFlatQueries = true) matching Epic/Feature/Requirement types.
-   * - Skips folders whose names match any of the provided excludedFolderNames (case-insensitive).
-   *
-   * @param queries - Root or folder query node to search under.
-   * @param excludedFolderNames - Folder names to exclude from traversal.
-   * @returns An object containing `systemRequirementsQueryTree`.
-   */
   private async fetchSystemRequirementQueries(queries: any, excludedFolderNames: string[] = []) {
     const { tree1: systemRequirementsQueryTree } = await this.structureFetchedQueries(
       queries,
@@ -573,9 +560,8 @@ export default class TicketsDataProvider {
       [],
       undefined,
       undefined,
-      true, // Enable processing of both tree and direct link queries, including flat queries
-      excludedFolderNames,
-      true
+      true, // Enable processing of both tree and direct link queries (excluding flat queries)
+      excludedFolderNames
     );
     return { systemRequirementsQueryTree };
   }
@@ -1711,23 +1697,19 @@ export default class TicketsDataProvider {
 
   /**
    * Recursively structures fetched queries into two hierarchical trees (tree1 and tree2)
-   * by matching WIQL against allowed Source/Target types and optional area filters.
-   * Supports leaf queries of type:
-   * - oneHop (always)
-   * - tree (when includeTreeQueries === true)
-   * - flat (when includeFlatQueries === true)
+   * based on specific conditions. It processes both leaf and non-leaf nodes, fetching
+   * children if necessary, and builds the trees by matching source and target conditions.
    *
    * @param rootQuery - The root query object to process. It may contain children or be a leaf node.
-   * @param onlyTestReq - A boolean flag that, when true, suppresses adding matching queries to tree1.
+   * @param onlyTestReq - A boolean flag indicating whether to exclude requirement-to-test-case queries.
    * @param parentId - The ID of the parent node, used to maintain the hierarchy. Defaults to `null`.
-   * @param sources - Allowed Source work item types to match in WIQL.
-   * @param targets - Allowed Target work item types to match in WIQL.
-   * @param sourceAreaFilter - Optional area path filter for the Source side (leaf name substring match).
-   * @param targetAreaFilter - Optional area path filter for the Target side (leaf name substring match).
-   * @param includeTreeQueries - Include 'tree' queries in addition to 'oneHop'. Defaults to `false`.
-   * @param excludedFolderNames - Optional list of folder names to skip entirely (case-insensitive exact match).
-   * @param includeFlatQueries - Include 'flat' queries (matched by [System.WorkItemType] and [System.AreaPath]). Defaults to `false`.
-   * @returns A promise resolving to an object with `tree1` and `tree2` nodes, or `null` for each when none match.
+   * @param sources - An array of source strings used to match queries.
+   * @param targets - An array of target strings used to match queries.
+   * @param sourceAreaFilter - Optional area path filter for source (e.g., "System")
+   * @param targetAreaFilter - Optional area path filter for target (e.g., "Software")
+   * @param includeTreeQueries - Optional flag to include 'tree' queries in addition to 'oneHop' queries. Defaults to `false`.
+   * @returns A promise that resolves to an object containing two trees (`tree1` and `tree2`),
+   *          or `null` for each tree if no valid nodes are found.
    * @throws Logs an error if an exception occurs during processing.
    */
   private async structureFetchedQueries(
@@ -1739,8 +1721,7 @@ export default class TicketsDataProvider {
     sourceAreaFilter?: string,
     targetAreaFilter?: string,
     includeTreeQueries: boolean = false,
-    excludedFolderNames: string[] = [],
-    includeFlatQueries: boolean = false
+    excludedFolderNames: string[] = []
   ): Promise<any> {
     try {
       const shouldSkipFolder =
@@ -1754,58 +1735,52 @@ export default class TicketsDataProvider {
       }
 
       if (!rootQuery.hasChildren) {
-        const isLeafCandidate =
+        if (
           !rootQuery.isFolder &&
-          (rootQuery.queryType === 'oneHop' ||
-            (includeTreeQueries && rootQuery.queryType === 'tree') ||
-            (includeFlatQueries && rootQuery.queryType === 'flat'));
-        if (isLeafCandidate) {
+          (rootQuery.queryType === 'oneHop' || (includeTreeQueries && rootQuery.queryType === 'tree'))
+        ) {
           const wiql = rootQuery.wiql;
           let tree1Node = null;
           let tree2Node = null;
-
-          if (rootQuery.queryType === 'flat' && includeFlatQueries) {
-            const allTypes = Array.from(new Set([...(sources || []), ...(targets || [])]));
-            const typesOk = this.matchesFlatWorkItemTypeCondition(wiql, allTypes);
-
-            if (typesOk) {
-              const allowTree1 =
-                !onlyTestReq &&
-                (sourceAreaFilter
-                  ? this.matchesFlatAreaCondition(wiql, sourceAreaFilter || '')
-                  : true);
-              const allowTree2 = targetAreaFilter
-                ? this.matchesFlatAreaCondition(wiql, targetAreaFilter || '')
+          // Check if the query is a requirement to test case query
+          if (!onlyTestReq && this.matchesSourceTargetCondition(wiql, sources, targets)) {
+            // Additional area path filtering if specified
+            const matchesAreaPath =
+              sourceAreaFilter || targetAreaFilter
+                ? this.matchesAreaPathCondition(wiql, sourceAreaFilter || '', targetAreaFilter || '')
                 : true;
 
-              if (allowTree1) {
-                tree1Node = this.buildQueryNode(rootQuery, parentId);
-              }
-
-              if (allowTree2) {
-                tree2Node = this.buildQueryNode(rootQuery, parentId);
-              }
+            if (matchesAreaPath) {
+              tree1Node = {
+                id: rootQuery.id,
+                pId: parentId,
+                value: rootQuery.name,
+                title: rootQuery.name,
+                queryType: rootQuery.queryType,
+                columns: rootQuery.columns,
+                wiql: rootQuery._links.wiql ?? undefined,
+                isValidQuery: true,
+              };
             }
-          } else {
-            if (!onlyTestReq && this.matchesSourceTargetCondition(wiql, sources, targets)) {
-              const matchesAreaPath =
-                sourceAreaFilter || targetAreaFilter
-                  ? this.matchesAreaPathCondition(wiql, sourceAreaFilter || '', targetAreaFilter || '')
-                  : true;
+          }
+          if (this.matchesSourceTargetCondition(wiql, targets, sources)) {
+            // Additional area path filtering for reverse direction if specified
+            const matchesReverseAreaPath =
+              sourceAreaFilter || targetAreaFilter
+                ? this.matchesAreaPathCondition(wiql, targetAreaFilter || '', sourceAreaFilter || '')
+                : true;
 
-              if (matchesAreaPath) {
-                tree1Node = this.buildQueryNode(rootQuery, parentId);
-              }
-            }
-            if (this.matchesSourceTargetCondition(wiql, targets, sources)) {
-              const matchesReverseAreaPath =
-                sourceAreaFilter || targetAreaFilter
-                  ? this.matchesAreaPathCondition(wiql, targetAreaFilter || '', sourceAreaFilter || '')
-                  : true;
-
-              if (matchesReverseAreaPath) {
-                tree2Node = this.buildQueryNode(rootQuery, parentId);
-              }
+            if (matchesReverseAreaPath) {
+              tree2Node = {
+                id: rootQuery.id,
+                pId: parentId,
+                value: rootQuery.name,
+                title: rootQuery.name,
+                queryType: rootQuery.queryType,
+                columns: rootQuery.columns,
+                wiql: rootQuery._links.wiql ?? undefined,
+                isValidQuery: true,
+              };
             }
           }
           return { tree1: tree1Node, tree2: tree2Node };
@@ -1827,8 +1802,7 @@ export default class TicketsDataProvider {
               sourceAreaFilter,
               targetAreaFilter,
               includeTreeQueries,
-              excludedFolderNames,
-              includeFlatQueries
+              excludedFolderNames
             )
           : { tree1: null, tree2: null };
       }
@@ -1845,8 +1819,7 @@ export default class TicketsDataProvider {
             sourceAreaFilter,
             targetAreaFilter,
             includeTreeQueries,
-            excludedFolderNames,
-            includeFlatQueries
+            excludedFolderNames
           )
         )
       );
@@ -2011,82 +1984,6 @@ export default class TicketsDataProvider {
 
     // All found types are valid
     return true;
-  }
-
-  // Build a normalized node object for tree outputs
-  private buildQueryNode(rootQuery: any, parentId: any) {
-    return {
-      id: rootQuery.id,
-      pId: parentId,
-      value: rootQuery.name,
-      title: rootQuery.name,
-      queryType: rootQuery.queryType,
-      columns: rootQuery.columns,
-      wiql: rootQuery._links.wiql ?? undefined,
-      isValidQuery: true,
-    };
-  }
-
-  /**
-   * Matches flat query WIQL against allowed work item types.
-   * Accept when at least one type is present and all found types are within the allowed set.
-   */
-  private matchesFlatWorkItemTypeCondition(wiql: string, allowedTypes: string[]): boolean {
-    // If allowedTypes is empty, accept any work item type reference
-    if (!allowedTypes || allowedTypes.length === 0) {
-      return /\[System\.WorkItemType\]/i.test(wiql || '');
-    }
-
-    const wiqlStr = String(wiql || '');
-    const eqRe = /\[System\.WorkItemType\]\s*=\s*'([^']+)'/gi;
-    const inRe = /\[System\.WorkItemType\]\s+IN\s*\(([^)]+)\)/gi;
-
-    const found = new Set<string>();
-    let m: RegExpExecArray | null;
-    while ((m = eqRe.exec(wiqlStr)) !== null) {
-      found.add(m[1].trim().toLowerCase());
-    }
-    while ((m = inRe.exec(wiqlStr)) !== null) {
-      const inner = m[1];
-      for (const mm of inner.matchAll(/'([^']+)'/g)) {
-        found.add(String(mm[1]).trim().toLowerCase());
-      }
-    }
-
-    if (found.size === 0) return false;
-
-    const allowed = new Set(allowedTypes.map((t) => String(t).toLowerCase()));
-    for (const t of found) {
-      if (!allowed.has(t)) return false;
-    }
-    return true;
-  }
-
-  /**
-   * Matches flat query WIQL against an area path filter by checking any referenced [System.AreaPath].
-   * Compares only the leaf segment of the path and performs a case-insensitive substring match.
-   */
-  private matchesFlatAreaCondition(wiql: string, areaFilter: string): boolean {
-    const filter = String(areaFilter || '').trim().toLowerCase();
-    if (!filter) return true;
-
-    const wiqlLower = String(wiql || '').toLowerCase();
-    // Capture any quoted value that appears in an expression mentioning [System.AreaPath]
-    const re = /\[system\.areapath\][^']*'([^']+)'/gi;
-    const paths: string[] = [];
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(wiqlLower)) !== null) {
-      paths.push(match[1]);
-    }
-
-    if (paths.length === 0) return false;
-
-    const leaf = (p: string) => {
-      const parts = p.split(/[\\/]/);
-      return parts[parts.length - 1] || p;
-    };
-
-    return paths.some((p) => leaf(p).includes(filter));
   }
 
   // check if the query is a bug query
