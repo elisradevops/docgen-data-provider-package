@@ -20,7 +20,7 @@ jobs:
       - name: 📚 checkout
         uses: actions/checkout@v2
         with:
-          token:  ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          token:  ${{ secrets.GITHUB_TOKEN }}
           
       - name: 🟢 node
         uses: actions/setup-node@v2
