@@ -69,7 +69,9 @@ export default class TicketsDataProvider {
       const fieldsArr = Array.isArray(fieldsResp?.value) ? fieldsResp.value : [];
       const candidates = fieldsArr
         .filter((f: any) => {
-          const nm = String(f?.name || '').toLowerCase().replace(/_/g, ' ');
+          const nm = String(f?.name || '')
+            .toLowerCase()
+            .replace(/_/g, ' ');
           return nm.includes('requirement type');
         })
         .map((f: any) => f?.referenceName)
@@ -552,7 +554,7 @@ export default class TicketsDataProvider {
   }
 
   /**
-   * Fetches System Requirements queries and structures them into a single tree.
+   * Fetches System Requirements queries and structures them into a single tree. :)
    *
    * Behavior:
    * - Includes oneHop queries.
@@ -1771,9 +1773,7 @@ export default class TicketsDataProvider {
             if (typesOk) {
               const allowTree1 =
                 !onlyTestReq &&
-                (sourceAreaFilter
-                  ? this.matchesFlatAreaCondition(wiql, sourceAreaFilter || '')
-                  : true);
+                (sourceAreaFilter ? this.matchesFlatAreaCondition(wiql, sourceAreaFilter || '') : true);
               const allowTree2 = targetAreaFilter
                 ? this.matchesFlatAreaCondition(wiql, targetAreaFilter || '')
                 : true;
@@ -2067,7 +2067,9 @@ export default class TicketsDataProvider {
    * Compares only the leaf segment of the path and performs a case-insensitive substring match.
    */
   private matchesFlatAreaCondition(wiql: string, areaFilter: string): boolean {
-    const filter = String(areaFilter || '').trim().toLowerCase();
+    const filter = String(areaFilter || '')
+      .trim()
+      .toLowerCase();
     if (!filter) return true;
 
     const wiqlLower = String(wiql || '').toLowerCase();
