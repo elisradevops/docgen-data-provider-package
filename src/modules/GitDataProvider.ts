@@ -41,13 +41,37 @@ export default class GitDataProvider {
   } //GetJsonFileFromGitRepo
 
   async GetTag(gitRepoUrl: string, tag: string) {
-    let url = `${gitRepoUrl}/refs/tags/${tag}?peelTags=true&api-version=5.1`;
-    return TFSServices.getItemContent(url, this.token, 'get');
+    const encodedTag = encodeURIComponent(tag);
+    let url = `${gitRepoUrl}/refs/tags/${encodedTag}?peelTags=true&api-version=5.1`;
+    const res = await TFSServices.getItemContent(url, this.token, 'get');
+    if (res?.value && Array.isArray(res.value) && res.value.length > 0) {
+      const match = res.value.find((r: any) => r.name.split('/').pop().toLowerCase() === tag.toLowerCase());
+      if (match) {
+        return {
+          name: match.name.replace('refs/tags/', ''),
+          objectId: match.objectId,
+          url: url,
+          peeledObjectId: match.peeledObjectId,
+        };
+      }
+    }
+    return null;
   } //GetTag
 
   async GetBranch(gitRepoUrl: string, branch: string) {
-    let url = `${gitRepoUrl}/refs/heads/${branch}?api-version=5.1`;
-    return TFSServices.getItemContent(url, this.token, 'get');
+    const encodedBranch = encodeURIComponent(branch);
+    let url = `${gitRepoUrl}/refs?filter=heads/${encodedBranch}&api-version=5.1`;
+    const res = await TFSServices.getItemContent(url, this.token, 'get');
+    if (res && res.value && Array.isArray(res.value) && res.value.length > 0) {
+      const match = res.value.find(
+        (r: any) => r.name.split('/').pop().toLowerCase() === branch.toLowerCase()
+      );
+
+      if (match) {
+        return match;
+      }
+    }
+    return null;
   } //GetBranch
 
   async GetFileFromGitRepo(
@@ -93,15 +117,16 @@ export default class GitDataProvider {
     itemPath: string,
     version: GitVersionDescriptor
   ): Promise<boolean> {
+    let safePath = encodeURIComponent(itemPath).replace(/%2F/g, '/');
     let versionFixed = '';
     try {
-      versionFixed = version.version.replace('/', '%2F').replace('#', '%23');
+      versionFixed = encodeURIComponent(version.version).replace(/%2F/g, '%2F').replace(/#/g, '%23');
     } catch {
       versionFixed = version.version;
     }
 
     let url =
-      `${gitApiUrl}/items?path=${itemPath}` +
+      `${gitApiUrl}/items?path=${safePath}` +
       `&download=false&recursionLevel=none` +
       `&versionDescriptor.version=${versionFixed}` +
       `&versionDescriptor.versionType=${version.versionType}`;
@@ -185,7 +210,9 @@ export default class GitDataProvider {
     includeUnlinkedCommits: boolean = false
   ) {
     logger.info(
-      `GetItemsInCommitRange: includeUnlinkedCommits=${includeUnlinkedCommits}, commits=${commitRange?.value?.length || 0}`
+      `GetItemsInCommitRange: includeUnlinkedCommits=${includeUnlinkedCommits}, commits=${
+        commitRange?.value?.length || 0
+      }`
     );
     //get all items linked to commits
     let res: any = [];
@@ -321,7 +348,9 @@ export default class GitDataProvider {
     includeUnlinkedCommits: boolean = false
   ) {
     logger.info(
-      `getItemsForPipelineRange: includeUnlinkedCommits=${includeUnlinkedCommits}, extendedCommits=${extendedCommits?.length || 0}`
+      `getItemsForPipelineRange: includeUnlinkedCommits=${includeUnlinkedCommits}, extendedCommits=${
+        extendedCommits?.length || 0
+      }`
     );
     let commitChangesArray: any[] = [];
     let commitsWithNoRelations: any[] = [];
