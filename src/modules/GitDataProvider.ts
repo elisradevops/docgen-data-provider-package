@@ -890,4 +890,21 @@ export default class GitDataProvider {
       return submodules;
     }
   }
+
+  /**
+   * Checks if commitB is a descendant of commitA in the given repository.
+   * @param repoApiUrl The API URL of the repository
+   * @param commitB The commit to check if it's a descendant
+   * @param commitA The commit to check if it's an ancestor
+   * @returns True if commitB is a descendant of commitA, false otherwise
+   */
+  async isCommitDescendant(repoApiUrl: string, commitB: string, commitA: string): Promise<boolean> {
+    const url = `${repoApiUrl}/commits?searchCriteria.itemVersion.version=${commitB}&searchCriteria.compareVersion.version=${commitA}&$top=1&api-version=5.1`;
+    try {
+      const res = await TFSServices.getItemContent(url, this.token, 'get');
+      return (res?.count ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }
 }
