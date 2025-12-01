@@ -899,11 +899,14 @@ export default class GitDataProvider {
    * @returns True if commitB is a descendant of commitA, false otherwise
    */
   async isCommitDescendant(repoApiUrl: string, commitB: string, commitA: string): Promise<boolean> {
-    const url = `${repoApiUrl}/commits?searchCriteria.itemVersion.version=${commitB}&searchCriteria.compareVersion.version=${commitA}&$top=1&api-version=5.1`;
+    const url = `${repoApiUrl}/commits?searchCriteria.itemVersion.version=${commitB}&searchCriteria.itemVersion.versionType=commit&searchCriteria.compareVersion.version=${commitA}&searchCriteria.compareVersion.versionType=commit&$top=1&api-version=5.1`;
     try {
       const res = await TFSServices.getItemContent(url, this.token, 'get');
       return (res?.count ?? 0) > 0;
-    } catch {
+    } catch (err: any) {
+      logger.error(
+        `isCommitDescendant failed for ${commitA.slice(0, 8)}->${commitB.slice(0, 8)}: ${err.message}`
+      );
       return false;
     }
   }
