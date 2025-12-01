@@ -704,68 +704,115 @@ export default class GitDataProvider {
     }));
   }
 
+  //Old version Delete later
+  // async GetCommitBatch(
+  //   gitUrl: string,
+  //   itemVersion: GitVersionDescriptor,
+  //   compareVersion: GitVersionDescriptor,
+  //   specificItemPath: string = ''
+  // ) {
+  //   const allCommitsExtended: any[] = [];
+  //   let skipping = 0;
+  //   let chunkSize = 100;
+  //   let commitCounter = 0;
+  //   let logToConsoleAfterCommits = 500;
+  //   try {
+  //     let body =
+  //       specificItemPath === ''
+  //         ? {
+  //             itemVersion,
+  //             compareVersion,
+  //             includeWorkItems: true,
+  //           }
+  //         : {
+  //             itemVersion,
+  //             compareVersion,
+  //             includeWorkItems: true,
+  //             itemPath: specificItemPath,
+  //             historyMode: 'fullHistory',
+  //           };
+
+  //     let url = `${gitUrl}/commitsbatch?searchCriteria.$skip=${skipping}&searchCriteria.$top=${chunkSize}&api-version=5.1`;
+  //     let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
+  //     let commits = commitsResponse.data;
+  //     while (commits.count > 0) {
+  //       for (const commit of commits.value) {
+  //         try {
+  //           if (commitCounter % logToConsoleAfterCommits === 0) {
+  //             logger.debug(`commit number ${commitCounter + 1}`);
+  //           }
+
+  //           let extendedCommit: any = {};
+
+  //           extendedCommit['commit'] = commit;
+
+  //           let committerName = commit.committer.name;
+  //           let commitDate = commit.committer.date.toString().slice(0, 10);
+  //           extendedCommit['committerName'] = committerName;
+  //           extendedCommit['commitDate'] = commitDate;
+
+  //           allCommitsExtended.push(extendedCommit);
+  //         } catch (err: any) {
+  //           const errMsg = `Cannot fetch commit batch: ${err.message}`;
+  //           throw new Error(errMsg);
+  //         } finally {
+  //           commitCounter++;
+  //         }
+  //       }
+
+  //       skipping += chunkSize;
+  //       let url = `${gitUrl}/commitsbatch?searchCriteria.$skip=${skipping}&searchCriteria.$top=${chunkSize}&api-version=5.1`;
+  //       commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
+  //       commits = commitsResponse.data;
+  //     }
+  //   } catch (error: any) {
+  //     logger.error(error.message);
+  //   }
+  //   return allCommitsExtended;
+  // }
+
   async GetCommitBatch(
     gitUrl: string,
     itemVersion: GitVersionDescriptor,
     compareVersion: GitVersionDescriptor,
     specificItemPath: string = ''
   ) {
-    const allCommitsExtended: any[] = [];
-    let skipping = 0;
-    let chunkSize = 100;
-    let commitCounter = 0;
-    let logToConsoleAfterCommits = 500;
-    try {
-      let body =
-        specificItemPath === ''
-          ? {
-              itemVersion,
-              compareVersion,
-              includeWorkItems: true,
-            }
-          : {
-              itemVersion,
-              compareVersion,
-              includeWorkItems: true,
-              itemPath: specificItemPath,
-              historyMode: 'fullHistory',
-            };
-
-      let url = `${gitUrl}/commitsbatch?searchCriteria.$skip=${skipping}&searchCriteria.$top=${chunkSize}&api-version=5.1`;
-      let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
-      let commits = commitsResponse.data;
-      while (commits.count > 0) {
-        for (const commit of commits.value) {
-          try {
-            if (commitCounter % logToConsoleAfterCommits === 0) {
-              logger.debug(`commit number ${commitCounter + 1}`);
-            }
-
-            let extendedCommit: any = {};
-
-            extendedCommit['commit'] = commit;
-
-            let committerName = commit.committer.name;
-            let commitDate = commit.committer.date.toString().slice(0, 10);
-            extendedCommit['committerName'] = committerName;
-            extendedCommit['commitDate'] = commitDate;
-
-            allCommitsExtended.push(extendedCommit);
-          } catch (err: any) {
-            const errMsg = `Cannot fetch commit batch: ${err.message}`;
-            throw new Error(errMsg);
-          } finally {
-            commitCounter++;
-          }
-        }
-
-        skipping += chunkSize;
-        let url = `${gitUrl}/commitsbatch?searchCriteria.$skip=${skipping}&searchCriteria.$top=${chunkSize}&api-version=5.1`;
-        commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
-        commits = commitsResponse.data;
+    if (typeof specificItemPath !== 'string') {
+      specificItemPath = '';
+    }
+    const body: any = {
+      itemVersion,
+      compareVersion,
+      includeWorkItems: true,
+    };
+    if (specificItemPath) {
+      body.itemPath = specificItemPath;
+      body.historyMode = 'fullHistory';
+    }
+    const allCommitsExtended = [];
+    let skipped = 0;
+    const chunkSize = 100;
+    //Prevented Infinite loop - max 5000 commits
+    const hardLimit = 5000;
+    while (true) {
+      const url = `${gitUrl}/commitsbatch?searchCriteria.$skip=${skipped}&searchCriteria.$top=${chunkSize}&api-version=5.1`;
+      const res = await TFSServices.postRequest(url, this.token, undefined, body);
+      const data = res?.data;
+      if (!data || !data.value || data.count === 0) {
+        break;
       }
-    } catch (error: any) {
-      logger.error(error.message);
+      for (const commit of data.value) {
+        allCommitsExtended.push({
+          commit,
+          committerName: commit.committer?.name,
+          commitDate: commit.committer?.date?.toString().slice(0, 10),
+        });
+      }
+      if (allCommitsExtended.length >= hardLimit) {
+        logger.warn('Reached hard limit of commits, stopping retrieval');
+        break;
+      }
+      skipped += chunkSize;
     }
     return allCommitsExtended;
   }
