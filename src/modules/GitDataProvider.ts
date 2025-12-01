@@ -731,7 +731,7 @@ export default class GitDataProvider {
               historyMode: 'fullHistory',
             };
 
-      let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
+      let url = `${gitUrl}/commitsbatch?searchCriteria.$skip=${skipping}&searchCriteria.$top=${chunkSize}&api-version=5.1`;
       let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
       let commits = commitsResponse.data;
       while (commits.count > 0) {
@@ -760,7 +760,7 @@ export default class GitDataProvider {
         }
 
         skipping += chunkSize;
-        let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
+        let url = `${gitUrl}/commitsbatch?searchCriteria.$skip=${skipping}&searchCriteria.$top=${chunkSize}&api-version=5.1`;
         commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
         commits = commitsResponse.data;
       }
@@ -888,26 +888,6 @@ export default class GitDataProvider {
       logger.error(`Error in getSubmodulesData: ${error.message}`);
     } finally {
       return submodules;
-    }
-  }
-
-  /**
-   * Checks if commitB is a descendant of commitA in the given repository.
-   * @param repoApiUrl The API URL of the repository
-   * @param commitB The commit to check if it's a descendant
-   * @param commitA The commit to check if it's an ancestor
-   * @returns True if commitB is a descendant of commitA, false otherwise
-   */
-  async isCommitDescendant(repoApiUrl: string, commitB: string, commitA: string): Promise<boolean> {
-    const url = `${repoApiUrl}/commits?searchCriteria.itemVersion.version=${commitB}&searchCriteria.itemVersion.versionType=commit&searchCriteria.compareVersion.version=${commitA}&searchCriteria.compareVersion.versionType=commit&$top=1&api-version=5.1`;
-    try {
-      const res = await TFSServices.getItemContent(url, this.token, 'get');
-      return (res?.count ?? 0) > 0;
-    } catch (err: any) {
-      logger.error(
-        `isCommitDescendant failed for ${commitA.slice(0, 8)}->${commitB.slice(0, 8)}: ${err.message}`
-      );
-      return false;
     }
   }
 }
