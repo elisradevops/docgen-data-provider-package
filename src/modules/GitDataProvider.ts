@@ -704,6 +704,39 @@ export default class GitDataProvider {
     }));
   }
 
+  async GetRepoTagsWithCommits(projectId: string, repoId: string) {
+    const url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repoId}/refs/tags?peelTags=true&api-version=5.1`;
+    const res = await TFSServices.getItemContent(url, this.token, 'get');
+    if (!res || res.count === 0 || !Array.isArray(res.value)) {
+      return [];
+    }
+
+    const out: Array<{ name: string; commitId: string; date?: string }> = [];
+    for (const refItem of res.value) {
+      const commitId = refItem.peeledObjectId || refItem.objectId;
+      if (!commitId) {
+        continue;
+      }
+      let dateStr: string | undefined;
+      try {
+        const commit = await this.GetCommitByCommitId(projectId, repoId, commitId);
+        const d = commit?.committer?.date || commit?.author?.date;
+        if (d) {
+          dateStr = d;
+        }
+      } catch {
+        // ignore resolution failures, keep date undefined
+      }
+
+      out.push({
+        name: (refItem.name || '').replace('refs/heads/', '').replace('refs/tags/', ''),
+        commitId,
+        date: dateStr,
+      });
+    }
+    return out;
+  }
+
   async GetCommitBatch(
     gitUrl: string,
     itemVersion: GitVersionDescriptor,
