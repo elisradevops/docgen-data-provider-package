@@ -704,8 +704,10 @@ export default class GitDataProvider {
     }));
   }
 
-  async GetRepoTagsWithCommits(projectId: string, repoId: string) {
-    const url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repoId}/refs/tags?peelTags=true&api-version=5.1`;
+  async GetRepoTagsWithCommits(repoApiUrl: string) {
+    // repoApiUrl is expected to be the full API base for the repository, e.g.
+    //   http://server/tfs/Collection/Project/_apis/git/repositories/{repoId}
+    const url = `${repoApiUrl}/refs/tags?peelTags=true&api-version=5.1`;
     const res = await TFSServices.getItemContent(url, this.token, 'get');
     if (!res || res.count === 0 || !Array.isArray(res.value)) {
       return [];
@@ -719,7 +721,8 @@ export default class GitDataProvider {
       }
       let dateStr: string | undefined;
       try {
-        const commit = await this.GetCommitByCommitId(projectId, repoId, commitId);
+        const commitUrl = `${repoApiUrl}/commits/${commitId}`;
+        const commit = await TFSServices.getItemContent(commitUrl, this.token, 'get');
         const d = commit?.committer?.date || commit?.author?.date;
         if (d) {
           dateStr = d;
