@@ -27,12 +27,17 @@ export default class MangementDataProvider {
   async GetProjectByName(projectName: string): Promise<any> {
     try {
       let projects: any = await this.GetProjects();
+      // Safely handle cases where the projects payload is missing or malformed
+      if (!projects || !Array.isArray(projects.value)) {
+        logger.error('Projects response does not contain a valid value array');
+        return {};
+      }
       for (let i = 0; i < projects.value.length; i++) {
         if (projects.value[i].name === projectName) return projects.value[i];
       }
       return {};
     } catch (err) {
-      console.log(err);
+      logger.error(err);
       return {};
     }
   }

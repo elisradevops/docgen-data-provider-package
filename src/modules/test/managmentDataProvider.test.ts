@@ -1,7 +1,9 @@
 import { TFSServices } from '../../helpers/tfs';
 import MangementDataProvider from '../MangementDataProvider';
+import logger from '../../utils/logger';
 
 jest.mock('../../helpers/tfs');
+jest.mock('../../utils/logger');
 
 describe('MangementDataProvider', () => {
   let managementDataProvider: MangementDataProvider;
@@ -19,8 +21,8 @@ describe('MangementDataProvider', () => {
       const mockResponse = {
         value: [
           { id: 'link-1', name: 'Child' },
-          { id: 'link-2', name: 'Related' }
-        ]
+          { id: 'link-2', name: 'Related' },
+        ],
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
@@ -44,8 +46,7 @@ describe('MangementDataProvider', () => {
       (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(expectedError);
 
       // Act & Assert
-      await expect(managementDataProvider.GetCllectionLinkTypes())
-        .rejects.toThrow('API call failed');
+      await expect(managementDataProvider.GetCllectionLinkTypes()).rejects.toThrow('API call failed');
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}_apis/wit/workitemrelationtypes`,
@@ -64,8 +65,8 @@ describe('MangementDataProvider', () => {
         count: 2,
         value: [
           { id: 'project-1', name: 'Project One' },
-          { id: 'project-2', name: 'Project Two' }
-        ]
+          { id: 'project-2', name: 'Project Two' },
+        ],
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
@@ -86,8 +87,7 @@ describe('MangementDataProvider', () => {
       (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(expectedError);
 
       // Act & Assert
-      await expect(managementDataProvider.GetProjects())
-        .rejects.toThrow('Projects API call failed');
+      await expect(managementDataProvider.GetProjects()).rejects.toThrow('Projects API call failed');
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}_apis/projects?$top=1000`,
@@ -103,8 +103,8 @@ describe('MangementDataProvider', () => {
         count: 2,
         value: [
           { id: 'project-1', name: 'Project One' },
-          { id: 'project-2', name: 'Project Two' }
-        ]
+          { id: 'project-2', name: 'Project Two' },
+        ],
       };
       const expectedProject = { id: 'project-2', name: 'Project Two' };
 
@@ -125,8 +125,8 @@ describe('MangementDataProvider', () => {
         count: 2,
         value: [
           { id: 'project-1', name: 'Project One' },
-          { id: 'project-2', name: 'Project Two' }
-        ]
+          { id: 'project-2', name: 'Project Two' },
+        ],
       };
 
       // Mock GetProjects to return our mock data
@@ -147,15 +147,15 @@ describe('MangementDataProvider', () => {
       // Mock GetProjects to throw an error
       jest.spyOn(managementDataProvider, 'GetProjects').mockRejectedValueOnce(expectedError);
 
-      // Mock console.log to capture the error
-      const consoleLogSpy = jest.spyOn(console, 'log');
+      // Mock logger.error to capture the error
+      const loggerErrorSpy = jest.spyOn(logger, 'error');
 
       // Act
       const result = await managementDataProvider.GetProjectByName('Any Project');
 
       // Assert
       expect(managementDataProvider.GetProjects).toHaveBeenCalledTimes(1);
-      expect(consoleLogSpy).toHaveBeenCalledWith(expectedError);
+      expect(loggerErrorSpy).toHaveBeenCalledWith(expectedError);
       expect(result).toEqual({});
     });
   });
@@ -185,8 +185,9 @@ describe('MangementDataProvider', () => {
       (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(expectedError);
 
       // Act & Assert
-      await expect(managementDataProvider.GetProjectByID(projectId))
-        .rejects.toThrow('Project API call failed');
+      await expect(managementDataProvider.GetProjectByID(projectId)).rejects.toThrow(
+        'Project API call failed'
+      );
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}_apis/projects/${projectId}`,
@@ -201,7 +202,7 @@ describe('MangementDataProvider', () => {
       const mockResponse = {
         id: 'user-123',
         displayName: 'Test User',
-        emailAddress: 'test@example.com'
+        emailAddress: 'test@example.com',
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
@@ -222,8 +223,7 @@ describe('MangementDataProvider', () => {
       (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(expectedError);
 
       // Act & Assert
-      await expect(managementDataProvider.GetUserProfile())
-        .rejects.toThrow('User profile API call failed');
+      await expect(managementDataProvider.GetUserProfile()).rejects.toThrow('User profile API call failed');
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}_api/_common/GetUserProfile?__v=5`,
@@ -245,6 +245,7 @@ describe('MangementDataProvider', () => {
     expect(provider.token).toBe(customToken);
   });
 });
+
 describe('MangementDataProvider - Additional Tests', () => {
   let managementDataProvider: MangementDataProvider;
   const mockOrgUrl = 'https://dev.azure.com/organization/';
@@ -260,7 +261,7 @@ describe('MangementDataProvider - Additional Tests', () => {
       // Arrange
       const mockEmptyProjects = {
         count: 0,
-        value: []
+        value: [],
       };
       jest.spyOn(managementDataProvider, 'GetProjects').mockResolvedValueOnce(mockEmptyProjects);
 
@@ -275,29 +276,27 @@ describe('MangementDataProvider - Additional Tests', () => {
     it('should handle projects response with missing value property', async () => {
       // Arrange
       const mockInvalidProjects = {
-        count: 0
+        count: 0,
         // no value property
       };
       jest.spyOn(managementDataProvider, 'GetProjects').mockResolvedValueOnce(mockInvalidProjects);
 
-      // Mock console.log to capture the error
-      const consoleLogSpy = jest.spyOn(console, 'log');
+      // Mock logger.error to capture the error
+      const loggerErrorSpy = jest.spyOn(logger, 'error');
 
       // Act
       const result = await managementDataProvider.GetProjectByName('Any Project');
 
       // Assert
       expect(result).toEqual({});
-      expect(consoleLogSpy).toHaveBeenCalled();
+      expect(loggerErrorSpy).toHaveBeenCalled();
     });
 
     it('should be case sensitive when matching project names', async () => {
       // Arrange
       const mockProjects = {
         count: 1,
-        value: [
-          { id: 'project-1', name: 'Project One' }
-        ]
+        value: [{ id: 'project-1', name: 'Project One' }],
       };
       jest.spyOn(managementDataProvider, 'GetProjects').mockResolvedValueOnce(mockProjects);
 
@@ -379,8 +378,8 @@ describe('MangementDataProvider - Additional Tests', () => {
         // Contains unexpected fields
         unusualField: 'unusual value',
         nestedData: {
-          someProperty: 'some value'
-        }
+          someProperty: 'some value',
+        },
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(unusualProfileData);
 
