@@ -69,7 +69,9 @@ export default class TicketsDataProvider {
       const fieldsArr = Array.isArray(fieldsResp?.value) ? fieldsResp.value : [];
       const candidates = fieldsArr
         .filter((f: any) => {
-          const nm = String(f?.name || '').toLowerCase().replace(/_/g, ' ');
+          const nm = String(f?.name || '')
+            .toLowerCase()
+            .replace(/_/g, ' ');
           return nm.includes('requirement type');
         })
         .map((f: any) => f?.referenceName)
@@ -569,7 +571,7 @@ export default class TicketsDataProvider {
       queries,
       false,
       null,
-      ['Epic', 'Feature', 'Requirement'],
+      ['epic', 'feature', 'requirement'],
       [],
       undefined,
       undefined,
@@ -643,8 +645,8 @@ export default class TicketsDataProvider {
         queries,
         onlySourceSide,
         null,
-        ['Epic', 'Feature', 'Requirement'],
-        ['Epic', 'Feature', 'Requirement'],
+        ['epic', 'feature', 'requirement'],
+        ['epic', 'feature', 'requirement'],
         'sys', // Source area filter for tree1: System area paths
         'soft' // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
       );
@@ -660,8 +662,8 @@ export default class TicketsDataProvider {
       folder,
       false,
       null,
-      ['Epic', 'Feature', 'Requirement'],
-      ['Epic', 'Feature', 'Requirement'],
+      ['epic', 'feature', 'requirement'],
+      ['epic', 'feature', 'requirement'],
       undefined,
       undefined,
       true
@@ -1771,9 +1773,7 @@ export default class TicketsDataProvider {
             if (typesOk) {
               const allowTree1 =
                 !onlyTestReq &&
-                (sourceAreaFilter
-                  ? this.matchesFlatAreaCondition(wiql, sourceAreaFilter || '')
-                  : true);
+                (sourceAreaFilter ? this.matchesFlatAreaCondition(wiql, sourceAreaFilter || '') : true);
               const allowTree2 = targetAreaFilter
                 ? this.matchesFlatAreaCondition(wiql, targetAreaFilter || '')
                 : true;
@@ -1939,9 +1939,6 @@ export default class TicketsDataProvider {
    * - Source.[System.WorkItemType] = 'Epic'
    * - Source.[System.WorkItemType] IN ('Epic', 'Feature', 'Requirement')
    *
-   * @param wiql - The WIQL string to evaluate.
-   * @param source - An array of source work item types to check for in the WIQL.
-   * @param target - An array of target work item types to check for in the WIQL.
    * @returns A boolean indicating whether the WIQL includes at least one valid source work item type
    *          and at least one valid target work item type.
    */
@@ -1965,9 +1962,12 @@ export default class TicketsDataProvider {
     context: 'Source' | 'Target',
     allowedTypes: string[]
   ): boolean {
+    const wiqlStr = String(wiql || '');
+
     // If allowedTypes is empty, accept any work item type (for backward compatibility)
-    if (allowedTypes.length === 0) {
-      return wiql.includes(`${context}.[System.WorkItemType]`);
+    if (!allowedTypes || allowedTypes.length === 0) {
+      const fieldPresenceRegex = new RegExp(`${context}\\.\\[System.WorkItemType\\]`, 'i');
+      return fieldPresenceRegex.test(wiqlStr);
     }
 
     const fieldPattern = `${context}.\\[System.WorkItemType\\]`;
@@ -1979,20 +1979,20 @@ export default class TicketsDataProvider {
     const inRegex = new RegExp(`${fieldPattern}\\s+IN\\s*\\(([^)]+)\\)`, 'gi');
 
     const foundTypes = new Set<string>();
+    let match: RegExpExecArray | null;
 
     // Extract types from equality operators
-    let match;
-    while ((match = equalityRegex.exec(wiql)) !== null) {
-      foundTypes.add(match[1].trim());
+    while ((match = equalityRegex.exec(wiqlStr)) !== null) {
+      foundTypes.add(String(match[1]).trim().toLowerCase());
     }
 
     // Extract types from IN operators
-    while ((match = inRegex.exec(wiql)) !== null) {
+    while ((match = inRegex.exec(wiqlStr)) !== null) {
       const typesString = match[1];
       // Extract all quoted values from the IN clause
       const typeMatches = typesString.matchAll(/'([^']+)'/g);
       for (const typeMatch of typeMatches) {
-        foundTypes.add(typeMatch[1].trim());
+        foundTypes.add(String(typeMatch[1]).trim().toLowerCase());
       }
     }
 
@@ -2001,9 +2001,10 @@ export default class TicketsDataProvider {
       return false;
     }
 
-    // Check if all found types are in the allowedTypes array
+    // Check if all found types are in the allowedTypes array (case-insensitive)
+    const allowedSet = new Set(allowedTypes.map((t) => String(t).toLowerCase()));
     for (const type of foundTypes) {
-      if (!allowedTypes.includes(type)) {
+      if (!allowedSet.has(type)) {
         // Found a type that's not in the allowed list - reject this query
         return false;
       }
@@ -2067,7 +2068,9 @@ export default class TicketsDataProvider {
    * Compares only the leaf segment of the path and performs a case-insensitive substring match.
    */
   private matchesFlatAreaCondition(wiql: string, areaFilter: string): boolean {
-    const filter = String(areaFilter || '').trim().toLowerCase();
+    const filter = String(areaFilter || '')
+      .trim()
+      .toLowerCase();
     if (!filter) return true;
 
     const wiqlLower = String(wiql || '').toLowerCase();

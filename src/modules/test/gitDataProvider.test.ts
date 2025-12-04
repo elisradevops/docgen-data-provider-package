@@ -24,7 +24,7 @@ describe('GitDataProvider - GetCommitForPipeline', () => {
     const mockResponse = {
       id: mockBuildId,
       sourceVersion: mockCommitSha,
-      status: 'completed'
+      status: 'completed',
     };
 
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
@@ -47,8 +47,9 @@ describe('GitDataProvider - GetCommitForPipeline', () => {
     (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(expectedError);
 
     // Act & Assert
-    await expect(gitDataProvider.GetCommitForPipeline(mockProjectId, mockBuildId))
-      .rejects.toThrow('API call failed');
+    await expect(gitDataProvider.GetCommitForPipeline(mockProjectId, mockBuildId)).rejects.toThrow(
+      'API call failed'
+    );
 
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
       `${mockOrgUrl}${mockProjectId}/_apis/build/builds/${mockBuildId}`,
@@ -61,7 +62,7 @@ describe('GitDataProvider - GetCommitForPipeline', () => {
     // Arrange
     const mockResponse = {
       id: mockBuildId,
-      status: 'completed'
+      status: 'completed',
       // No sourceVersion property
     };
 
@@ -135,8 +136,8 @@ describe('GitDataProvider - GetTeamProjectGitReposList', () => {
       value: [
         { id: 'repo2', name: 'ZRepo' },
         { id: 'repo1', name: 'ARepo' },
-        { id: 'repo3', name: 'MRepo' }
-      ]
+        { id: 'repo3', name: 'MRepo' },
+      ],
     };
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockRepos);
 
@@ -176,8 +177,7 @@ describe('GitDataProvider - GetTeamProjectGitReposList', () => {
     (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(mockError);
 
     // Act & Assert
-    await expect(gitDataProvider.GetTeamProjectGitReposList(mockTeamProject))
-      .rejects.toThrow('API Error');
+    await expect(gitDataProvider.GetTeamProjectGitReposList(mockTeamProject)).rejects.toThrow('API Error');
   });
 });
 
@@ -228,12 +228,7 @@ describe('GitDataProvider - GetFileFromGitRepo', () => {
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
     // Act
-    await gitDataProvider.GetFileFromGitRepo(
-      mockProjectName,
-      mockRepoId,
-      mockFileName,
-      specialVersion
-    );
+    await gitDataProvider.GetFileFromGitRepo(mockProjectName, mockRepoId, mockFileName, specialVersion);
 
     // Assert
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
@@ -328,11 +323,7 @@ describe('GitDataProvider - CheckIfItemExist', () => {
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
     // Act
-    const result = await gitDataProvider.CheckIfItemExist(
-      mockGitApiUrl,
-      mockItemPath,
-      mockVersion
-    );
+    const result = await gitDataProvider.CheckIfItemExist(mockGitApiUrl, mockItemPath, mockVersion);
 
     // Assert
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
@@ -351,11 +342,7 @@ describe('GitDataProvider - CheckIfItemExist', () => {
     (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(new Error('Not found'));
 
     // Act
-    const result = await gitDataProvider.CheckIfItemExist(
-      mockGitApiUrl,
-      mockItemPath,
-      mockVersion
-    );
+    const result = await gitDataProvider.CheckIfItemExist(mockGitApiUrl, mockItemPath, mockVersion);
 
     // Assert
     expect(result).toBe(false);
@@ -366,11 +353,7 @@ describe('GitDataProvider - CheckIfItemExist', () => {
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(null);
 
     // Act
-    const result = await gitDataProvider.CheckIfItemExist(
-      mockGitApiUrl,
-      mockItemPath,
-      mockVersion
-    );
+    const result = await gitDataProvider.CheckIfItemExist(mockGitApiUrl, mockItemPath, mockVersion);
 
     // Assert
     expect(result).toBe(false);
@@ -383,11 +366,7 @@ describe('GitDataProvider - CheckIfItemExist', () => {
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
     // Act
-    await gitDataProvider.CheckIfItemExist(
-      mockGitApiUrl,
-      mockItemPath,
-      specialVersion
-    );
+    await gitDataProvider.CheckIfItemExist(mockGitApiUrl, mockItemPath, specialVersion);
 
     // Assert
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
@@ -416,10 +395,7 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
   it('should return filtered pull requests matching commit ids', async () => {
     // Arrange
     const mockCommits = {
-      value: [
-        { commitId: 'commit-1' },
-        { commitId: 'commit-2' }
-      ]
+      value: [{ commitId: 'commit-1' }, { commitId: 'commit-2' }],
     };
 
     const mockPullRequests = {
@@ -432,7 +408,7 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
           creationDate: '2023-01-01',
           closedDate: '2023-01-02',
           description: 'Description 1',
-          lastMergeCommit: { commitId: 'commit-1' }
+          lastMergeCommit: { commitId: 'commit-1' },
         },
         {
           pullRequestId: 102,
@@ -441,7 +417,7 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
           creationDate: '2023-02-01',
           closedDate: '2023-02-02',
           description: 'Description 2',
-          lastMergeCommit: { commitId: 'commit-3' } // Not in our commit range
+          lastMergeCommit: { commitId: 'commit-3' }, // Not in our commit range
         },
         {
           pullRequestId: 103,
@@ -450,9 +426,9 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
           creationDate: '2023-03-01',
           closedDate: '2023-03-02',
           description: 'Description 3',
-          lastMergeCommit: { commitId: 'commit-2' }
-        }
-      ]
+          lastMergeCommit: { commitId: 'commit-2' },
+        },
+      ],
     };
 
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockPullRequests);
@@ -466,7 +442,9 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
 
     // Assert
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-      expect.stringContaining(`${mockOrgUrl}${mockProjectId}/_apis/git/repositories/${mockRepoId}/pullrequests`),
+      expect.stringContaining(
+        `${mockOrgUrl}${mockProjectId}/_apis/git/repositories/${mockRepoId}/pullrequests`
+      ),
       mockToken,
       'get'
     );
@@ -482,8 +460,8 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
     // Arrange
     const mockCommits = {
       value: [
-        { commitId: 'commit-999' } // Not matching any PRs
-      ]
+        { commitId: 'commit-999' }, // Not matching any PRs
+      ],
     };
 
     const mockPullRequests = {
@@ -491,13 +469,13 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
       value: [
         {
           pullRequestId: 101,
-          lastMergeCommit: { commitId: 'commit-1' }
+          lastMergeCommit: { commitId: 'commit-1' },
         },
         {
           pullRequestId: 102,
-          lastMergeCommit: { commitId: 'commit-2' }
-        }
-      ]
+          lastMergeCommit: { commitId: 'commit-2' },
+        },
+      ],
     };
 
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockPullRequests);
@@ -520,11 +498,9 @@ describe('GitDataProvider - GetPullRequestsInCommitRangeWithoutLinkedItems', () 
     (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(mockError);
 
     // Act & Assert
-    await expect(gitDataProvider.GetPullRequestsInCommitRangeWithoutLinkedItems(
-      mockProjectId,
-      mockRepoId,
-      mockCommits
-    )).rejects.toThrow('API Error');
+    await expect(
+      gitDataProvider.GetPullRequestsInCommitRangeWithoutLinkedItems(mockProjectId, mockRepoId, mockCommits)
+    ).rejects.toThrow('API Error');
   });
 });
 
@@ -546,21 +522,17 @@ describe('GitDataProvider - GetRepoReferences', () => {
       count: 2,
       value: [
         { name: 'refs/tags/v1.0.0', objectId: 'tag-1' },
-        { name: 'refs/tags/v2.0.0', objectId: 'tag-2' }
-      ]
+        { name: 'refs/tags/v2.0.0', objectId: 'tag-2' },
+      ],
     };
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockTags);
 
     // Act
-    const result = await gitDataProvider.GetRepoReferences(
-      mockProjectId,
-      mockRepoId,
-      'tag'
-    );
+    const result = await gitDataProvider.GetRepoReferences(mockProjectId, mockRepoId, 'tag');
 
     // Assert
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-      `${mockOrgUrl}${mockProjectId}/_apis/git/repositories/${mockRepoId}/refs/tags?api-version=5.1`,
+      `${mockOrgUrl}${mockProjectId}/_apis/git/repositories/${mockRepoId}/refs/tags?peelTags=true&api-version=5.1`,
       mockToken,
       'get'
     );
@@ -577,17 +549,13 @@ describe('GitDataProvider - GetRepoReferences', () => {
       count: 2,
       value: [
         { name: 'refs/heads/main', objectId: 'branch-1' },
-        { name: 'refs/heads/develop', objectId: 'branch-2' }
-      ]
+        { name: 'refs/heads/develop', objectId: 'branch-2' },
+      ],
     };
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockBranches);
 
     // Act
-    const result = await gitDataProvider.GetRepoReferences(
-      mockProjectId,
-      mockRepoId,
-      'branch'
-    );
+    const result = await gitDataProvider.GetRepoReferences(mockProjectId, mockRepoId, 'branch');
 
     // Assert
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
@@ -604,11 +572,9 @@ describe('GitDataProvider - GetRepoReferences', () => {
 
   it('should throw error for unsupported git object type', async () => {
     // Act & Assert
-    await expect(gitDataProvider.GetRepoReferences(
-      mockProjectId,
-      mockRepoId,
-      'invalid-type'
-    )).rejects.toThrow('Unsupported git object type: invalid-type');
+    await expect(
+      gitDataProvider.GetRepoReferences(mockProjectId, mockRepoId, 'invalid-type')
+    ).rejects.toThrow('Unsupported git object type: invalid-type');
   });
 
   it('should return empty array when no references exist', async () => {
@@ -617,11 +583,7 @@ describe('GitDataProvider - GetRepoReferences', () => {
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockEmptyRefs);
 
     // Act
-    const result = await gitDataProvider.GetRepoReferences(
-      mockProjectId,
-      mockRepoId,
-      'branch'
-    );
+    const result = await gitDataProvider.GetRepoReferences(mockProjectId, mockRepoId, 'branch');
 
     // Assert
     expect(result).toEqual([]);
@@ -648,11 +610,7 @@ describe('GitDataProvider - GetJsonFileFromGitRepo', () => {
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
 
     // Act
-    const result = await gitDataProvider.GetJsonFileFromGitRepo(
-      mockProjectName,
-      mockRepoName,
-      mockFilePath
-    );
+    const result = await gitDataProvider.GetJsonFileFromGitRepo(mockProjectName, mockRepoName, mockFilePath);
 
     // Assert
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
@@ -669,11 +627,9 @@ describe('GitDataProvider - GetJsonFileFromGitRepo', () => {
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockInvalidJson);
 
     // Act & Assert
-    await expect(gitDataProvider.GetJsonFileFromGitRepo(
-      mockProjectName,
-      mockRepoName,
-      mockFilePath
-    )).rejects.toThrow(SyntaxError);
+    await expect(
+      gitDataProvider.GetJsonFileFromGitRepo(mockProjectName, mockRepoName, mockFilePath)
+    ).rejects.toThrow(SyntaxError);
   });
 
   it('should handle API errors appropriately', async () => {
@@ -682,10 +638,8 @@ describe('GitDataProvider - GetJsonFileFromGitRepo', () => {
     (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(mockError);
 
     // Act & Assert
-    await expect(gitDataProvider.GetJsonFileFromGitRepo(
-      mockProjectName,
-      mockRepoName,
-      mockFilePath
-    )).rejects.toThrow('API Error');
+    await expect(
+      gitDataProvider.GetJsonFileFromGitRepo(mockProjectName, mockRepoName, mockFilePath)
+    ).rejects.toThrow('API Error');
   });
 });
