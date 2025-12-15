@@ -39,6 +39,13 @@
   },
   "jest": {
     "preset": "ts-jest",
+    "testMatch": [
+      "<rootDir>/src/tests/**/*.test.ts"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.ts",
+      "!src/tests/**"
+    ],
     "testPathIgnorePatterns": [
       "/bin/"
     ],

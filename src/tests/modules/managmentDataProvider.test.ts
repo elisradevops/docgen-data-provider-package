@@ -1,5 +1,5 @@
 import { TFSServices } from '../../helpers/tfs';
-import MangementDataProvider from '../MangementDataProvider';
+import MangementDataProvider from '../../modules/MangementDataProvider';
 import logger from '../../utils/logger';
 
 jest.mock('../../helpers/tfs');
@@ -243,6 +243,38 @@ describe('MangementDataProvider', () => {
     // Assert
     expect(provider.orgUrl).toBe(customOrgUrl);
     expect(provider.token).toBe(customToken);
+  });
+
+  describe('CheckOrgUrlValidity', () => {
+    it('should call getItemContent with empty token when none is provided', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ ok: true });
+
+      await managementDataProvider.CheckOrgUrlValidity();
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}_apis/connectionData`,
+        '',
+        'get',
+        null,
+        null,
+        false
+      );
+    });
+
+    it('should call getItemContent with provided token when given', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ ok: true });
+
+      await managementDataProvider.CheckOrgUrlValidity('override');
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}_apis/connectionData`,
+        'override',
+        'get',
+        null,
+        null,
+        false
+      );
+    });
   });
 });
 

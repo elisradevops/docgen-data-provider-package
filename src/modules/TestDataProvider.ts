@@ -381,7 +381,6 @@ export default class TestDataProvider {
                   }
                 } catch (fetchError) {
                   // Log error silently or handle as needed
-                  console.error('Failed to fetch relation content', fetchError);
                   logger.error(`Failed to fetch relation content for URL ${relation.url}: ${fetchError}`);
                 }
               }
