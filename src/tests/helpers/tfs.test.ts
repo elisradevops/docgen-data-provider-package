@@ -52,6 +52,25 @@ describe('TFSServices', () => {
       });
     });
 
+    it('should use bearer Authorization header when token is bearer-prefixed', async () => {
+      // Arrange
+      const url = 'https://example.com/file.zip';
+      const token = 'bearer:abc123';
+      const mockResponse = { data: Buffer.from('zip-file-content') };
+
+      mockAxiosInstance.request.mockResolvedValueOnce(mockResponse);
+
+      // Act
+      const result = await TFSServices.downloadZipFile(url, token);
+
+      // Assert
+      expect(result).toEqual(mockResponse);
+      expect(mockAxiosInstance.request).toHaveBeenCalledWith({
+        url,
+        headers: { 'Content-Type': 'application/zip', Authorization: 'Bearer abc123' },
+      });
+    });
+
     it('should log and throw error when download fails', async () => {
       // Arrange
       const url = 'https://example.com/file.zip';
@@ -91,6 +110,32 @@ describe('TFSServices', () => {
           method: 'get',
           auth: { username: '', password: pat },
           responseType: 'arraybuffer',
+        })
+      );
+    });
+
+    it('should send bearer Authorization header when bearer token is provided', async () => {
+      // Arrange
+      const url = 'https://example.com/image.png';
+      const token = 'bearer:abc123';
+      const mockResponse = {
+        data: Buffer.from('image-data'),
+        headers: { 'content-type': 'image/png' },
+      };
+
+      mockAxiosInstance.request.mockResolvedValueOnce(mockResponse);
+
+      // Act
+      const result = await TFSServices.fetchAzureDevOpsImageAsBase64(url, token);
+
+      // Assert
+      expect(result).toEqual('data:image/png;base64,aW1hZ2UtZGF0YQ==');
+      expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url,
+          method: 'get',
+          responseType: 'arraybuffer',
+          headers: expect.objectContaining({ Authorization: 'Bearer abc123' }),
         })
       );
     });
@@ -147,6 +192,28 @@ describe('TFSServices', () => {
           method: 'get',
           auth: { username: '', password: pat },
           timeout: 10000, // Verify the actual timeout value is 10000ms
+        })
+      );
+    });
+
+    it('should use bearer Authorization header when bearer token is provided', async () => {
+      // Arrange
+      const url = 'https://example.com/api/item';
+      const token = 'bearer:abc123';
+      const mockResponse = { data: { id: 123, name: 'Test Item' } };
+
+      mockAxiosInstance.request.mockResolvedValueOnce(mockResponse);
+
+      // Act
+      const result = await TFSServices.getItemContent(url, token);
+
+      // Assert
+      expect(result).toEqual(mockResponse.data);
+      expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: url.replace(/ /g, '%20'),
+          method: 'get',
+          headers: expect.objectContaining({ Authorization: 'Bearer abc123' }),
         })
       );
     });
@@ -349,6 +416,33 @@ describe('TFSServices', () => {
         auth: { username: '', password: pat },
         data,
         headers: { headers: { 'Content-Type': 'application/json' } },
+      });
+    });
+
+    it('should use bearer Authorization header when bearer token is provided', async () => {
+      // Arrange
+      const url = 'https://example.com/api/resource';
+      const token = 'bearer:abc123';
+      const data = { name: 'New Resource' };
+      const mockResponse = { data: { id: 123, name: 'New Resource' } };
+
+      mockAxiosInstance.request.mockResolvedValueOnce(mockResponse);
+
+      // Act
+      const result = await TFSServices.postRequest(url, token, 'post', data);
+
+      // Assert
+      expect(result).toEqual(mockResponse);
+      expect(mockAxiosInstance.request).toHaveBeenCalledWith({
+        url,
+        method: 'post',
+        data,
+        headers: {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer abc123',
+          },
+        },
       });
     });
 

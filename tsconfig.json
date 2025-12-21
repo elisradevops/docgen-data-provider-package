@@ -11,6 +11,7 @@
     "sourceMap": true,
     "strict": true,
     "lib": ["ES2017", "DOM"],
+    "types": ["node", "jest"],
     "noImplicitAny": true,
     "strictNullChecks": true,
     "strictPropertyInitialization": false

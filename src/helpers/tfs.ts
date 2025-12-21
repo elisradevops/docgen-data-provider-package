@@ -31,13 +31,53 @@ export class TFSServices {
         }
   );
 
+  private static getBearerToken(rawToken: string): string | null {
+    const token = String(rawToken || '').trim();
+    if (!token) return null;
+    if (/^bearer:/i.test(token)) {
+      return token.slice('bearer:'.length).trim() || null;
+    }
+    const m = /^bearer\s+(.+)$/i.exec(token);
+    if (m?.[1]) return m[1].trim() || null;
+    return null;
+  }
+
+  private static addAuthHeader(config: AxiosRequestConfig, headerName: string, value: string) {
+    const existing = (config.headers ?? {}) as any;
+    if (
+      existing &&
+      typeof existing === 'object' &&
+      existing.headers &&
+      typeof existing.headers === 'object'
+    ) {
+      config.headers = { ...existing, headers: { ...existing.headers, [headerName]: value } };
+      return;
+    }
+    config.headers = { ...existing, [headerName]: value };
+  }
+
+  private static applyAuth(config: AxiosRequestConfig, rawToken: string) {
+    const bearer = this.getBearerToken(rawToken);
+    if (bearer) {
+      this.addAuthHeader(config, 'Authorization', `Bearer ${bearer}`);
+      delete (config as any).auth;
+      return;
+    }
+
+    const token = String(rawToken || '').trim();
+    if (token) {
+      (config as any).auth = { username: '', password: token };
+    }
+  }
+
   public static async downloadZipFile(url: string, pat: string): Promise<any> {
     try {
-      const res = await this.axiosInstance.request({
+      const config: AxiosRequestConfig = {
         url: url,
         headers: { 'Content-Type': 'application/zip' },
-        auth: { username: '', password: pat },
-      });
+      };
+      this.applyAuth(config, pat);
+      const res = await this.axiosInstance.request(config);
       return res;
     } catch (e) {
       logger.error(`error download zip file , url : ${url}`);
@@ -56,10 +96,11 @@ export class TFSServices {
     const config: AxiosRequestConfig = {
       headers: customHeaders,
       method: requestMethod,
-      auth: { username: '', password: pat },
       data: data,
       responseType: 'arraybuffer', // Important for binary data
     };
+
+    this.applyAuth(config, pat);
 
     return this.executeWithRetry(url, config, printError, (response) => {
       // Convert binary data to Base64
@@ -87,10 +128,11 @@ export class TFSServices {
     const config: AxiosRequestConfig = {
       headers: customHeaders,
       method: requestMethod,
-      auth: { username: '', password: pat },
       data: data,
       timeout: requestMethod.toLocaleLowerCase() === 'get' ? 10000 : undefined, // More reasonable timeout
     };
+
+    this.applyAuth(config, pat);
 
     return this.executeWithRetry(cleanUrl, config, printError, (response) => {
       // Direct return of data without extra JSON parsing
@@ -112,10 +154,11 @@ export class TFSServices {
     const config: AxiosRequestConfig = {
       headers: customHeaders,
       method: requestMethod,
-      auth: { username: '', password: pat },
       data: data,
       timeout: requestMethod.toLocaleLowerCase() === 'get' ? 10000 : undefined,
     };
+
+    this.applyAuth(config, pat);
 
     return this.executeWithRetry(cleanUrl, config, printError, (response) => {
       return { data: response.data, headers: response.headers };
@@ -149,9 +192,10 @@ export class TFSServices {
       url: url,
       headers: customHeaders,
       method: requestMethod,
-      auth: { username: '', password: pat },
       data: data,
     };
+
+    this.applyAuth(config, pat);
 
     try {
       const result = await this.axiosInstance.request(config);
