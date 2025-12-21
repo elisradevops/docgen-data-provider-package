@@ -19,40 +19,64 @@ describe('TicketsDataProvider', () => {
     ticketsDataProvider = new TicketsDataProvider(mockOrgUrl, mockToken);
   });
 
-  describe('matchesWorkItemTypeCondition', () => {
-    it('should accept any type when allowedTypes is empty and field is present', () => {
+  describe('isLinkSideAllowedByTypeOrId', () => {
+    it('should accept when allowedTypes is empty and field is present', async () => {
       const wiql = "SELECT * FROM WorkItemLinks WHERE Source.[System.WorkItemType] = 'Epic'";
-      const result = (ticketsDataProvider as any).matchesWorkItemTypeCondition(wiql, 'Source', []);
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        {},
+        wiql,
+        'Source',
+        [],
+        new Map()
+      );
       expect(result).toBe(true);
     });
 
-    it('should return false when allowedTypes is empty but field is not present', () => {
+    it('should return false when allowedTypes is empty but field is not present', async () => {
       const wiql = 'SELECT * FROM WorkItems';
-      const result = (ticketsDataProvider as any).matchesWorkItemTypeCondition(wiql, 'Source', []);
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        {},
+        wiql,
+        'Source',
+        [],
+        new Map()
+      );
       expect(result).toBe(false);
     });
 
-    it('should support equality operator and reject disallowed types', () => {
+    it('should support equality operator and reject disallowed types', async () => {
       const wiql = "SELECT * FROM WorkItemLinks WHERE Source.[System.WorkItemType] = 'Bug'";
-      const result = (ticketsDataProvider as any).matchesWorkItemTypeCondition(wiql, 'Source', [
-        'Epic',
-        'Feature',
-      ]);
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        {},
+        wiql,
+        'Source',
+        ['Epic', 'Feature'],
+        new Map()
+      );
       expect(result).toBe(false);
     });
 
-    it('should support IN operator when all types are allowed', () => {
+    it('should support IN operator when all types are allowed', async () => {
       const wiql = "SELECT * FROM WorkItemLinks WHERE Target.[System.WorkItemType] IN ('Requirement', 'Bug')";
-      const result = (ticketsDataProvider as any).matchesWorkItemTypeCondition(wiql, 'Target', [
-        'Requirement',
-        'Bug',
-      ]);
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        {},
+        wiql,
+        'Target',
+        ['Requirement', 'Bug'],
+        new Map()
+      );
       expect(result).toBe(true);
     });
 
-    it('should return false when no types are found in WIQL', () => {
+    it('should return false when no types are found in WIQL and no ids exist', async () => {
       const wiql = "SELECT * FROM WorkItemLinks WHERE Target.[System.AreaPath] = 'A'";
-      const result = (ticketsDataProvider as any).matchesWorkItemTypeCondition(wiql, 'Target', ['Bug']);
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        {},
+        wiql,
+        'Target',
+        ['Bug'],
+        new Map()
+      );
       expect(result).toBe(false);
     });
   });
@@ -597,22 +621,27 @@ describe('TicketsDataProvider', () => {
     });
   });
 
-  describe('matchesFlatWorkItemTypeCondition', () => {
-    it('should accept when allowedTypes is empty and WIQL references [System.WorkItemType]', () => {
+  describe('isFlatQueryAllowedByTypeOrId', () => {
+    it('should accept when allowedTypes is empty and WIQL references [System.WorkItemType]', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] = 'Bug'";
-      const res = (ticketsDataProvider as any).matchesFlatWorkItemTypeCondition(wiql, []);
+      const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId({}, wiql, [], new Map());
       expect(res).toBe(true);
     });
 
-    it('should return false when allowedTypes is provided but no types are found', () => {
+    it('should return false when allowedTypes is provided but no types are found and no ids exist', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.Title] <> ''";
-      const res = (ticketsDataProvider as any).matchesFlatWorkItemTypeCondition(wiql, ['Bug']);
+      const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId(
+        {},
+        wiql,
+        ['Bug'],
+        new Map()
+      );
       expect(res).toBe(false);
     });
 
-    it('should reject when WIQL contains a type outside allowedTypes', () => {
+    it('should reject when WIQL contains a type outside allowedTypes', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] IN ('Bug','Task')";
-      const res = (ticketsDataProvider as any).matchesFlatWorkItemTypeCondition(wiql, ['Bug']);
+      const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId({}, wiql, ['Bug'], new Map());
       expect(res).toBe(false);
     });
   });
@@ -1368,9 +1397,9 @@ describe('TicketsDataProvider', () => {
 
     it('should fetch children when hasChildren=true but children are missing', async () => {
       jest
-        .spyOn(ticketsDataProvider as any, 'matchesSourceTargetCondition')
-        .mockReturnValueOnce(true)
-        .mockReturnValueOnce(false);
+        .spyOn(ticketsDataProvider as any, 'matchesSourceTargetConditionAsync')
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
       jest
         .spyOn(ticketsDataProvider as any, 'buildQueryNode')
         .mockImplementation((rq: any, parentId: any) => ({
@@ -1429,9 +1458,9 @@ describe('TicketsDataProvider', () => {
 
     it('should build tree2 for reverse source/target in oneHop queries', async () => {
       jest
-        .spyOn(ticketsDataProvider as any, 'matchesSourceTargetCondition')
-        .mockReturnValueOnce(false)
-        .mockReturnValueOnce(true);
+        .spyOn(ticketsDataProvider as any, 'matchesSourceTargetConditionAsync')
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
       jest
         .spyOn(ticketsDataProvider as any, 'buildQueryNode')
         .mockImplementation((rq: any, parentId: any) => ({ id: rq.id, pId: parentId }));
@@ -1448,6 +1477,165 @@ describe('TicketsDataProvider', () => {
 
       expect(res.tree1).toBeNull();
       expect(res.tree2).toEqual({ id: 'q2', pId: null });
+    });
+
+    describe('ID-only work item type fallback', () => {
+      const projectHref = `${mockOrgUrl}MyProject/_apis/wit/wiql/123`;
+      const allowedTypes = ['epic', 'feature', 'requirement'];
+
+      const makeLeafQuery = (overrides: any = {}) => ({
+        id: 'q1',
+        name: 'Query 1',
+        isFolder: false,
+        hasChildren: false,
+        queryType: 'oneHop',
+        wiql: '',
+        _links: { wiql: { href: projectHref } },
+        ...overrides,
+      });
+
+      it('should include a tree query when Source has [System.Id] and no Source type filter, and the fetched work item type is allowed', async () => {
+        (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+          fields: { 'System.WorkItemType': 'Epic' },
+        });
+
+        const queryNode = makeLeafQuery({
+          queryType: 'tree',
+          wiql: `
+            SELECT * FROM WorkItemLinks
+            WHERE
+              ([Source].[System.Id] = 123)
+              AND ([Target].[System.WorkItemType] IN ('Requirement','Epic','Feature'))
+          `,
+        });
+
+        const res = await (ticketsDataProvider as any).structureFetchedQueries(
+          queryNode,
+          false,
+          null,
+          allowedTypes,
+          [],
+          undefined,
+          undefined,
+          true
+        );
+
+        expect(res.tree1).not.toBeNull();
+        expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
+      });
+
+      it('should exclude a tree query when Source has [System.Id] and no Source type filter, but the fetched work item type is not allowed', async () => {
+        (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+          fields: { 'System.WorkItemType': 'Bug' },
+        });
+
+        const queryNode = makeLeafQuery({
+          queryType: 'tree',
+          wiql: `
+            SELECT * FROM WorkItemLinks
+            WHERE
+              ([Source].[System.Id] = 123)
+              AND ([Target].[System.WorkItemType] IN ('Requirement','Epic','Feature'))
+          `,
+        });
+
+        const res = await (ticketsDataProvider as any).structureFetchedQueries(
+          queryNode,
+          false,
+          null,
+          allowedTypes,
+          [],
+          undefined,
+          undefined,
+          true
+        );
+
+        expect(res.tree1).toBeNull();
+        expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
+      });
+
+      it('should include a oneHop query when Source has [System.Id] and no Source type filter, and the fetched work item type is allowed', async () => {
+        (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+          fields: { 'System.WorkItemType': 'Requirement' },
+        });
+
+        const queryNode = makeLeafQuery({
+          queryType: 'oneHop',
+          wiql: `
+            SELECT * FROM WorkItemLinks
+            WHERE
+              ([Source].[System.Id] = 123)
+              AND ([Target].[System.WorkItemType] = 'Feature')
+          `,
+        });
+
+        const res = await (ticketsDataProvider as any).structureFetchedQueries(
+          queryNode,
+          false,
+          null,
+          allowedTypes,
+          allowedTypes
+        );
+
+        expect(res.tree1).not.toBeNull();
+        // reverse evaluation should reuse the cached lookup
+        expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
+      });
+
+      it('should include a flat query when [System.Id] exists and no [System.WorkItemType] filter exists, and the fetched work item type is allowed', async () => {
+        (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+          fields: { 'System.WorkItemType': 'Feature' },
+        });
+
+        const queryNode = makeLeafQuery({
+          queryType: 'flat',
+          wiql: `
+            SELECT * FROM WorkItems
+            WHERE [System.Id] = 123
+          `,
+        });
+
+        const res = await (ticketsDataProvider as any).structureFetchedQueries(
+          queryNode,
+          false,
+          null,
+          allowedTypes,
+          [],
+          undefined,
+          undefined,
+          false,
+          [],
+          true
+        );
+
+        expect(res.tree1).not.toBeNull();
+        expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
+      });
+
+      it('should not trigger the ID fallback when no [System.Id] filter exists', async () => {
+        const queryNode = makeLeafQuery({
+          queryType: 'tree',
+          wiql: `
+            SELECT * FROM WorkItemLinks
+            WHERE
+              ([Target].[System.WorkItemType] IN ('Requirement','Epic','Feature'))
+          `,
+        });
+
+        const res = await (ticketsDataProvider as any).structureFetchedQueries(
+          queryNode,
+          false,
+          null,
+          allowedTypes,
+          [],
+          undefined,
+          undefined,
+          true
+        );
+
+        expect(res.tree1).toBeNull();
+        expect(TFSServices.getItemContent).not.toHaveBeenCalled();
+      });
     });
   });
 
