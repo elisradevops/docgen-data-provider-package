@@ -1742,9 +1742,12 @@ export default class TicketsDataProvider {
     targetAreaFilter?: string,
     includeTreeQueries: boolean = false,
     excludedFolderNames: string[] = [],
-    includeFlatQueries: boolean = false
+    includeFlatQueries: boolean = false,
+    workItemTypeCache?: Map<string, string | null>
   ): Promise<any> {
     try {
+      // Per-invocation cache for ID->WorkItemType lookups; avoids global state and is safe for concurrency.
+      const typeCache = workItemTypeCache ?? new Map<string, string | null>();
       const shouldSkipFolder =
         rootQuery?.isFolder &&
         excludedFolderNames.some(
@@ -1768,7 +1771,7 @@ export default class TicketsDataProvider {
 
           if (rootQuery.queryType === 'flat' && includeFlatQueries) {
             const allTypes = Array.from(new Set([...(sources || []), ...(targets || [])]));
-            const typesOk = this.matchesFlatWorkItemTypeCondition(wiql, allTypes);
+            const typesOk = await this.matchesFlatWorkItemTypeConditionAsync(rootQuery, wiql, allTypes, typeCache);
 
             if (typesOk) {
               const allowTree1 =
@@ -1787,7 +1790,25 @@ export default class TicketsDataProvider {
               }
             }
           } else {
-            if (!onlyTestReq && this.matchesSourceTargetCondition(wiql, sources, targets)) {
+            let matchesForward = false;
+            if (!onlyTestReq) {
+              matchesForward = await this.matchesSourceTargetConditionAsync(
+                rootQuery,
+                wiql,
+                sources,
+                targets,
+                typeCache
+              );
+            }
+            const matchesReverse = await this.matchesSourceTargetConditionAsync(
+              rootQuery,
+              wiql,
+              targets,
+              sources,
+              typeCache
+            );
+
+            if (matchesForward) {
               const matchesAreaPath =
                 sourceAreaFilter || targetAreaFilter
                   ? this.matchesAreaPathCondition(wiql, sourceAreaFilter || '', targetAreaFilter || '')
@@ -1797,7 +1818,7 @@ export default class TicketsDataProvider {
                 tree1Node = this.buildQueryNode(rootQuery, parentId);
               }
             }
-            if (this.matchesSourceTargetCondition(wiql, targets, sources)) {
+            if (matchesReverse) {
               const matchesReverseAreaPath =
                 sourceAreaFilter || targetAreaFilter
                   ? this.matchesAreaPathCondition(wiql, targetAreaFilter || '', sourceAreaFilter || '')
@@ -1817,20 +1838,22 @@ export default class TicketsDataProvider {
       if (!rootQuery.children) {
         const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
         const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
-        return currentQuery
-          ? await this.structureFetchedQueries(
-              currentQuery,
-              onlyTestReq,
-              currentQuery.id,
-              sources,
-              targets,
-              sourceAreaFilter,
-              targetAreaFilter,
-              includeTreeQueries,
-              excludedFolderNames,
-              includeFlatQueries
-            )
-          : { tree1: null, tree2: null };
+        if (!currentQuery) {
+          return { tree1: null, tree2: null };
+        }
+        return await this.structureFetchedQueries(
+          currentQuery,
+          onlyTestReq,
+          currentQuery.id,
+          sources,
+          targets,
+          sourceAreaFilter,
+          targetAreaFilter,
+          includeTreeQueries,
+          excludedFolderNames,
+          includeFlatQueries,
+          typeCache
+        );
       }
 
       // Process children recursively
@@ -1846,7 +1869,8 @@ export default class TicketsDataProvider {
             targetAreaFilter,
             includeTreeQueries,
             excludedFolderNames,
-            includeFlatQueries
+            includeFlatQueries,
+            typeCache
           )
         )
       );
@@ -1905,7 +1929,8 @@ export default class TicketsDataProvider {
     const tgtFilter = (targetAreaFilter || '').toLowerCase().trim();
 
     const extractAreaPaths = (owner: 'source' | 'target'): string[] => {
-      const re = new RegExp(`${owner}\\.\\[system\\.areapath\\][^']*'([^']+)'`, 'gi');
+      const ownerPattern = `(?:${owner}|\\[${owner}\\])`;
+      const re = new RegExp(`${ownerPattern}\\.\\[system\\.areapath\\][^']*'([^']+)'`, 'gi');
       const results: string[] = [];
       let match: RegExpExecArray | null;
       while ((match = re.exec(wiqlLower)) !== null) {
@@ -1930,88 +1955,44 @@ export default class TicketsDataProvider {
     return hasSourceAreaPath && hasTargetAreaPath;
   }
 
-  /**
-   * Determines whether the given WIQL (Work Item Query Language) string matches the specified
-   * source and target conditions. It checks if the WIQL contains references to the specified
-   * source and target work item types.
-   *
-   * Supports both equality (=) and IN operators:
-   * - Source.[System.WorkItemType] = 'Epic'
-   * - Source.[System.WorkItemType] IN ('Epic', 'Feature', 'Requirement')
-   *
-   * @returns A boolean indicating whether the WIQL includes at least one valid source work item type
-   *          and at least one valid target work item type.
-   */
-  private matchesSourceTargetCondition(wiql: string, source: string[], target: string[]): boolean {
-    const isSourceIncluded = this.matchesWorkItemTypeCondition(wiql, 'Source', source);
-    const isTargetIncluded = this.matchesWorkItemTypeCondition(wiql, 'Target', target);
-    return isSourceIncluded && isTargetIncluded;
+  private async matchesSourceTargetConditionAsync(
+    queryNode: any,
+    wiql: string,
+    source: string[],
+    target: string[],
+    workItemTypeCache: Map<string, string | null>
+  ): Promise<boolean> {
+    /**
+     * Matches source+target constraints for link WIQL.
+     * For each side (Source/Target) we accept either:
+     * - explicit `[System.WorkItemType]` constraints (all types must be within the allowed list), or
+     * - explicit `[System.Id]` constraints when no type constraint exists (type is fetched by id and validated).
+     */
+    const sourceOk = await this.isLinkSideAllowedByTypeOrId(
+      queryNode,
+      wiql,
+      'Source',
+      source,
+      workItemTypeCache
+    );
+    if (!sourceOk) return false;
+    const targetOk = await this.isLinkSideAllowedByTypeOrId(
+      queryNode,
+      wiql,
+      'Target',
+      target,
+      workItemTypeCache
+    );
+    return targetOk;
   }
 
-  /**
-   * Helper method to check if a WIQL contains valid work item types for a given context (Source/Target).
-   * Supports both = and IN operators.
-   *
-   * @param wiql - The WIQL string to evaluate
-   * @param context - Either 'Source' or 'Target'
-   * @param allowedTypes - Array of allowed work item types
-   * @returns true if all work item types in the WIQL are in the allowedTypes array
-   */
-  private matchesWorkItemTypeCondition(
+  private async matchesFlatWorkItemTypeConditionAsync(
+    queryNode: any,
     wiql: string,
-    context: 'Source' | 'Target',
-    allowedTypes: string[]
-  ): boolean {
-    const wiqlStr = String(wiql || '');
-
-    // If allowedTypes is empty, accept any work item type (for backward compatibility)
-    if (!allowedTypes || allowedTypes.length === 0) {
-      const fieldPresenceRegex = new RegExp(`${context}\\.\\[System.WorkItemType\\]`, 'i');
-      return fieldPresenceRegex.test(wiqlStr);
-    }
-
-    const fieldPattern = `${context}.\\[System.WorkItemType\\]`;
-
-    // Pattern for equality: Source.[System.WorkItemType] = 'Epic'
-    const equalityRegex = new RegExp(`${fieldPattern}\\s*=\\s*'([^']+)'`, 'gi');
-
-    // Pattern for IN operator: Source.[System.WorkItemType] IN ('Epic', 'Feature', 'Requirement')
-    const inRegex = new RegExp(`${fieldPattern}\\s+IN\\s*\\(([^)]+)\\)`, 'gi');
-
-    const foundTypes = new Set<string>();
-    let match: RegExpExecArray | null;
-
-    // Extract types from equality operators
-    while ((match = equalityRegex.exec(wiqlStr)) !== null) {
-      foundTypes.add(String(match[1]).trim().toLowerCase());
-    }
-
-    // Extract types from IN operators
-    while ((match = inRegex.exec(wiqlStr)) !== null) {
-      const typesString = match[1];
-      // Extract all quoted values from the IN clause
-      const typeMatches = typesString.matchAll(/'([^']+)'/g);
-      for (const typeMatch of typeMatches) {
-        foundTypes.add(String(typeMatch[1]).trim().toLowerCase());
-      }
-    }
-
-    // If no work item types found in WIQL, return false
-    if (foundTypes.size === 0) {
-      return false;
-    }
-
-    // Check if all found types are in the allowedTypes array (case-insensitive)
-    const allowedSet = new Set(allowedTypes.map((t) => String(t).toLowerCase()));
-    for (const type of foundTypes) {
-      if (!allowedSet.has(type)) {
-        // Found a type that's not in the allowed list - reject this query
-        return false;
-      }
-    }
-
-    // All found types are valid
-    return true;
+    allowedTypes: string[],
+    workItemTypeCache: Map<string, string | null>
+  ): Promise<boolean> {
+    return this.isFlatQueryAllowedByTypeOrId(queryNode, wiql, allowedTypes, workItemTypeCache);
   }
 
   // Build a normalized node object for tree outputs
@@ -2028,39 +2009,224 @@ export default class TicketsDataProvider {
     };
   }
 
+  private getProjectFromQueryNode(queryNode: any): string | null {
+    const href =
+      queryNode?._links?.wiql?.href ||
+      queryNode?._links?.self?.href ||
+      queryNode?.url ||
+      queryNode?._links?.html?.href;
+    if (!href) return null;
+    return this.getProjectFromWiqlHref(String(href));
+  }
+
   /**
-   * Matches flat query WIQL against allowed work item types.
-   * Accept when at least one type is present and all found types are within the allowed set.
+   * Normalizes allowed work item types into a lowercase set.
    */
-  private matchesFlatWorkItemTypeCondition(wiql: string, allowedTypes: string[]): boolean {
-    // If allowedTypes is empty, accept any work item type reference
-    if (!allowedTypes || allowedTypes.length === 0) {
-      return /\[System\.WorkItemType\]/i.test(wiql || '');
-    }
+  private normalizeAllowedTypes(allowedTypes: string[]): Set<string> {
+    return new Set((allowedTypes || []).map((t) => String(t).trim().toLowerCase()).filter(Boolean));
+  }
 
+  /**
+   * Returns true when every value in `found` exists in `allowed`.
+   */
+  private areAllAllowed(found: Set<string>, allowed: Set<string>): boolean {
+    for (const v of found) {
+      if (!allowed.has(v)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Builds a regex-ready field selector for WIQL.
+   * - Link queries: Source/Target can appear as `Source.[...]` or `[Source].[...]`
+   * - Flat queries: no owner prefix, e.g. `[System.WorkItemType]`
+   */
+  private buildWiqlFieldPattern(owner: 'Source' | 'Target' | null, fieldRef: string): string {
+    const escapedField = String(fieldRef).replace(/\./g, '\\.');
+    if (!owner) {
+      return `\\[${escapedField}\\]`;
+    }
+    const ownerPattern = `(?:${owner}|\\[${owner}\\])`;
+    return `${ownerPattern}\\.\\[${escapedField}\\]`;
+  }
+
+  /**
+   * Extracts all quoted values used in `=` or `IN (...)` comparisons for a given field.
+   * Returned values are trimmed and lowercased.
+   *
+   * Examples:
+   * - `<field> = 'Epic'`
+   * - `<field> IN ('Epic','Feature')`
+   */
+  private extractQuotedValuesForField(wiql: string, fieldPattern: string): Set<string> {
     const wiqlStr = String(wiql || '');
-    const eqRe = /\[System\.WorkItemType\]\s*=\s*'([^']+)'/gi;
-    const inRe = /\[System\.WorkItemType\]\s+IN\s*\(([^)]+)\)/gi;
-
     const found = new Set<string>();
-    let m: RegExpExecArray | null;
-    while ((m = eqRe.exec(wiqlStr)) !== null) {
-      found.add(m[1].trim().toLowerCase());
+
+    const eqRe = new RegExp(`${fieldPattern}\\s*=\\s*'([^']+)'`, 'gi');
+    const inRe = new RegExp(`${fieldPattern}\\s+IN\\s*\\(([^)]+)\\)`, 'gi');
+
+    let match: RegExpExecArray | null;
+    while ((match = eqRe.exec(wiqlStr)) !== null) {
+      found.add(String(match[1]).trim().toLowerCase());
     }
-    while ((m = inRe.exec(wiqlStr)) !== null) {
-      const inner = m[1];
+    while ((match = inRe.exec(wiqlStr)) !== null) {
+      const inner = String(match[1] || '');
       for (const mm of inner.matchAll(/'([^']+)'/g)) {
         found.add(String(mm[1]).trim().toLowerCase());
       }
     }
+    return found;
+  }
 
-    if (found.size === 0) return false;
+  /**
+   * Extracts all numeric values used in `=` or `IN (...)` comparisons for a given field.
+   * Supports both quoted and unquoted numbers.
+   *
+   * Examples:
+   * - `<field> = 123`
+   * - `<field> IN (123, '456')`
+   */
+  private extractNumericValuesForField(wiql: string, fieldPattern: string): Set<string> {
+    const wiqlStr = String(wiql || '');
+    const found = new Set<string>();
 
-    const allowed = new Set(allowedTypes.map((t) => String(t).toLowerCase()));
-    for (const t of found) {
-      if (!allowed.has(t)) return false;
+    const eqRe = new RegExp(`${fieldPattern}\\s*=\\s*'?([0-9]+)'?`, 'gi');
+    const inRe = new RegExp(`${fieldPattern}\\s+IN\\s*\\(([^)]+)\\)`, 'gi');
+
+    let match: RegExpExecArray | null;
+    while ((match = eqRe.exec(wiqlStr)) !== null) {
+      found.add(String(match[1]));
     }
+    while ((match = inRe.exec(wiqlStr)) !== null) {
+      const inner = String(match[1] || '');
+      for (const mm of inner.matchAll(/'?([0-9]+)'?/g)) {
+        found.add(String(mm[1]));
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Extracts work item IDs from WIQL.
+   * - Link queries: pass `context` to match `Source.[System.Id]` / `Target.[System.Id]` (with or without `[Source]`)
+   * - Flat queries: omit `context` to match `[System.Id]`
+   */
+  private extractWorkItemIdsFromWiql(wiql: string, context?: 'Source' | 'Target'): string[] {
+    const fieldPattern = this.buildWiqlFieldPattern(context ?? null, 'System.Id');
+    return [...this.extractNumericValuesForField(String(wiql || ''), fieldPattern).values()];
+  }
+
+  /**
+   * Determines if a link-query side (Source/Target) is allowed based on WIQL constraints.
+   *
+   * Rules:
+   * - If `allowedTypes` is empty: preserve legacy behavior by requiring that WorkItemType is present for that side.
+   * - If WIQL contains a WorkItemType constraint for that side: all specified types must be within `allowedTypes`.
+   * - Otherwise, if WIQL contains a System.Id constraint for that side: fetch the work item type(s) by id and validate.
+   * - Otherwise: reject.
+   */
+  private async isLinkSideAllowedByTypeOrId(
+    queryNode: any,
+    wiql: string,
+    context: 'Source' | 'Target',
+    allowedTypes: string[],
+    workItemTypeCache: Map<string, string | null>
+  ): Promise<boolean> {
+    const wiqlStr = String(wiql || '');
+
+    // Preserve existing behavior when no allowedTypes are provided.
+    if (!allowedTypes || allowedTypes.length === 0) {
+      const fieldPresenceRegex = new RegExp(`${this.buildWiqlFieldPattern(context, 'System.WorkItemType')}`, 'i');
+      return fieldPresenceRegex.test(wiqlStr);
+    }
+
+    const allowed = this.normalizeAllowedTypes(allowedTypes);
+    const typeFieldPattern = this.buildWiqlFieldPattern(context, 'System.WorkItemType');
+    const typesInWiql = this.extractQuotedValuesForField(wiqlStr, typeFieldPattern);
+    if (typesInWiql.size > 0) {
+      return this.areAllAllowed(typesInWiql, allowed);
+    }
+
+    const ids = this.extractWorkItemIdsFromWiql(wiqlStr, context);
+    if (ids.length === 0) return false;
+
+    const project = this.getProjectFromQueryNode(queryNode);
+    if (!project) return false;
+
+    for (const id of ids) {
+      const wiType = await this.getWorkItemTypeById(project, id, workItemTypeCache);
+      if (!wiType) return false;
+      if (!allowed.has(String(wiType).toLowerCase())) return false;
+    }
+
     return true;
+  }
+
+  /**
+   * Determines if a flat query is allowed based on WIQL constraints.
+   *
+   * Rules:
+   * - If `allowedTypes` is empty: preserve legacy behavior by requiring that `[System.WorkItemType]` appears in WIQL.
+   * - If WIQL contains a WorkItemType constraint: all specified types must be within `allowedTypes`.
+   * - Otherwise, if WIQL contains `[System.Id]`: fetch the work item type(s) by id and validate.
+   * - Otherwise: reject.
+   */
+  private async isFlatQueryAllowedByTypeOrId(
+    queryNode: any,
+    wiql: string,
+    allowedTypes: string[],
+    workItemTypeCache: Map<string, string | null>
+  ): Promise<boolean> {
+    const wiqlStr = String(wiql || '');
+
+    // Preserve existing behavior when no allowedTypes are provided.
+    if (!allowedTypes || allowedTypes.length === 0) {
+      return /\[System\.WorkItemType\]/i.test(wiqlStr);
+    }
+
+    const allowed = this.normalizeAllowedTypes(allowedTypes);
+    const typeFieldPattern = this.buildWiqlFieldPattern(null, 'System.WorkItemType');
+    const typesInWiql = this.extractQuotedValuesForField(wiqlStr, typeFieldPattern);
+    if (typesInWiql.size > 0) {
+      return this.areAllAllowed(typesInWiql, allowed);
+    }
+
+    const ids = this.extractWorkItemIdsFromWiql(wiqlStr);
+    if (ids.length === 0) return false;
+
+    const project = this.getProjectFromQueryNode(queryNode);
+    if (!project) return false;
+
+    for (const id of ids) {
+      const wiType = await this.getWorkItemTypeById(project, id, workItemTypeCache);
+      if (!wiType) return false;
+      if (!allowed.has(String(wiType).toLowerCase())) return false;
+    }
+
+    return true;
+  }
+
+  private async getWorkItemTypeById(
+    project: string,
+    id: string,
+    workItemTypeCache: Map<string, string | null>
+  ): Promise<string | null> {
+    const cacheKey = `${project}:${id}`;
+    if (workItemTypeCache.has(cacheKey)) {
+      return workItemTypeCache.get(cacheKey) ?? null;
+    }
+
+    try {
+      const url = `${this.orgUrl}${project}/_apis/wit/workitems/${id}?fields=System.WorkItemType`;
+      const wi = await this.limit(() => TFSServices.getItemContent(url, this.token));
+      const wiType = wi?.fields?.['System.WorkItemType'];
+      const normalized = wiType ? String(wiType) : null;
+      workItemTypeCache.set(cacheKey, normalized);
+      return normalized;
+    } catch (e) {
+      workItemTypeCache.set(cacheKey, null);
+      return null;
+    }
   }
 
   /**
