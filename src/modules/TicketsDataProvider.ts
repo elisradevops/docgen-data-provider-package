@@ -2541,30 +2541,4 @@ export default class TicketsDataProvider {
       throw err;
     }
   }
-
-  /**
-   * Helper method to flatten a tree structure into a flat array of work items
-   */
-  private flattenTreeToWorkItems(roots: any[]): any[] {
-    const result: any[] = [];
-
-    const traverse = (node: any) => {
-      if (!node) return;
-
-      result.push({
-        id: node.id,
-        title: node.title,
-        description: node.description,
-        htmlUrl: node.htmlUrl,
-        url: node.htmlUrl, // Some nodes might use url instead
-      });
-
-      if (Array.isArray(node.children)) {
-        node.children.forEach(traverse);
-      }
-    };
-
-    roots.forEach(traverse);
-    return result;
-  }
 }
