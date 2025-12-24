@@ -6,10 +6,10 @@ on:
       - main
     paths-ignore:
       - '.github/**'
+  workflow_dispatch:
       
 permissions:
   contents: write
-  packages: write
 
 jobs:
   release:
@@ -18,21 +18,20 @@ jobs:
 
     steps:
       - name: 📚 checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           token:  ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
           
       - name: 🟢 node
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: 14
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
 
-      - name: Set up npm authentication
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_AUTH_TOKEN }}" > ~/.npmrc
-          echo "registry=https://registry.npmjs.org" >> ~/.npmrc
-
-      - run: npm install
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
 
       - run: npm run build
 
