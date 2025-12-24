@@ -1,39 +1,65 @@
-# dg-data-provider-azuredevops
+# @elisra-devops/docgen-data-provider
 
-[![npm version](https://badge.fury.io/js/@doc-gen%2Fdg-data-provider-azuredevops.svg)](https://badge.fury.io/js/@doc-gen%2Fdg-data-provider-azuredevops)
+[![npm](https://img.shields.io/npm/v/@elisra-devops/docgen-data-provider)](https://www.npmjs.com/package/@elisra-devops/docgen-data-provider)
+[![license: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](./LICENSE)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+Azure DevOps data provider used by DocGen to fetch work items, Git, Pipelines and Test data via the Azure DevOps REST APIs.
 
-[![Chat on Discord](https://badgen.net/badge/icon/discord?icon=discord&label)](https://discord.com/channels/904432165901709333/904432165901709336)
+## Installation
 
-An azuredevops data provider using the document generator interface.
-supported modules:
-
-- **managment** - a module for retriving general purpose data, for example: number of projects and projects detailes.
-- **git** - a module for retriving git related data, for example: commit detailes, branches etc.
-- **pipelines** - a module for retriving pipelines data, for example: pipline history, pipline details etc.
-- **tests** - a module for retriving tests data, for example:testplans list, test steps etc.
-- **tickets** - a module for retriving tickets data, for example: open tickets, tickets list by query results etc.
-
-### Installation:
-
-```
-npm i @doc-gen/dg-data-provider-azuredevops
+```bash
+npm i @elisra-devops/docgen-data-provider
 ```
 
-### Usage:
+## Authentication
 
+Pass a token string to the constructor:
+
+- **Azure DevOps PAT** (most common): pass the PAT as-is.
+- **Bearer token** (e.g. AAD/OIDC): pass as `bearer:<token>` or `bearer <token>` to send `Authorization: Bearer …`.
+
+`orgUrl` should be your organization base URL, typically `https://dev.azure.com/<org>/` (note the trailing slash).
+
+## Usage
+
+```ts
+import DgDataProviderAzureDevOps from '@elisra-devops/docgen-data-provider';
+
+const orgUrl = 'https://dev.azure.com/<org>/';
+const token = process.env.AZDO_TOKEN!; // PAT, or: `bearer:<access-token>`
+
+const provider = new DgDataProviderAzureDevOps(orgUrl, token, undefined, process.env.JFROG_TOKEN);
+
+const mgmt = await provider.getMangementDataProvider();
+const projects = await mgmt.GetProjects();
+
+const tickets = await provider.getTicketsDataProvider();
+const workItem = await tickets.GetWorkItem('<project>', '123');
 ```
-import DgDataProviderAzureDevOps from "@doc-gen/dg-data-provider-azuredevops";
 
-let dgDataProviderAzureDevOps = new DgDataProviderAzureDevOps(
-      orgUrl,
-      token
-    );
-    let gitDataProvider = await dgDataProviderAzureDevOps.getGitDataProvider();
+## Modules
 
+The default export is `DgDataProviderAzureDevOps`, which creates module-specific providers:
 
+- `getMangementDataProvider()` – org/project helpers (projects, profile, connection data).
+- `getTicketsDataProvider()` – work items + WIQL queries + attachments/images + shared-query helpers.
+- `getGitDataProvider()` – repos/branches/tags/files/commits/PRs + linked work items in ranges.
+- `getPipelinesDataProvider()` – pipeline runs, artifacts, releases, “previous run” lookup, trigger builds.
+- `getTestDataProvider()` – test plans/suites/cases/points/runs + parses test steps (including shared steps).
+- `getResultDataProvider()` – test result summaries (group/summary/detailed) and “test reporter” output.
+- `getJfrogDataProvider()` – JFrog build URL lookup (requires `jfrogToken` in the constructor).
 
-```
+## Notable APIs (by module)
 
-### Contributors:
+- `MangementDataProvider`: `GetProjects()`, `GetProjectByName()`, `CheckOrgUrlValidity()`
+- `TicketsDataProvider`: `GetWorkItem()`, `GetQueryResultsFromWiql()`, `GetSharedQueries()`, `CreateNewWorkItem()`, `UpdateWorkItem()`
+- `GitDataProvider`: `GetTeamProjectGitReposList()`, `GetFileFromGitRepo()`, `GetCommitsInCommitRange()`, `CreatePullRequestComment()`
+- `PipelinesDataProvider`: `GetPipelineRunHistory()`, `getPipelineRunDetails()`, `GetArtifactByBuildId()`, `TriggerBuildById()`
+- `TestDataProvider`: `GetTestPlans()`, `GetTestSuitesByPlan()`, `GetTestCasesBySuites()`, `CreateTestRun()`, `UploadTestAttachment()`
+- `ResultDataProvider`: `getCombinedResultsSummary()`, `getTestReporterResults()`
+
+## Notes
+
+- This library uses `axios` and retries some transient failures (timeouts/429/5xx).
+- `TicketsDataProvider.GetSharedQueries()` supports doc-type specific query layouts (e.g. `std`, `str`, `svd`, `srs`, `test-reporter`) and falls back to the provided root path when a dedicated folder is missing.
+- In Node.js, the HTTP client is configured with `rejectUnauthorized: false` in `src/helpers/tfs.ts`, which may be required for some internal setups but is a security tradeoff.
