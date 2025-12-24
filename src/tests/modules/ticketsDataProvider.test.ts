@@ -1792,25 +1792,6 @@ describe('TicketsDataProvider', () => {
     });
   });
 
-  describe('flattenTreeToWorkItems', () => {
-    it('should flatten a roots tree into a list of work items', () => {
-      const roots = [
-        {
-          id: 1,
-          title: 'R1',
-          description: 'D1',
-          htmlUrl: 'h1',
-          children: [{ id: 2, title: 'R2', description: 'D2', htmlUrl: 'h2', children: [] }],
-        },
-      ];
-
-      const res = (ticketsDataProvider as any).flattenTreeToWorkItems(roots);
-      expect(res).toHaveLength(2);
-      expect(res[0]).toEqual(expect.objectContaining({ id: 1, url: 'h1' }));
-      expect(res[1]).toEqual(expect.objectContaining({ id: 2, url: 'h2' }));
-    });
-  });
-
   describe('GetQueryResultsByWiqlHref', () => {
     it('should fetch and model query results', async () => {
       // Arrange

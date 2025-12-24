@@ -1285,6 +1285,156 @@ describe('ResultDataProvider', () => {
         expect.arrayContaining([expect.objectContaining({ id: 200, title: 'B200', workItemType: 'Bug' })])
       );
     });
+
+    it('should return only the most recent System.History entry by default', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+
+      const selectedFields = ['System.History@testCaseWorkItemField'];
+
+      (TFSServices.getItemContent as jest.Mock)
+        // 1) run result
+        .mockResolvedValueOnce({
+          testCase: { id: 123 },
+          testCaseRevision: 7,
+          testSuite: { name: 'S' },
+        })
+        // 2) attachments
+        .mockResolvedValueOnce({ value: [] })
+        // 3) wiByRevision (no System.History field on this revision)
+        .mockResolvedValueOnce({
+          id: 123,
+          fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
+          relations: [],
+        })
+        // 4) comments
+        .mockResolvedValueOnce({
+          comments: [
+            {
+              text: 'First comment',
+              createdDate: '2024-01-01T00:00:00Z',
+              createdBy: { displayName: 'Alice' },
+            },
+            {
+              text: 'Second comment',
+              createdDate: '2024-01-02T00:00:00Z',
+              createdBy: { displayName: 'Bob' },
+            },
+          ],
+        });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '10',
+        '20',
+        true,
+        selectedFields,
+        false
+      );
+
+      expect(res.filteredFields['System.History']).toEqual([
+        { createdDate: '2024-01-02T00:00:00Z', createdBy: 'Bob', text: 'Second comment' },
+      ]);
+    });
+
+    it('should backfill System.History from work item comments when requested (includeAllHistory=true)', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+
+      const selectedFields = ['System.History@testCaseWorkItemField'];
+
+      (TFSServices.getItemContent as jest.Mock)
+        // 1) run result
+        .mockResolvedValueOnce({
+          testCase: { id: 123 },
+          testCaseRevision: 7,
+          testSuite: { name: 'S' },
+        })
+        // 2) attachments
+        .mockResolvedValueOnce({ value: [] })
+        // 3) wiByRevision (no System.History field on this revision)
+        .mockResolvedValueOnce({
+          id: 123,
+          fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
+          relations: [],
+        })
+        // 4) comments
+        .mockResolvedValueOnce({
+          comments: [
+            {
+              text: 'First comment',
+              createdDate: '2024-01-01T00:00:00Z',
+              createdBy: { displayName: 'Alice' },
+            },
+            {
+              text: 'Second comment',
+              createdDate: '2024-01-02T00:00:00Z',
+              createdBy: { displayName: 'Bob' },
+            },
+          ],
+        });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '10',
+        '20',
+        true,
+        selectedFields,
+        false,
+        undefined,
+        true
+      );
+
+      expect(res.filteredFields['System.History']).toEqual([
+        { createdDate: '2024-01-02T00:00:00Z', createdBy: 'Bob', text: 'Second comment' },
+        { createdDate: '2024-01-01T00:00:00Z', createdBy: 'Alice', text: 'First comment' },
+      ]);
+    });
+
+    it('should fallback to updates when comments endpoint fails', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+
+      const selectedFields = ['System.History@testCaseWorkItemField'];
+
+      (TFSServices.getItemContent as jest.Mock)
+        // 1) run result
+        .mockResolvedValueOnce({
+          testCase: { id: 123 },
+          testCaseRevision: 7,
+          testSuite: { name: 'S' },
+        })
+        // 2) attachments
+        .mockResolvedValueOnce({ value: [] })
+        // 3) wiByRevision
+        .mockResolvedValueOnce({
+          id: 123,
+          fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
+          relations: [],
+        })
+        // 4) comments (fails)
+        .mockRejectedValueOnce(new Error('comments failed'))
+        // 5) updates (fallback)
+        .mockResolvedValueOnce({
+          value: [
+            {
+              revisedDate: '2024-01-03T00:00:00Z',
+              revisedBy: { displayName: 'Carol' },
+              fields: { 'System.History': { newValue: 'Legacy history entry' } },
+            },
+          ],
+        });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '10',
+        '20',
+        true,
+        selectedFields,
+        false
+      );
+
+      expect(res.filteredFields['System.History']).toEqual([
+        { createdDate: '2024-01-03T00:00:00Z', createdBy: 'Carol', text: 'Legacy history entry' },
+      ]);
+    });
   });
 
   describe('alignStepsWithIterationsBase - additional branches', () => {

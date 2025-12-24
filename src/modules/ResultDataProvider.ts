@@ -34,12 +34,14 @@ export default class ResultDataProvider {
   private testStepParserHelper: Utils;
   private testToAssociatedItemMap: Map<number, Set<any>>;
   private querySelectedColumns: any[];
+  private workItemDiscussionCache: Map<number, any[]>;
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
     this.token = token;
     this.testStepParserHelper = new Utils(orgUrl, token);
     this.testToAssociatedItemMap = new Map<number, Set<any>>();
     this.querySelectedColumns = [];
+    this.workItemDiscussionCache = new Map<number, any[]>();
   }
 
   /**
@@ -229,7 +231,8 @@ export default class ResultDataProvider {
     enableRunTestCaseFilter: boolean,
     enableRunStepStatusFilter: boolean,
     linkedQueryRequest: any,
-    errorFilterMode: string = 'none'
+    errorFilterMode: string = 'none',
+    includeAllHistory: boolean = false
   ) {
     const fetchedTestResults: any[] = [];
     logger.debug(
@@ -260,7 +263,8 @@ export default class ResultDataProvider {
         testData,
         projectName,
         selectedFields,
-        isQueryMode
+        isQueryMode,
+        includeAllHistory
       );
       logger.debug(`Aligning steps with iterations for test reporter results`);
       const testReporterData = this.alignStepsWithIterationsTestReporter(
@@ -660,7 +664,8 @@ export default class ResultDataProvider {
     isTestReporter: boolean = false,
     selectedFields?: string[],
     isQueryMode?: boolean,
-    point?: any
+    point?: any,
+    includeAllHistory: boolean = false
   ): Promise<any> {
     try {
       let filteredFields: any = {};
@@ -712,12 +717,17 @@ export default class ResultDataProvider {
         const selectedFieldSet = new Set(filteredTestCaseFields);
         // Filter fields based on selected field set
         if (selectedFieldSet.size !== 0) {
-          filteredFields = Object.keys(testCaseData.fields)
-            .filter((key) => selectedFieldSet.has(key))
-            .reduce((obj: any, key) => {
-              obj[key] = testCaseData.fields[key]?.displayName ?? testCaseData.fields[key];
-              return obj;
-            }, {});
+          filteredFields = [...selectedFieldSet].reduce((obj: any, key) => {
+            obj[key] = testCaseData.fields?.[key]?.displayName ?? testCaseData.fields?.[key] ?? '';
+            return obj;
+          }, {});
+          if (selectedFieldSet.has('System.History')) {
+            filteredFields['System.History'] = await this.getWorkItemDiscussionHistoryEntries(
+              projectName,
+              Number(point.testCaseId),
+              includeAllHistory
+            );
+          }
         }
         selectedFieldSet.clear();
         return {
@@ -770,12 +780,17 @@ export default class ResultDataProvider {
         const selectedFieldSet = new Set(filteredTestCaseFields);
         // Filter fields based on selected field set
         if (selectedFieldSet.size !== 0) {
-          filteredFields = Object.keys(wiByRevision.fields)
-            .filter((key) => selectedFieldSet.has(key))
-            .reduce((obj: any, key) => {
-              obj[key] = wiByRevision.fields[key]?.displayName ?? wiByRevision.fields[key];
-              return obj;
-            }, {});
+          filteredFields = [...selectedFieldSet].reduce((obj: any, key) => {
+            obj[key] = wiByRevision.fields?.[key]?.displayName ?? wiByRevision.fields?.[key] ?? '';
+            return obj;
+          }, {});
+          if (selectedFieldSet.has('System.History')) {
+            filteredFields['System.History'] = await this.getWorkItemDiscussionHistoryEntries(
+              projectName,
+              Number(resultData.testCase.id),
+              includeAllHistory
+            );
+          }
         }
         selectedFieldSet.clear();
       }
@@ -795,6 +810,91 @@ export default class ResultDataProvider {
       if (isTestReporter) {
         logger.error(`Error stack: ${error.stack}`);
       }
+      return null;
+    }
+  }
+
+  private async getWorkItemDiscussionHistoryEntries(
+    projectName: string,
+    workItemId: number,
+    includeAllHistory: boolean = false
+  ): Promise<any[]> {
+    const id = Number(workItemId);
+    if (!Number.isFinite(id)) return [];
+
+    const cached = this.workItemDiscussionCache.get(id);
+    if (cached !== undefined) return includeAllHistory ? cached : cached.slice(0, 1);
+
+    const fromComments = await this.tryFetchDiscussionFromComments(projectName, id);
+    if (fromComments !== null) {
+      const sorted = this.sortDiscussionEntries(fromComments);
+      this.workItemDiscussionCache.set(id, sorted);
+      return includeAllHistory ? sorted : sorted.slice(0, 1);
+    }
+
+    const fromUpdates = await this.tryFetchDiscussionFromUpdates(projectName, id);
+    const sorted = this.sortDiscussionEntries(fromUpdates ?? []);
+    this.workItemDiscussionCache.set(id, sorted);
+    return includeAllHistory ? sorted : sorted.slice(0, 1);
+  }
+
+  private sortDiscussionEntries(entries: any[]): any[] {
+    const list = Array.isArray(entries) ? entries.slice() : [];
+    list.sort((a, b) => {
+      const ta = new Date(a?.createdDate ?? 0).getTime();
+      const tb = new Date(b?.createdDate ?? 0).getTime();
+      if (tb !== ta) return tb - ta;
+      const ia = Number.isFinite(a?._idx) ? a._idx : 0;
+      const ib = Number.isFinite(b?._idx) ? b._idx : 0;
+      return ia - ib;
+    });
+    return list.map(({ _idx, ...rest }) => rest);
+  }
+
+  private async tryFetchDiscussionFromComments(projectName: string, workItemId: number): Promise<any[] | null> {
+    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/comments?order=asc&api-version=7.1-preview.3`;
+    try {
+      const data = await this.limit(() => TFSServices.getItemContent(url, this.token, 'get', {}, {}, false));
+      const comments = (data?.comments ?? data?.value ?? []) as any[];
+      if (!Array.isArray(comments) || comments.length === 0) return null;
+
+      const entries = comments
+        .filter((c) => !c?.isDeleted)
+        .map((c, idx) => {
+          const text = String(c?.text ?? c?.renderedText ?? '').trim();
+          if (!text) return null;
+          const createdBy = c?.createdBy?.displayName ?? c?.createdBy?.uniqueName ?? '';
+          const createdDate = c?.createdDate ?? '';
+          return { _idx: idx, createdDate, createdBy, text };
+        })
+        .filter(Boolean) as any[];
+
+      return entries.length > 0 ? entries : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  private async tryFetchDiscussionFromUpdates(projectName: string, workItemId: number): Promise<any[] | null> {
+    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/updates?api-version=7.1-preview.3`;
+    try {
+      const data = await this.limit(() => TFSServices.getItemContent(url, this.token, 'get', {}, {}, false));
+      const updates = (data?.value ?? []) as any[];
+      if (!Array.isArray(updates) || updates.length === 0) return null;
+
+      const entries = updates
+        .map((u, idx) => {
+          const historyChange = u?.fields?.['System.History'];
+          const text = String(historyChange?.newValue ?? historyChange?.value ?? '').trim();
+          if (!text) return null;
+          const createdBy = u?.revisedBy?.displayName ?? u?.revisedBy?.uniqueName ?? '';
+          const createdDate = u?.revisedDate ?? '';
+          return { _idx: idx, createdDate, createdBy, text };
+        })
+        .filter(Boolean) as any[];
+
+      return entries.length > 0 ? entries : null;
+    } catch (e) {
       return null;
     }
   }
@@ -1763,7 +1863,8 @@ export default class ResultDataProvider {
     resultId: string,
     selectedFields?: string[],
     isQueryMode?: boolean,
-    point?: any
+    point?: any,
+    includeAllHistory: boolean = false
   ): Promise<any> {
     return this.fetchResultDataBasedOnWiBase(
       projectName,
@@ -1772,7 +1873,8 @@ export default class ResultDataProvider {
       true,
       selectedFields,
       isQueryMode,
-      point
+      point,
+      includeAllHistory
     );
   }
 
@@ -1792,15 +1894,23 @@ export default class ResultDataProvider {
     testData: any[],
     projectName: string,
     selectedFields?: string[],
-    isQueryMode?: boolean
+    isQueryMode?: boolean,
+    includeAllHistory: boolean = false
   ): Promise<any[]> {
     return this.fetchAllResultDataBase(
       testData,
       projectName,
       true,
-      (projectName, testSuiteId, point, selectedFields, isQueryMode) =>
-        this.fetchResultDataForTestReporter(projectName, testSuiteId, point, selectedFields, isQueryMode),
-      [selectedFields, isQueryMode]
+      (projectName, testSuiteId, point, selectedFields, isQueryMode, includeAllHistory) =>
+        this.fetchResultDataForTestReporter(
+          projectName,
+          testSuiteId,
+          point,
+          selectedFields,
+          isQueryMode,
+          includeAllHistory
+        ),
+      [selectedFields, isQueryMode, includeAllHistory]
     );
   }
 
@@ -1901,14 +2011,23 @@ export default class ResultDataProvider {
     testSuiteId: string,
     point: any,
     selectedFields?: string[],
-    isQueryMode?: boolean
+    isQueryMode?: boolean,
+    includeAllHistory: boolean = false
   ) {
     return this.fetchResultDataBase(
       projectName,
       testSuiteId,
       point,
-      (project, runId, resultId, fields, isQueryMode, point) =>
-        this.fetchResultDataBasedOnWiTestReporter(project, runId, resultId, fields, isQueryMode, point),
+      (project, runId, resultId, fields, isQueryMode, point, includeAllHistory) =>
+        this.fetchResultDataBasedOnWiTestReporter(
+          project,
+          runId,
+          resultId,
+          fields,
+          isQueryMode,
+          point,
+          includeAllHistory
+        ),
       (resultData, testSuiteId, point, selectedFields) => {
         const { lastRunId, lastResultId, configurationName, lastResultDetails } = point;
         try {
@@ -1997,7 +2116,7 @@ export default class ResultDataProvider {
           return null;
         }
       },
-      [selectedFields, isQueryMode, point]
+      [selectedFields, isQueryMode, point, includeAllHistory]
     );
   }
 
