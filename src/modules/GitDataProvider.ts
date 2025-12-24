@@ -74,6 +74,16 @@ export default class GitDataProvider {
     return null;
   } //GetBranch
 
+  /**
+   * Gets a file from a Git repository.
+   *
+   * @param projectName - The name of the project.
+   * @param repoId - The ID of the repository.
+   * @param fileName - The name of the file to retrieve.
+   * @param version - The version descriptor for the file.
+   * @param gitRepoUrl - Optional URL of the Git repository.
+   * @returns The file content as a string.
+   */
   async GetFileFromGitRepo(
     projectName: string,
     repoId: string,
