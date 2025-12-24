@@ -1771,7 +1771,12 @@ export default class TicketsDataProvider {
 
           if (rootQuery.queryType === 'flat' && includeFlatQueries) {
             const allTypes = Array.from(new Set([...(sources || []), ...(targets || [])]));
-            const typesOk = await this.matchesFlatWorkItemTypeConditionAsync(rootQuery, wiql, allTypes, typeCache);
+            const typesOk = await this.matchesFlatWorkItemTypeConditionAsync(
+              rootQuery,
+              wiql,
+              allTypes,
+              typeCache
+            );
 
             if (typesOk) {
               const allowTree1 =
@@ -2136,7 +2141,10 @@ export default class TicketsDataProvider {
 
     // Preserve existing behavior when no allowedTypes are provided.
     if (!allowedTypes || allowedTypes.length === 0) {
-      const fieldPresenceRegex = new RegExp(`${this.buildWiqlFieldPattern(context, 'System.WorkItemType')}`, 'i');
+      const fieldPresenceRegex = new RegExp(
+        `${this.buildWiqlFieldPattern(context, 'System.WorkItemType')}`,
+        'i'
+      );
       return fieldPresenceRegex.test(wiqlStr);
     }
 
@@ -2206,6 +2214,15 @@ export default class TicketsDataProvider {
     return true;
   }
 
+  /**
+   * Fetches the work item type for a given work item ID.
+   * Uses caching to avoid repeated API calls.
+   *
+   * @param project The project name
+   * @param id The work item ID
+   * @param workItemTypeCache The cache map for work item types
+   * @returns The work item type or null if not found
+   */
   private async getWorkItemTypeById(
     project: string,
     id: string,

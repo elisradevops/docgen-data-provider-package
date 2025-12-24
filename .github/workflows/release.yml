@@ -6,10 +6,10 @@ on:
       - main
     paths-ignore:
       - '.github/**'
+  workflow_dispatch:
       
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   release:
@@ -30,6 +30,8 @@ jobs:
           cache: npm
 
       - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
 
       - run: npm run build
 
@@ -39,4 +41,6 @@ jobs:
           commit-message: 'CI: bumps version to {{version}} [skip ci]'
 
       - name: 🚀 publish
-        run: npm publish --access public --provenance
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
