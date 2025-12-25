@@ -1287,10 +1287,11 @@ describe('ResultDataProvider', () => {
     });
 
     it('should return only the most recent System.History entry by default', async () => {
-      (TFSServices.getItemContent as jest.Mock).mockReset();
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockReset();
 
       const selectedFields = ['System.History@testCaseWorkItemField'];
 
+      (TFSServices.getItemContent as jest.Mock).mockReset();
       (TFSServices.getItemContent as jest.Mock)
         // 1) run result
         .mockResolvedValueOnce({
@@ -1305,22 +1306,30 @@ describe('ResultDataProvider', () => {
           id: 123,
           fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
           relations: [],
-        })
-        // 4) comments
-        .mockResolvedValueOnce({
+        });
+
+      // 4) comments (new shape: { totalCount, count, comments })
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: {
+          totalCount: 2,
+          count: 2,
           comments: [
-            {
-              text: 'First comment',
-              createdDate: '2024-01-01T00:00:00Z',
-              createdBy: { displayName: 'Alice' },
-            },
             {
               text: 'Second comment',
               createdDate: '2024-01-02T00:00:00Z',
               createdBy: { displayName: 'Bob' },
+              isDeleted: false,
+            },
+            {
+              text: 'First comment',
+              createdDate: '2024-01-01T00:00:00Z',
+              createdBy: { displayName: 'Alice' },
+              isDeleted: false,
             },
           ],
-        });
+        },
+        headers: {},
+      });
 
       const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
         mockProjectName,
@@ -1338,6 +1347,7 @@ describe('ResultDataProvider', () => {
 
     it('should backfill System.History from work item comments when requested (includeAllHistory=true)', async () => {
       (TFSServices.getItemContent as jest.Mock).mockReset();
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockReset();
 
       const selectedFields = ['System.History@testCaseWorkItemField'];
 
@@ -1355,22 +1365,29 @@ describe('ResultDataProvider', () => {
           id: 123,
           fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
           relations: [],
-        })
-        // 4) comments
-        .mockResolvedValueOnce({
+        });
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: {
+          totalCount: 2,
+          count: 2,
           comments: [
-            {
-              text: 'First comment',
-              createdDate: '2024-01-01T00:00:00Z',
-              createdBy: { displayName: 'Alice' },
-            },
             {
               text: 'Second comment',
               createdDate: '2024-01-02T00:00:00Z',
               createdBy: { displayName: 'Bob' },
+              isDeleted: false,
+            },
+            {
+              text: 'First comment',
+              createdDate: '2024-01-01T00:00:00Z',
+              createdBy: { displayName: 'Alice' },
+              isDeleted: false,
             },
           ],
-        });
+        },
+        headers: {},
+      });
 
       const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
         mockProjectName,
@@ -1391,6 +1408,7 @@ describe('ResultDataProvider', () => {
 
     it('should return empty System.History when comments endpoint fails', async () => {
       (TFSServices.getItemContent as jest.Mock).mockReset();
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockReset();
 
       const selectedFields = ['System.History@testCaseWorkItemField'];
 
@@ -1409,8 +1427,10 @@ describe('ResultDataProvider', () => {
           fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
           relations: [],
         })
-        // 4) comments (fails)
-        .mockRejectedValueOnce(new Error('comments failed'));
+        ;
+
+      // 4) comments (fails)
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockRejectedValueOnce(new Error('comments failed'));
 
       const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
         mockProjectName,
