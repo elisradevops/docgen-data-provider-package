@@ -828,14 +828,58 @@ export default class ResultDataProvider {
     const fromComments = await this.tryFetchDiscussionFromComments(projectName, id);
     if (fromComments !== null) {
       const sorted = this.sortDiscussionEntries(fromComments);
-      this.workItemDiscussionCache.set(id, sorted);
-      return includeAllHistory ? sorted : sorted.slice(0, 1);
+      const normalized = this.normalizeDiscussionEntries(sorted);
+      this.workItemDiscussionCache.set(id, normalized);
+      return includeAllHistory ? normalized : normalized.slice(0, 1);
     }
 
     const fromUpdates = await this.tryFetchDiscussionFromUpdates(projectName, id);
     const sorted = this.sortDiscussionEntries(fromUpdates ?? []);
-    this.workItemDiscussionCache.set(id, sorted);
-    return includeAllHistory ? sorted : sorted.slice(0, 1);
+    const normalized = this.normalizeDiscussionEntries(sorted);
+    this.workItemDiscussionCache.set(id, normalized);
+    return includeAllHistory ? normalized : normalized.slice(0, 1);
+  }
+
+  private normalizeDiscussionEntries(entries: any[]): any[] {
+    const list = Array.isArray(entries) ? entries : [];
+    const seen = new Set<string>();
+    const out: any[] = [];
+
+    for (const e of list) {
+      const createdDate = String(e?.createdDate ?? '').trim();
+      const createdBy = String(e?.createdBy ?? '').trim();
+      const textRaw = e?.text;
+      const text = typeof textRaw === 'string' ? textRaw.trim() : '';
+
+      if (!text) continue;
+      if (this.isSystemIdentity(createdBy)) continue;
+
+      const textForKey = this.stripHtmlForEmptiness(text);
+      if (!textForKey) continue;
+
+      const key = `${createdDate}|${createdBy}|${textForKey}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push({ createdDate, createdBy, text });
+    }
+
+    return out;
+  }
+
+  private stripHtmlForEmptiness(html: string): string {
+    return String(html ?? '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private isSystemIdentity(displayName: string): boolean {
+    const s = String(displayName ?? '').toLowerCase().trim();
+    if (!s) return false;
+    return s === 'microsoft.teamfoundation.system' || s.includes('microsoft.teamfoundation.system');
   }
 
   private sortDiscussionEntries(entries: any[]): any[] {
@@ -861,7 +905,8 @@ export default class ResultDataProvider {
       const entries = comments
         .filter((c) => !c?.isDeleted)
         .map((c, idx) => {
-          const text = String(c?.text ?? c?.renderedText ?? '').trim();
+          const raw = c?.text ?? c?.renderedText ?? '';
+          const text = typeof raw === 'string' ? raw.trim() : '';
           if (!text) return null;
           const createdBy = c?.createdBy?.displayName ?? c?.createdBy?.uniqueName ?? '';
           const createdDate = c?.createdDate ?? '';
@@ -885,7 +930,8 @@ export default class ResultDataProvider {
       const entries = updates
         .map((u, idx) => {
           const historyChange = u?.fields?.['System.History'];
-          const text = String(historyChange?.newValue ?? historyChange?.value ?? '').trim();
+          const raw = historyChange?.newValue ?? historyChange?.value ?? '';
+          const text = typeof raw === 'string' ? raw.trim() : '';
           if (!text) return null;
           const createdBy = u?.revisedBy?.displayName ?? u?.revisedBy?.uniqueName ?? '';
           const createdDate = u?.revisedDate ?? '';

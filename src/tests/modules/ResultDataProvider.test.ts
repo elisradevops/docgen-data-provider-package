@@ -1435,6 +1435,58 @@ describe('ResultDataProvider', () => {
         { createdDate: '2024-01-03T00:00:00Z', createdBy: 'Carol', text: 'Legacy history entry' },
       ]);
     });
+
+    it('should ignore system-authored history updates and keep the most recent non-system entry', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+
+      const selectedFields = ['System.History@testCaseWorkItemField'];
+
+      (TFSServices.getItemContent as jest.Mock)
+        // 1) run result
+        .mockResolvedValueOnce({
+          testCase: { id: 123 },
+          testCaseRevision: 7,
+          testSuite: { name: 'S' },
+        })
+        // 2) attachments
+        .mockResolvedValueOnce({ value: [] })
+        // 3) wiByRevision
+        .mockResolvedValueOnce({
+          id: 123,
+          fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
+          relations: [],
+        })
+        // 4) comments (fails)
+        .mockRejectedValueOnce(new Error('comments failed'))
+        // 5) updates (includes system + user)
+        .mockResolvedValueOnce({
+          value: [
+            {
+              revisedDate: '2024-01-04T00:00:00Z',
+              revisedBy: { displayName: 'Microsoft.TeamFoundation.System' },
+              fields: { 'System.History': { newValue: 'Automated update' } },
+            },
+            {
+              revisedDate: '2024-01-03T00:00:00Z',
+              revisedBy: { displayName: 'Alice' },
+              fields: { 'System.History': { newValue: 'Real comment' } },
+            },
+          ],
+        });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '10',
+        '20',
+        true,
+        selectedFields,
+        false
+      );
+
+      expect(res.filteredFields['System.History']).toEqual([
+        { createdDate: '2024-01-03T00:00:00Z', createdBy: 'Alice', text: 'Real comment' },
+      ]);
+    });
   });
 
   describe('alignStepsWithIterationsBase - additional branches', () => {
