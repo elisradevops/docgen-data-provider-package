@@ -833,11 +833,11 @@ export default class ResultDataProvider {
       return includeAllHistory ? normalized : normalized.slice(0, 1);
     }
 
-    const fromUpdates = await this.tryFetchDiscussionFromUpdates(projectName, id);
-    const sorted = this.sortDiscussionEntries(fromUpdates ?? []);
-    const normalized = this.normalizeDiscussionEntries(sorted);
-    this.workItemDiscussionCache.set(id, normalized);
-    return includeAllHistory ? normalized : normalized.slice(0, 1);
+    // Comments endpoint is the source-of-truth for discussion history.
+    // If it's unavailable / returns nothing, don't fall back to System.History updates
+    // (those often contain system-authored noise and empty rows).
+    this.workItemDiscussionCache.set(id, []);
+    return [];
   }
 
   private normalizeDiscussionEntries(entries: any[]): any[] {
@@ -896,7 +896,7 @@ export default class ResultDataProvider {
   }
 
   private async tryFetchDiscussionFromComments(projectName: string, workItemId: number): Promise<any[] | null> {
-    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/comments?order=asc&api-version=7.1-preview.3`;
+    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/comments?order=desc&api-version=7.1-preview.3`;
     try {
       const data = await this.limit(() => TFSServices.getItemContent(url, this.token, 'get', {}, {}, false));
       const comments = (data?.comments ?? data?.value ?? []) as any[];
@@ -910,31 +910,6 @@ export default class ResultDataProvider {
           if (!text) return null;
           const createdBy = c?.createdBy?.displayName ?? c?.createdBy?.uniqueName ?? '';
           const createdDate = c?.createdDate ?? '';
-          return { _idx: idx, createdDate, createdBy, text };
-        })
-        .filter(Boolean) as any[];
-
-      return entries.length > 0 ? entries : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  private async tryFetchDiscussionFromUpdates(projectName: string, workItemId: number): Promise<any[] | null> {
-    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/updates?api-version=7.1-preview.3`;
-    try {
-      const data = await this.limit(() => TFSServices.getItemContent(url, this.token, 'get', {}, {}, false));
-      const updates = (data?.value ?? []) as any[];
-      if (!Array.isArray(updates) || updates.length === 0) return null;
-
-      const entries = updates
-        .map((u, idx) => {
-          const historyChange = u?.fields?.['System.History'];
-          const raw = historyChange?.newValue ?? historyChange?.value ?? '';
-          const text = typeof raw === 'string' ? raw.trim() : '';
-          if (!text) return null;
-          const createdBy = u?.revisedBy?.displayName ?? u?.revisedBy?.uniqueName ?? '';
-          const createdDate = u?.revisedDate ?? '';
           return { _idx: idx, createdDate, createdBy, text };
         })
         .filter(Boolean) as any[];
