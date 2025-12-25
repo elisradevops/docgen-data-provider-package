@@ -1243,14 +1243,10 @@ export default class ResultDataProvider {
     const iterationsMap = this.createIterationsMap(iterations, isTestReporter, includeNotRunTestCases);
 
     for (const testItem of testData) {
-      const testCasesById = new Map<number, any>();
-      for (const tc of testItem?.testCasesItems || []) {
-        const id = Number(tc?.workItem?.id);
-        if (Number.isFinite(id)) testCasesById.set(id, tc);
-      }
-
       for (const point of testItem.testPointsItems) {
-        const testCase = testCasesById.get(Number(point.testCaseId));
+        const testCase = testItem.testCasesItems.find(
+          (tc: any) => Number(tc.workItem.id) === Number(point.testCaseId)
+        );
         if (!testCase) continue;
 
         if (testCase.workItem.workItemFields.length === 0) {
@@ -1458,28 +1454,28 @@ export default class ResultDataProvider {
     fetchStrategy: (projectName: string, testSuiteId: string, point: any, ...args: any[]) => Promise<any>,
     additionalArgs: any[] = []
   ): Promise<any[]> {
-    // Preserve output ordering to match the original sequential traversal:
-    // suites in order, points in order.
-    const tasks: Promise<any>[] = [];
+    const results = [];
 
     for (const item of testData) {
       if (item.testPointsItems && item.testPointsItems.length > 0) {
         const { testSuiteId, testPointsItems } = item;
 
+        // Filter and sort valid points
         const validPoints = isTestReporter
           ? testPointsItems
           : testPointsItems.filter((point: any) => point && point.lastRunId && point.lastResultId);
 
+        // Fetch results for each point sequentially
         for (const point of validPoints) {
-          tasks.push(
-            this.limit(() => fetchStrategy(projectName, testSuiteId, point, ...additionalArgs))
-          );
+          const resultData = await fetchStrategy(projectName, testSuiteId, point, ...additionalArgs);
+          if (resultData !== null) {
+            results.push(resultData);
+          }
         }
       }
     }
 
-    const results = await Promise.all(tasks);
-    return results.filter((r) => r !== null);
+    return results;
   }
 
   /**
