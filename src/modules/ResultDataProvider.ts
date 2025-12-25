@@ -1,6 +1,7 @@
 import DataProviderUtils from '../utils/DataProviderUtils';
 import { TFSServices } from '../helpers/tfs';
 import { OpenPcrRequest, PlainTestResult, TestSteps } from '../models/tfs-data';
+import { AdoWorkItemComment, AdoWorkItemCommentsResponse } from '../models/ado-comments';
 import logger from '../utils/logger';
 import Utils from '../utils/testStepParserHelper';
 import TicketsDataProvider from './TicketsDataProvider';
@@ -867,6 +868,41 @@ export default class ResultDataProvider {
     return out;
   }
 
+  private extractCommentText(comment: AdoWorkItemComment): string {
+    const rendered = comment?.renderedText;
+    // In Azure DevOps the `renderedText` field can be present but empty ("") even when `text` is populated.
+    // Prefer `renderedText` only when it is a non-empty string.
+    if (typeof rendered === 'string' && rendered.trim() !== '') return rendered;
+
+    const text = comment?.text;
+    if (typeof text === 'string') return text;
+
+    // Defensive fallbacks for server variants that may wrap text differently
+    const anyComment: any = comment as any;
+    const candidates = [
+      anyComment?.text?.value,
+      anyComment?.text?.content,
+      anyComment?.renderedText?.value,
+      anyComment?.renderedText?.content,
+    ];
+    for (const c of candidates) {
+      if (typeof c === 'string') return c;
+    }
+    return '';
+  }
+
+  private stringifyForDebug(value: any, maxChars: number): string {
+    try {
+      const s = JSON.stringify(value);
+      if (typeof maxChars === 'number' && maxChars > 0 && s.length > maxChars) {
+        return `${s.slice(0, maxChars)}...[truncated ${s.length - maxChars} chars]`;
+      }
+      return s;
+    } catch (e) {
+      return String(value);
+    }
+  }
+
   private stripHtmlForEmptiness(html: string): string {
     return String(html ?? '')
       .replace(/<[^>]*>/g, ' ')
@@ -896,31 +932,60 @@ export default class ResultDataProvider {
   }
 
   private async tryFetchDiscussionFromComments(projectName: string, workItemId: number): Promise<any[] | null> {
-    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/comments?order=desc&api-version=7.1-preview.3`;
     try {
-      const data = await this.limit(() => TFSServices.getItemContent(url, this.token, 'get', {}, {}, false));
-      const comments = (data?.comments ?? data?.value ?? []) as any[];
-      if (!Array.isArray(comments) || comments.length === 0) return null;
+      // NOTE: Some Azure DevOps Server / collection configs omit comment text unless includeText=true.
+      const baseUrl = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/comments?order=desc&$top=200&includeText=true&api-version=7.1-preview.3`;
+      const all: AdoWorkItemComment[] = [];
+      let continuationToken: string | undefined = undefined;
+      let page = 0;
+      const pageResponsesForDebug: { page: number; data: any; headers: any }[] = [];
+
+      do {
+        let url = baseUrl;
+        if (continuationToken) {
+          url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
+        }
+
+        const { data, headers } = await this.limit(() =>
+          TFSServices.getItemContentWithHeaders(url, this.token, 'get', {}, {}, false)
+        );
+        const response = (data ?? {}) as AdoWorkItemCommentsResponse;
+        const comments = Array.isArray(response.comments) ? response.comments : [];
+        all.push(...comments);
+
+        // Keep a small sample of raw responses for debugging when we end up with no usable entries.
+        if (pageResponsesForDebug.length < 2) {
+          pageResponsesForDebug.push({ page: page + 1, data, headers });
+        }
+
+        continuationToken =
+          headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
+        page++;
+      } while (continuationToken);
+
+      if (all.length === 0) return null;
 
       let deletedCount = 0;
       let emptyRawCount = 0;
       let emptyAfterStripCount = 0;
       let systemIdentityCount = 0;
+      const emptyRawIds: number[] = [];
 
-      const entries = comments
+      const entries = all
         .filter((c) => {
           const deleted = !!c?.isDeleted;
           if (deleted) deletedCount++;
           return !deleted;
         })
         .map((c, idx) => {
-          const raw = c?.text ?? c?.renderedText ?? '';
+          const raw = this.extractCommentText(c);
           const text = typeof raw === 'string' ? raw.trim() : '';
           const createdBy = c?.createdBy?.displayName ?? c?.createdBy?.uniqueName ?? '';
           const createdDate = c?.createdDate ?? '';
 
           if (!text) {
             emptyRawCount++;
+            if (emptyRawIds.length < 10 && Number.isFinite(c?.id)) emptyRawIds.push(Number(c?.id));
             return null;
           }
 
@@ -938,11 +1003,24 @@ export default class ResultDataProvider {
         })
         .filter(Boolean) as any[];
 
-      if (entries.length === 0 && comments.length > 0) {
+      if (entries.length === 0 && all.length > 0) {
         logger.debug(
-          `[History][comments] Work item ${workItemId} returned ${comments.length} comments but 0 usable entries ` +
-            `(deleted=${deletedCount}, emptyRaw=${emptyRawCount}, emptyAfterStrip=${emptyAfterStripCount}, system=${systemIdentityCount})`
+          `[History][comments] Work item ${workItemId} returned ${all.length} comments but 0 usable entries ` +
+            `(deleted=${deletedCount}, emptyRaw=${emptyRawCount}, emptyAfterStrip=${emptyAfterStripCount}, system=${systemIdentityCount}, pages=${page}, emptyRawIds=${emptyRawIds.join(
+              ','
+            )})`
         );
+        const maxChars = 20000;
+        for (const p of pageResponsesForDebug) {
+          logger.debug(
+            `[History][comments] Raw comments API response (truncated) for work item ${workItemId} (page=${p.page}): ` +
+              this.stringifyForDebug(p.data, maxChars)
+          );
+          logger.debug(
+            `[History][comments] Response headers for work item ${workItemId} (page=${p.page}): ` +
+              this.stringifyForDebug(p.headers, 2000)
+          );
+        }
       }
 
       return entries.length > 0 ? entries : null;
@@ -1165,10 +1243,14 @@ export default class ResultDataProvider {
     const iterationsMap = this.createIterationsMap(iterations, isTestReporter, includeNotRunTestCases);
 
     for (const testItem of testData) {
+      const testCasesById = new Map<number, any>();
+      for (const tc of testItem?.testCasesItems || []) {
+        const id = Number(tc?.workItem?.id);
+        if (Number.isFinite(id)) testCasesById.set(id, tc);
+      }
+
       for (const point of testItem.testPointsItems) {
-        const testCase = testItem.testCasesItems.find(
-          (tc: any) => Number(tc.workItem.id) === Number(point.testCaseId)
-        );
+        const testCase = testCasesById.get(Number(point.testCaseId));
         if (!testCase) continue;
 
         if (testCase.workItem.workItemFields.length === 0) {
@@ -1376,28 +1458,28 @@ export default class ResultDataProvider {
     fetchStrategy: (projectName: string, testSuiteId: string, point: any, ...args: any[]) => Promise<any>,
     additionalArgs: any[] = []
   ): Promise<any[]> {
-    const results = [];
+    // Preserve output ordering to match the original sequential traversal:
+    // suites in order, points in order.
+    const tasks: Promise<any>[] = [];
 
     for (const item of testData) {
       if (item.testPointsItems && item.testPointsItems.length > 0) {
         const { testSuiteId, testPointsItems } = item;
 
-        // Filter and sort valid points
         const validPoints = isTestReporter
           ? testPointsItems
           : testPointsItems.filter((point: any) => point && point.lastRunId && point.lastResultId);
 
-        // Fetch results for each point sequentially
         for (const point of validPoints) {
-          const resultData = await fetchStrategy(projectName, testSuiteId, point, ...additionalArgs);
-          if (resultData !== null) {
-            results.push(resultData);
-          }
+          tasks.push(
+            this.limit(() => fetchStrategy(projectName, testSuiteId, point, ...additionalArgs))
+          );
         }
       }
     }
 
-    return results;
+    const results = await Promise.all(tasks);
+    return results.filter((r) => r !== null);
   }
 
   /**
