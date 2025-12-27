@@ -918,6 +918,18 @@ export default class ResultDataProvider {
     return s === 'microsoft.teamfoundation.system' || s.includes('microsoft.teamfoundation.system');
   }
 
+  private getCommentAuthor(comment: AdoWorkItemComment): string {
+    // Azure DevOps / TFS may record comments as created by the System identity,
+    // but include the real author under createdOnBehalfOf.
+    const onBehalf =
+      comment?.createdOnBehalfOf?.displayName ??
+      comment?.createdOnBehalfOf?.uniqueName ??
+      '';
+    if (onBehalf && !this.isSystemIdentity(onBehalf)) return String(onBehalf);
+
+    return String(comment?.createdBy?.displayName ?? comment?.createdBy?.uniqueName ?? '');
+  }
+
   private sortDiscussionEntries(entries: any[]): any[] {
     const list = Array.isArray(entries) ? entries.slice() : [];
     list.sort((a, b) => {
@@ -929,6 +941,40 @@ export default class ResultDataProvider {
       return ia - ib;
     });
     return list.map(({ _idx, ...rest }) => rest);
+  }
+
+  private getContinuationToken(headers: any, response?: AdoWorkItemCommentsResponse): string | undefined {
+    const candidates = ['x-ms-continuationtoken', 'x-ms-continuation-token'];
+
+    if (headers) {
+      // If headers is a fetch/Headers-like object
+      if (typeof headers.get === 'function') {
+        for (const key of candidates) {
+          const val = headers.get(key) ?? headers.get(key.toLowerCase()) ?? headers.get(key.toUpperCase());
+          if (typeof val === 'string' && val.trim() !== '') return val;
+        }
+      }
+
+      // If headers is a plain object (axios-style)
+      if (typeof headers === 'object') {
+        for (const key of candidates) {
+          const direct = (headers as any)[key] ?? (headers as any)[key.toLowerCase()] ?? (headers as any)[key.toUpperCase()];
+          if (typeof direct === 'string' && direct.trim() !== '') return direct;
+        }
+
+        for (const [k, v] of Object.entries(headers)) {
+          const lk = String(k).toLowerCase();
+          if (!candidates.includes(lk)) continue;
+          if (typeof v === 'string' && v.trim() !== '') return v;
+          // Some libs return arrays for repeated headers; take the first string.
+          if (Array.isArray(v) && typeof v[0] === 'string' && v[0].trim() !== '') return v[0];
+        }
+      }
+    }
+
+    const fromBody = response?.continuationToken;
+    if (typeof fromBody === 'string' && fromBody.trim() !== '') return fromBody;
+    return undefined;
   }
 
   private async tryFetchDiscussionFromComments(projectName: string, workItemId: number): Promise<any[] | null> {
@@ -958,8 +1004,7 @@ export default class ResultDataProvider {
           pageResponsesForDebug.push({ page: page + 1, data, headers });
         }
 
-        continuationToken =
-          headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
+        continuationToken = this.getContinuationToken(headers, response);
         page++;
       } while (continuationToken);
 
@@ -980,7 +1025,7 @@ export default class ResultDataProvider {
         .map((c, idx) => {
           const raw = this.extractCommentText(c);
           const text = typeof raw === 'string' ? raw.trim() : '';
-          const createdBy = c?.createdBy?.displayName ?? c?.createdBy?.uniqueName ?? '';
+          const createdBy = this.getCommentAuthor(c);
           const createdDate = c?.createdDate ?? '';
 
           if (!text) {
