@@ -1406,6 +1406,92 @@ describe('ResultDataProvider', () => {
       ]);
     });
 
+    it('should paginate work item comments when continuationToken is returned in the response body', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockReset();
+
+      const selectedFields = ['System.History@testCaseWorkItemField'];
+
+      (TFSServices.getItemContent as jest.Mock)
+        // 1) run result
+        .mockResolvedValueOnce({
+          testCase: { id: 123 },
+          testCaseRevision: 7,
+          testSuite: { name: 'S' },
+        })
+        // 2) attachments
+        .mockResolvedValueOnce({ value: [] })
+        // 3) wiByRevision (no System.History field on this revision)
+        .mockResolvedValueOnce({
+          id: 123,
+          fields: { 'Microsoft.VSTS.TCM.Steps': '<steps></steps>' },
+          relations: [],
+        });
+
+      // 4) comments page 1 (continuationToken in body, not headers)
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: {
+            totalCount: 3,
+            count: 2,
+            continuationToken: 'abc',
+            comments: [
+              {
+                text: 'Second comment',
+                createdDate: '2024-01-02T00:00:00Z',
+                createdBy: { displayName: 'Bob' },
+                isDeleted: false,
+              },
+              {
+                text: 'First comment',
+                createdDate: '2024-01-01T00:00:00Z',
+                createdBy: { displayName: 'Alice' },
+                isDeleted: false,
+              },
+            ],
+          },
+          headers: {},
+        })
+        // 5) comments page 2 (no continuation token)
+        .mockResolvedValueOnce({
+          data: {
+            totalCount: 3,
+            count: 1,
+            comments: [
+              {
+                text: 'Third comment',
+                createdDate: '2024-01-03T00:00:00Z',
+                createdBy: { displayName: 'Cara' },
+                isDeleted: false,
+              },
+            ],
+          },
+          headers: {},
+        });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '10',
+        '20',
+        true,
+        selectedFields,
+        false,
+        undefined,
+        true
+      );
+
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls).toHaveLength(2);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).toContain(
+        'continuationToken=abc'
+      );
+
+      expect(res.filteredFields['System.History']).toEqual([
+        { createdDate: '2024-01-03T00:00:00Z', createdBy: 'Cara', text: 'Third comment' },
+        { createdDate: '2024-01-02T00:00:00Z', createdBy: 'Bob', text: 'Second comment' },
+        { createdDate: '2024-01-01T00:00:00Z', createdBy: 'Alice', text: 'First comment' },
+      ]);
+    });
+
     it('should return empty System.History when comments endpoint fails', async () => {
       (TFSServices.getItemContent as jest.Mock).mockReset();
       (TFSServices.getItemContentWithHeaders as jest.Mock).mockReset();

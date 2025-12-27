@@ -17,8 +17,10 @@ export interface AdoWorkItemComment {
   renderedText?: string;
   format?: AdoCommentFormat;
   createdBy?: AdoIdentityRef;
+  createdOnBehalfOf?: AdoIdentityRef;
   createdDate?: string;
   modifiedBy?: AdoIdentityRef;
+  modifiedOnBehalfOf?: AdoIdentityRef;
   modifiedDate?: string;
   isDeleted?: boolean;
   url?: string;
@@ -30,4 +32,3 @@ export interface AdoWorkItemCommentsResponse {
   comments?: AdoWorkItemComment[];
   continuationToken?: string;
 }
-
