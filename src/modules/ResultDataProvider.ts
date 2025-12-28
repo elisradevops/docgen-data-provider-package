@@ -824,15 +824,39 @@ export default class ResultDataProvider {
     if (!Number.isFinite(id)) return [];
 
     const cached = this.workItemDiscussionCache.get(id);
-    if (cached !== undefined) return includeAllHistory ? cached : cached.slice(0, 1);
+    if (cached !== undefined) {
+      if (cached.length === 0) {
+        logger.debug(
+          `[History] Cache hit but empty for work item ${id} (project=${projectName}, includeAll=${includeAllHistory})`
+        );
+      }
+      return includeAllHistory ? cached : cached.slice(0, 1);
+    }
+
+    logger.debug(`[History] Cache miss. Fetching discussion for work item ${id} (project=${projectName})`);
 
     const fromComments = await this.tryFetchDiscussionFromComments(projectName, id);
     if (fromComments !== null) {
+      if (fromComments.length === 0) {
+        logger.debug(
+          `[History] Comments API returned 0 entries for work item ${id} (project=${projectName}, includeAll=${includeAllHistory})`
+        );
+      }
       const sorted = this.sortDiscussionEntries(fromComments);
       const normalized = this.normalizeDiscussionEntries(sorted);
+      if (normalized.length === 0 && fromComments.length > 0) {
+        logger.warn(
+          `[History] Comments API returned ${fromComments.length} items but normalized to 0 for work item ${id} ` +
+            `(project=${projectName}, includeAll=${includeAllHistory})`
+        );
+      }
       this.workItemDiscussionCache.set(id, normalized);
       return includeAllHistory ? normalized : normalized.slice(0, 1);
     }
+
+    logger.warn(
+      `[History] Comments API fetch failed for work item ${id} (project=${projectName}). Returning empty history.`
+    );
 
     // Comments endpoint is the source-of-truth for discussion history.
     // If it's unavailable / returns nothing, don't fall back to System.History updates
@@ -845,23 +869,46 @@ export default class ResultDataProvider {
     const seen = new Set<string>();
     const out: any[] = [];
 
+    let droppedEmpty = 0;
+    let droppedSystem = 0;
+    let droppedAfterStrip = 0;
+    let droppedDup = 0;
+
     for (const e of list) {
       const createdDate = String(e?.createdDate ?? '').trim();
       const createdBy = String(e?.createdBy ?? '').trim();
       const textRaw = e?.text;
       const text = typeof textRaw === 'string' ? textRaw.trim() : '';
 
-      if (!text) continue;
-      if (this.isSystemIdentity(createdBy)) continue;
+      if (!text) {
+        droppedEmpty++;
+        continue;
+      }
+      if (this.isSystemIdentity(createdBy)) {
+        droppedSystem++;
+        continue;
+      }
 
       const textForKey = this.stripHtmlForEmptiness(text);
-      if (!textForKey) continue;
+      if (!textForKey) {
+        droppedAfterStrip++;
+        continue;
+      }
 
       const key = `${createdDate}|${createdBy}|${textForKey}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key)) {
+        droppedDup++;
+        continue;
+      }
       seen.add(key);
 
       out.push({ createdDate, createdBy, text });
+    }
+
+    if (out.length === 0 && list.length > 0) {
+      logger.debug(
+        `[History] normalizeDiscussionEntries dropped all entries (in=${list.length}, empty=${droppedEmpty}, system=${droppedSystem}, afterStrip=${droppedAfterStrip}, dup=${droppedDup})`
+      );
     }
 
     return out;
