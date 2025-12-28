@@ -1103,6 +1103,8 @@ export default class ResultDataProvider {
               this.stringifyForDebug(firstPageDebug.headers, 2000)
           );
         }
+
+        await this.debugProbeHistoryFromUpdates(projectName, workItemId);
         return [];
       }
 
@@ -1173,6 +1175,60 @@ export default class ResultDataProvider {
         }`
       );
       return null;
+    }
+  }
+
+  private async debugProbeHistoryFromUpdates(projectName: string, workItemId: number): Promise<void> {
+    try {
+      const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/updates?$top=200&api-version=7.1-preview.3`;
+      const { data, headers } = await this.limit(() =>
+        TFSServices.getItemContentWithHeaders(url, this.token, 'get', {}, {}, false)
+      );
+
+      const updates = Array.isArray((data as any)?.value) ? (data as any).value : [];
+      let historyUpdates = 0;
+      const samples: string[] = [];
+
+      for (const u of updates) {
+        const fields = (u as any)?.fields;
+        const h = fields?.['System.History'];
+        const candidate =
+          (typeof h?.newValue === 'string' && h.newValue) ||
+          (typeof h?.oldValue === 'string' && h.oldValue) ||
+          (typeof h === 'string' && h) ||
+          '';
+        const normalized = this.stripHtmlForEmptiness(String(candidate));
+        if (!normalized) continue;
+        historyUpdates++;
+        if (samples.length < 3) {
+          const oneLine = normalized.replace(/\s+/g, ' ').trim();
+          samples.push(oneLine.length > 300 ? `${oneLine.slice(0, 300)}...[truncated]` : oneLine);
+        }
+      }
+
+      logger.debug(
+        `[History][updates] Probe for work item ${workItemId}: updates=${updates.length}, ` +
+          `historyUpdates=${historyUpdates}, url=${url}`
+      );
+      if (samples.length > 0) {
+        logger.debug(
+          `[History][updates] Sample System.History entries for work item ${workItemId}: ${this.stringifyForDebug(
+            samples,
+            2000
+          )}`
+        );
+      }
+
+      const continuation = this.getContinuationToken(headers, undefined);
+      if (continuation) {
+        logger.debug(
+          `[History][updates] Updates endpoint returned continuation token for work item ${workItemId}: ${continuation}`
+        );
+      }
+    } catch (e) {
+      logger.debug(
+        `[History][updates] Probe failed for work item ${workItemId}: ${(e as any)?.message ?? e}`
+      );
     }
   }
 
