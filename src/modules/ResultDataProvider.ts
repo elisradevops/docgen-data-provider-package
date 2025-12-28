@@ -837,7 +837,6 @@ export default class ResultDataProvider {
     // Comments endpoint is the source-of-truth for discussion history.
     // If it's unavailable / returns nothing, don't fall back to System.History updates
     // (those often contain system-authored noise and empty rows).
-    this.workItemDiscussionCache.set(id, []);
     return [];
   }
 
@@ -1014,7 +1013,6 @@ export default class ResultDataProvider {
         const comments = Array.isArray(response.comments) ? response.comments : [];
         all.push(...comments);
 
-        // Keep a small sample of raw responses for debugging when we end up with no usable entries.
         if (pageResponsesForDebug.length < 2) {
           pageResponsesForDebug.push({ page: page + 1, data, headers });
         }
@@ -1038,7 +1036,7 @@ export default class ResultDataProvider {
         page++;
       } while (continuationToken);
 
-      if (all.length === 0) return null;
+      if (all.length === 0) return [];
 
       let deletedCount = 0;
       let emptyRawCount = 0;
@@ -1060,7 +1058,8 @@ export default class ResultDataProvider {
 
           if (!text) {
             emptyRawCount++;
-            if (emptyRawIds.length < 10 && Number.isFinite(c?.id)) emptyRawIds.push(Number(c?.id));
+            if (emptyRawIds.length < 10 && Number.isFinite((c as any)?.id))
+              emptyRawIds.push(Number((c as any)?.id));
             return null;
           }
 
@@ -1098,7 +1097,7 @@ export default class ResultDataProvider {
         }
       }
 
-      return entries.length > 0 ? entries : null;
+      return entries;
     } catch (e) {
       logger.debug(
         `[History][comments] Failed fetching comments for work item ${workItemId}: ${
