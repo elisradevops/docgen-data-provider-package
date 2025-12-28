@@ -1038,6 +1038,7 @@ export default class ResultDataProvider {
       const MAX_PAGES = 50;
       const seenTokens = new Set<string>();
       const pageResponsesForDebug: { page: number; data: any; headers: any }[] = [];
+      let firstPageDebug: { url: string; data: any; headers: any } | null = null;
 
       do {
         if (page >= MAX_PAGES) {
@@ -1056,6 +1057,10 @@ export default class ResultDataProvider {
         const { data, headers } = await this.limit(() =>
           TFSServices.getItemContentWithHeaders(url, this.token, 'get', {}, {}, false)
         );
+
+        if (!firstPageDebug) {
+          firstPageDebug = { url, data, headers };
+        }
         const response = (data ?? {}) as AdoWorkItemCommentsResponse;
         const comments = Array.isArray(response.comments) ? response.comments : [];
         all.push(...comments);
@@ -1083,7 +1088,23 @@ export default class ResultDataProvider {
         page++;
       } while (continuationToken);
 
-      if (all.length === 0) return [];
+      if (all.length === 0) {
+        if (firstPageDebug) {
+          logger.debug(
+            `[History][comments] 0 comments returned for work item ${workItemId}. ` +
+              `url=${firstPageDebug.url}`
+          );
+          logger.debug(
+            `[History][comments] Raw comments API response (truncated) for work item ${workItemId} (page=1): ` +
+              this.stringifyForDebug(firstPageDebug.data, 20000)
+          );
+          logger.debug(
+            `[History][comments] Response headers for work item ${workItemId} (page=1): ` +
+              this.stringifyForDebug(firstPageDebug.headers, 2000)
+          );
+        }
+        return [];
+      }
 
       let deletedCount = 0;
       let emptyRawCount = 0;
