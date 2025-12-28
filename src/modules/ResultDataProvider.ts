@@ -825,7 +825,7 @@ export default class ResultDataProvider {
 
     const cached = this.workItemDiscussionCache.get(id);
     if (cached !== undefined) {
-      if (cached.length === 0) {
+      if (cached.length === 0 && this.isVerboseHistoryDebugEnabled()) {
         logger.debug(
           `[History] Cache hit but empty for work item ${id} (project=${projectName}, includeAll=${includeAllHistory})`
         );
@@ -833,11 +833,9 @@ export default class ResultDataProvider {
       return includeAllHistory ? cached : cached.slice(0, 1);
     }
 
-    logger.debug(`[History] Cache miss. Fetching discussion for work item ${id} (project=${projectName})`);
-
     const fromComments = await this.tryFetchDiscussionFromComments(projectName, id);
     if (fromComments !== null) {
-      if (fromComments.length === 0) {
+      if (fromComments.length === 0 && this.isVerboseHistoryDebugEnabled()) {
         logger.debug(
           `[History] Comments API returned 0 entries for work item ${id} (project=${projectName}, includeAll=${includeAllHistory})`
         );
@@ -869,11 +867,6 @@ export default class ResultDataProvider {
     const seen = new Set<string>();
     const out: any[] = [];
 
-    let droppedEmpty = 0;
-    let droppedSystem = 0;
-    let droppedAfterStrip = 0;
-    let droppedDup = 0;
-
     for (const e of list) {
       const createdDate = String(e?.createdDate ?? '').trim();
       const createdBy = String(e?.createdBy ?? '').trim();
@@ -881,23 +874,19 @@ export default class ResultDataProvider {
       const text = typeof textRaw === 'string' ? textRaw.trim() : '';
 
       if (!text) {
-        droppedEmpty++;
         continue;
       }
       if (this.isSystemIdentity(createdBy)) {
-        droppedSystem++;
         continue;
       }
 
       const textForKey = this.stripHtmlForEmptiness(text);
       if (!textForKey) {
-        droppedAfterStrip++;
         continue;
       }
 
       const key = `${createdDate}|${createdBy}|${textForKey}`;
       if (seen.has(key)) {
-        droppedDup++;
         continue;
       }
       seen.add(key);
@@ -905,13 +894,21 @@ export default class ResultDataProvider {
       out.push({ createdDate, createdBy, text });
     }
 
-    if (out.length === 0 && list.length > 0) {
-      logger.debug(
-        `[History] normalizeDiscussionEntries dropped all entries (in=${list.length}, empty=${droppedEmpty}, system=${droppedSystem}, afterStrip=${droppedAfterStrip}, dup=${droppedDup})`
-      );
-    }
-
     return out;
+  }
+
+  private isVerboseHistoryDebugEnabled(): boolean {
+    return (
+      String(process?.env?.DOCGEN_VERBOSE_HISTORY_DEBUG ?? '').toLowerCase() === 'true' ||
+      String(process?.env?.DOCGEN_VERBOSE_HISTORY_DEBUG ?? '') === '1'
+    );
+  }
+
+  private isRunResultDebugEnabled(): boolean {
+    return (
+      String(process?.env?.DOCGEN_DEBUG_RUNRESULT ?? '').toLowerCase() === 'true' ||
+      String(process?.env?.DOCGEN_DEBUG_RUNRESULT ?? '') === '1'
+    );
   }
 
   private extractCommentText(comment: AdoWorkItemComment): string {
@@ -1037,6 +1034,7 @@ export default class ResultDataProvider {
       let page = 0;
       const MAX_PAGES = 50;
       const seenTokens = new Set<string>();
+      const verbose = this.isVerboseHistoryDebugEnabled();
       const pageResponsesForDebug: { page: number; data: any; headers: any }[] = [];
       let firstPageDebug: { url: string; data: any; headers: any } | null = null;
 
@@ -1058,14 +1056,14 @@ export default class ResultDataProvider {
           TFSServices.getItemContentWithHeaders(url, this.token, 'get', {}, {}, false)
         );
 
-        if (!firstPageDebug) {
+        if (verbose && !firstPageDebug) {
           firstPageDebug = { url, data, headers };
         }
         const response = (data ?? {}) as AdoWorkItemCommentsResponse;
         const comments = Array.isArray(response.comments) ? response.comments : [];
         all.push(...comments);
 
-        if (pageResponsesForDebug.length < 2) {
+        if (verbose && pageResponsesForDebug.length < 2) {
           pageResponsesForDebug.push({ page: page + 1, data, headers });
         }
 
@@ -1089,23 +1087,15 @@ export default class ResultDataProvider {
       } while (continuationToken);
 
       if (all.length === 0) {
-        if (firstPageDebug) {
+        if (verbose && firstPageDebug) {
           logger.debug(
-            `[History][comments] 0 comments returned for work item ${workItemId}. ` +
-              `url=${firstPageDebug.url}`
+            `[History][comments] 0 comments returned for work item ${workItemId}. url=${firstPageDebug.url}`
           );
           logger.debug(
             `[History][comments] Raw comments API response (truncated) for work item ${workItemId} (page=1): ` +
-              this.stringifyForDebug(firstPageDebug.data, 20000)
-          );
-          logger.debug(
-            `[History][comments] Response headers for work item ${workItemId} (page=1): ` +
-              this.stringifyForDebug(firstPageDebug.headers, 2000)
+              this.stringifyForDebug(firstPageDebug.data, 5000)
           );
         }
-
-        await this.debugProbeHistoryFromUpdates(projectName, workItemId);
-        await this.debugProbeHistoryFromRevisions(projectName, workItemId);
         return [];
       }
 
@@ -1149,22 +1139,19 @@ export default class ResultDataProvider {
         .filter(Boolean) as any[];
 
       if (entries.length === 0 && all.length > 0) {
-        logger.debug(
-          `[History][comments] Work item ${workItemId} returned ${all.length} comments but 0 usable entries ` +
-            `(deleted=${deletedCount}, emptyRaw=${emptyRawCount}, emptyAfterStrip=${emptyAfterStripCount}, system=${systemIdentityCount}, pages=${page}, emptyRawIds=${emptyRawIds.join(
-              ','
-            )})`
-        );
-        const maxChars = 20000;
-        for (const p of pageResponsesForDebug) {
+        if (verbose) {
           logger.debug(
-            `[History][comments] Raw comments API response (truncated) for work item ${workItemId} (page=${p.page}): ` +
-              this.stringifyForDebug(p.data, maxChars)
+            `[History][comments] Work item ${workItemId} returned ${all.length} comments but 0 usable entries ` +
+              `(deleted=${deletedCount}, emptyRaw=${emptyRawCount}, emptyAfterStrip=${emptyAfterStripCount}, system=${systemIdentityCount}, pages=${page}, emptyRawIds=${emptyRawIds.join(
+                ','
+              )})`
           );
-          logger.debug(
-            `[History][comments] Response headers for work item ${workItemId} (page=${p.page}): ` +
-              this.stringifyForDebug(p.headers, 2000)
-          );
+          for (const p of pageResponsesForDebug) {
+            logger.debug(
+              `[History][comments] Raw comments API response (truncated) for work item ${workItemId} (page=${p.page}): ` +
+                this.stringifyForDebug(p.data, 5000)
+            );
+          }
         }
       }
 
@@ -1180,6 +1167,7 @@ export default class ResultDataProvider {
   }
 
   private async debugProbeHistoryFromUpdates(projectName: string, workItemId: number): Promise<void> {
+    if (!this.isVerboseHistoryDebugEnabled()) return;
     try {
       const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/updates?$top=200&api-version=7.1-preview.3`;
       const { data, headers } = await this.limit(() =>
@@ -1232,12 +1220,6 @@ export default class ResultDataProvider {
           `[History][updates] No System.History found for work item ${workItemId}. ` +
             `Field keys seen (first ${fieldKeys.length}): ${this.stringifyForDebug(fieldKeys, 4000)}`
         );
-        logger.debug(
-          `[History][updates] Sample update payloads (truncated) for work item ${workItemId}: ${this.stringifyForDebug(
-            updateSamplesForDebug,
-            20000
-          )}`
-        );
       }
 
       const continuation = this.getContinuationToken(headers, undefined);
@@ -1254,6 +1236,7 @@ export default class ResultDataProvider {
   }
 
   private async debugProbeHistoryFromRevisions(projectName: string, workItemId: number): Promise<void> {
+    if (!this.isVerboseHistoryDebugEnabled()) return;
     try {
       const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/revisions?$top=200&api-version=7.1-preview.3`;
       const { data } = await this.limit(() =>
