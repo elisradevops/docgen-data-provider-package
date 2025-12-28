@@ -1105,6 +1105,7 @@ export default class ResultDataProvider {
         }
 
         await this.debugProbeHistoryFromUpdates(projectName, workItemId);
+        await this.debugProbeHistoryFromRevisions(projectName, workItemId);
         return [];
       }
 
@@ -1188,9 +1189,15 @@ export default class ResultDataProvider {
       const updates = Array.isArray((data as any)?.value) ? (data as any).value : [];
       let historyUpdates = 0;
       const samples: string[] = [];
+      const fieldKeySet = new Set<string>();
+      const updateSamplesForDebug: any[] = [];
 
       for (const u of updates) {
+        if (updateSamplesForDebug.length < 2) updateSamplesForDebug.push(u);
         const fields = (u as any)?.fields;
+        if (fields && typeof fields === 'object') {
+          for (const k of Object.keys(fields)) fieldKeySet.add(String(k));
+        }
         const h = fields?.['System.History'];
         const candidate =
           (typeof h?.newValue === 'string' && h.newValue) ||
@@ -1219,6 +1226,20 @@ export default class ResultDataProvider {
         );
       }
 
+      if (historyUpdates === 0 && updates.length > 0) {
+        const fieldKeys = [...fieldKeySet].slice(0, 80);
+        logger.debug(
+          `[History][updates] No System.History found for work item ${workItemId}. ` +
+            `Field keys seen (first ${fieldKeys.length}): ${this.stringifyForDebug(fieldKeys, 4000)}`
+        );
+        logger.debug(
+          `[History][updates] Sample update payloads (truncated) for work item ${workItemId}: ${this.stringifyForDebug(
+            updateSamplesForDebug,
+            20000
+          )}`
+        );
+      }
+
       const continuation = this.getContinuationToken(headers, undefined);
       if (continuation) {
         logger.debug(
@@ -1228,6 +1249,48 @@ export default class ResultDataProvider {
     } catch (e) {
       logger.debug(
         `[History][updates] Probe failed for work item ${workItemId}: ${(e as any)?.message ?? e}`
+      );
+    }
+  }
+
+  private async debugProbeHistoryFromRevisions(projectName: string, workItemId: number): Promise<void> {
+    try {
+      const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/revisions?$top=200&api-version=7.1-preview.3`;
+      const { data } = await this.limit(() =>
+        TFSServices.getItemContentWithHeaders(url, this.token, 'get', {}, {}, false)
+      );
+
+      const revisions = Array.isArray((data as any)?.value) ? (data as any).value : [];
+      let historyRevs = 0;
+      const samples: string[] = [];
+
+      for (const r of revisions) {
+        const fields = (r as any)?.fields;
+        const h = fields?.['System.History'];
+        const candidate = typeof h === 'string' ? h : '';
+        const normalized = this.stripHtmlForEmptiness(String(candidate));
+        if (!normalized) continue;
+        historyRevs++;
+        if (samples.length < 3) {
+          const oneLine = normalized.replace(/\s+/g, ' ').trim();
+          samples.push(oneLine.length > 300 ? `${oneLine.slice(0, 300)}...[truncated]` : oneLine);
+        }
+      }
+
+      logger.debug(
+        `[History][revisions] Probe for work item ${workItemId}: revisions=${revisions.length}, historyRevisions=${historyRevs}, url=${url}`
+      );
+      if (samples.length > 0) {
+        logger.debug(
+          `[History][revisions] Sample System.History entries for work item ${workItemId}: ${this.stringifyForDebug(
+            samples,
+            2000
+          )}`
+        );
+      }
+    } catch (e) {
+      logger.debug(
+        `[History][revisions] Probe failed for work item ${workItemId}: ${(e as any)?.message ?? e}`
       );
     }
   }
@@ -2459,6 +2522,7 @@ export default class ResultDataProvider {
                       url: `${this.orgUrl}${projectName}/_testManagement/runs?runId=${lastRunId}&_a=resultSummary&resultId=${lastResultId}`,
                     };
                   }
+                  break;
                 case 'testCaseComment':
                   resultDataResponse.comment = iteration?.comment;
                   break;
@@ -2466,11 +2530,28 @@ export default class ResultDataProvider {
                   resultDataResponse.failureType = resultData.failureType;
                   break;
                 case 'runBy':
-                  const runBy = lastResultDetails.runBy.displayName;
-                  resultDataResponse.runBy = runBy;
+                  if (!lastResultDetails?.runBy?.displayName) {
+                    logger.debug(
+                      `[RunResult] Missing runBy for testCaseId=${String(
+                        resultData?.testCase?.id ?? point?.testCaseId ?? 'unknown'
+                      )} (lastRunId=${String(lastRunId ?? '')}, lastResultId=${String(
+                        lastResultId ?? ''
+                      )}). lastResultDetails=${this.stringifyForDebug(lastResultDetails, 2000)}`
+                    );
+                  }
+                  resultDataResponse.runBy = lastResultDetails?.runBy?.displayName ?? '';
                   break;
                 case 'executionDate':
-                  resultDataResponse.executionDate = lastResultDetails.dateCompleted;
+                  if (!lastResultDetails?.dateCompleted) {
+                    logger.debug(
+                      `[RunResult] Missing dateCompleted for testCaseId=${String(
+                        resultData?.testCase?.id ?? point?.testCaseId ?? 'unknown'
+                      )} (lastRunId=${String(lastRunId ?? '')}, lastResultId=${String(
+                        lastResultId ?? ''
+                      )}). lastResultDetails=${this.stringifyForDebug(lastResultDetails, 2000)}`
+                    );
+                  }
+                  resultDataResponse.executionDate = lastResultDetails?.dateCompleted ?? '';
                   break;
                 case 'configurationName':
                   resultDataResponse.configurationName = configurationName;
