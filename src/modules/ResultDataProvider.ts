@@ -1893,9 +1893,9 @@ export default class ResultDataProvider {
       point,
       (project, runId, resultId) => this.fetchResultDataBasedOnWi(project, runId, resultId),
       (resultData, testSuiteId, point) => ({
-        testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
-        testCaseId: resultData.testCase.id,
-        testSuiteName: `${resultData.testSuite.name}`,
+        testCaseName: `${resultData?.testCase?.name ?? ''} - ${resultData?.testCase?.id ?? ''}`,
+        testCaseId: resultData?.testCase?.id,
+        testSuiteName: `${resultData?.testSuite?.name ?? ''}`,
         testSuiteId,
         lastRunId: point.lastRunId,
         lastResultId: point.lastResultId,
@@ -2470,10 +2470,22 @@ export default class ResultDataProvider {
             resultData.iterationDetails?.length > 0
               ? resultData.iterationDetails[resultData.iterationDetails?.length - 1]
               : undefined;
+
+          if (!resultData?.testCase || !resultData?.testSuite) {
+            logger.debug(
+              `[RunResult] Missing testCase/testSuite for point testCaseId=${String(
+                point?.testCaseId ?? 'unknown'
+              )} (lastRunId=${String(lastRunId ?? '')}, lastResultId=${String(
+                lastResultId ?? ''
+              )}). hasTestCase=${Boolean(resultData?.testCase)} hasTestSuite=${Boolean(
+                resultData?.testSuite
+              )}`
+            );
+          }
           const resultDataResponse: any = {
-            testCaseName: `${resultData.testCase.name} - ${resultData.testCase.id}`,
-            testCaseId: resultData.testCase.id,
-            testSuiteName: `${resultData.testSuite.name}`,
+            testCaseName: `${resultData?.testCase?.name ?? ''} - ${resultData?.testCase?.id ?? ''}`,
+            testCaseId: resultData?.testCase?.id,
+            testSuiteName: `${resultData?.testSuite?.name ?? ''}`,
             testSuiteId,
             lastRunId,
             lastResultId,
