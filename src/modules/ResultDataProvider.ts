@@ -913,7 +913,9 @@ export default class ResultDataProvider {
   }
 
   private isSystemIdentity(displayName: string): boolean {
-    const s = String(displayName ?? '').toLowerCase().trim();
+    const s = String(displayName ?? '')
+      .toLowerCase()
+      .trim();
     if (!s) return false;
     return s === 'microsoft.teamfoundation.system' || s.includes('microsoft.teamfoundation.system');
   }
@@ -921,10 +923,7 @@ export default class ResultDataProvider {
   private getCommentAuthor(comment: AdoWorkItemComment): string {
     // Azure DevOps / TFS may record comments as created by the System identity,
     // but include the real author under createdOnBehalfOf.
-    const onBehalf =
-      comment?.createdOnBehalfOf?.displayName ??
-      comment?.createdOnBehalfOf?.uniqueName ??
-      '';
+    const onBehalf = comment?.createdOnBehalfOf?.displayName ?? comment?.createdOnBehalfOf?.uniqueName ?? '';
     if (onBehalf && !this.isSystemIdentity(onBehalf)) return String(onBehalf);
 
     return String(comment?.createdBy?.displayName ?? comment?.createdBy?.uniqueName ?? '');
@@ -958,7 +957,10 @@ export default class ResultDataProvider {
       // If headers is a plain object (axios-style)
       if (typeof headers === 'object') {
         for (const key of candidates) {
-          const direct = (headers as any)[key] ?? (headers as any)[key.toLowerCase()] ?? (headers as any)[key.toUpperCase()];
+          const direct =
+            (headers as any)[key] ??
+            (headers as any)[key.toLowerCase()] ??
+            (headers as any)[key.toUpperCase()];
           if (typeof direct === 'string' && direct.trim() !== '') return direct;
         }
 
@@ -977,16 +979,29 @@ export default class ResultDataProvider {
     return undefined;
   }
 
-  private async tryFetchDiscussionFromComments(projectName: string, workItemId: number): Promise<any[] | null> {
+  private async tryFetchDiscussionFromComments(
+    projectName: string,
+    workItemId: number
+  ): Promise<any[] | null> {
     try {
       // NOTE: Some Azure DevOps Server / collection configs omit comment text unless includeText=true.
       const baseUrl = `${this.orgUrl}${projectName}/_apis/wit/workItems/${workItemId}/comments?order=desc&$top=200&includeText=true&api-version=7.1-preview.3`;
       const all: AdoWorkItemComment[] = [];
       let continuationToken: string | undefined = undefined;
       let page = 0;
+      const MAX_PAGES = 50;
+      const seenTokens = new Set<string>();
       const pageResponsesForDebug: { page: number; data: any; headers: any }[] = [];
 
       do {
+        if (page >= MAX_PAGES) {
+          logger.warn(
+            `[History][comments] Reached max pages (${MAX_PAGES}) for work item ${workItemId}. ` +
+              `Stopping pagination to avoid infinite loop (lastToken=${String(continuationToken ?? '')}).`
+          );
+          break;
+        }
+
         let url = baseUrl;
         if (continuationToken) {
           url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
@@ -1004,7 +1019,22 @@ export default class ResultDataProvider {
           pageResponsesForDebug.push({ page: page + 1, data, headers });
         }
 
-        continuationToken = this.getContinuationToken(headers, response);
+        const nextToken = this.getContinuationToken(headers, response);
+        if (nextToken) {
+          if (seenTokens.has(nextToken)) {
+            logger.warn(
+              `[History][comments] Continuation token repeated for work item ${workItemId}. ` +
+                `Stopping pagination to avoid infinite loop (token=${nextToken}).`
+            );
+            continuationToken = undefined;
+          } else {
+            seenTokens.add(nextToken);
+            continuationToken = nextToken;
+          }
+        } else {
+          continuationToken = undefined;
+        }
+
         page++;
       } while (continuationToken);
 
@@ -1071,7 +1101,9 @@ export default class ResultDataProvider {
       return entries.length > 0 ? entries : null;
     } catch (e) {
       logger.debug(
-        `[History][comments] Failed fetching comments for work item ${workItemId}: ${(e as any)?.message ?? e}`
+        `[History][comments] Failed fetching comments for work item ${workItemId}: ${
+          (e as any)?.message ?? e
+        }`
       );
       return null;
     }
@@ -1288,10 +1320,16 @@ export default class ResultDataProvider {
     const iterationsMap = this.createIterationsMap(iterations, isTestReporter, includeNotRunTestCases);
 
     for (const testItem of testData) {
+      const testCasesItems = Array.isArray(testItem?.testCasesItems) ? testItem.testCasesItems : [];
+      const testCaseById = new Map<number, any>();
+      for (const tc of testCasesItems) {
+        const id = Number(tc?.workItem?.id);
+        if (Number.isFinite(id)) {
+          testCaseById.set(id, tc);
+        }
+      }
       for (const point of testItem.testPointsItems) {
-        const testCase = testItem.testCasesItems.find(
-          (tc: any) => Number(tc.workItem.id) === Number(point.testCaseId)
-        );
+        const testCase = testCaseById.get(Number(point.testCaseId));
         if (!testCase) continue;
 
         if (testCase.workItem.workItemFields.length === 0) {
@@ -1510,11 +1548,44 @@ export default class ResultDataProvider {
           ? testPointsItems
           : testPointsItems.filter((point: any) => point && point.lastRunId && point.lastResultId);
 
-        // Fetch results for each point sequentially
-        for (const point of validPoints) {
-          const resultData = await fetchStrategy(projectName, testSuiteId, point, ...additionalArgs);
-          if (resultData !== null) {
-            results.push(resultData);
+        // Fetch results for each point.
+        // For non-test-reporter paths we keep sequential fetching to avoid context-related errors.
+        if (!isTestReporter) {
+          for (const point of validPoints) {
+            const resultData = await fetchStrategy(projectName, testSuiteId, point, ...additionalArgs);
+            if (resultData !== null) {
+              results.push(resultData);
+            }
+          }
+        } else {
+          // Test Reporter: bounded concurrency + batching to avoid creating a massive promise graph.
+          const POINT_BATCH_SIZE = 50;
+          const pointLimit = pLimit(6);
+
+          for (let i = 0; i < validPoints.length; i += POINT_BATCH_SIZE) {
+            const batch = validPoints.slice(i, i + POINT_BATCH_SIZE);
+            const batchResults = await Promise.all(
+              batch.map((point: any) =>
+                pointLimit(async () => {
+                  try {
+                    return await fetchStrategy(projectName, testSuiteId, point, ...additionalArgs);
+                  } catch (e) {
+                    logger.error(
+                      `Error occurred for point ${point?.testCaseId ?? 'unknown'}: ${
+                        (e as any)?.message ?? e
+                      }`
+                    );
+                    return null;
+                  }
+                })
+              )
+            );
+
+            for (const resultData of batchResults) {
+              if (resultData !== null) {
+                results.push(resultData);
+              }
+            }
           }
         }
       }
