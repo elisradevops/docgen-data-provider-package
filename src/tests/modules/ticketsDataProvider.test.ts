@@ -20,8 +20,8 @@ describe('TicketsDataProvider', () => {
   });
 
   describe('isLinkSideAllowedByTypeOrId', () => {
-    it('should accept when allowedTypes is empty and field is present', async () => {
-      const wiql = "SELECT * FROM WorkItemLinks WHERE Source.[System.WorkItemType] = 'Epic'";
+    it('should return true when source types include allowed types', async () => {
+      const wiql = "SELECT * FROM WorkItemLinks WHERE Source.[System.WorkItemType] IN ('Bug')";
       const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
         {},
         wiql,
@@ -78,6 +78,18 @@ describe('TicketsDataProvider', () => {
         new Map()
       );
       expect(result).toBe(false);
+    });
+  });
+
+  describe('fetchSystemRequirementQueries', () => {
+    it('should include Task in allowed types', async () => {
+      const structureSpy = jest
+        .spyOn(ticketsDataProvider as any, 'structureFetchedQueries')
+        .mockResolvedValue({ tree1: { id: 't1' }, tree2: null });
+
+      await (ticketsDataProvider as any).fetchSystemRequirementQueries({ hasChildren: false }, []);
+
+      expect(structureSpy.mock.calls[0][3]).toEqual(['epic', 'feature', 'requirement', 'task']);
     });
   });
 
@@ -641,7 +653,12 @@ describe('TicketsDataProvider', () => {
 
     it('should reject when WIQL contains a type outside allowedTypes', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] IN ('Bug','Task')";
-      const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId({}, wiql, ['Bug'], new Map());
+      const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId(
+        {},
+        wiql,
+        ['Bug'],
+        new Map()
+      );
       expect(res).toBe(false);
     });
   });
