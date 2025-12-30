@@ -567,11 +567,12 @@ export default class TicketsDataProvider {
    * @returns An object containing `systemRequirementsQueryTree`.
    */
   private async fetchSystemRequirementQueries(queries: any, excludedFolderNames: string[] = []) {
+    const allowedTypes = ['epic', 'feature', 'requirement', 'task'];
     const { tree1: systemRequirementsQueryTree } = await this.structureFetchedQueries(
       queries,
       false,
       null,
-      ['epic', 'feature', 'requirement'],
+      allowedTypes,
       [],
       undefined,
       undefined,
@@ -585,7 +586,7 @@ export default class TicketsDataProvider {
   private async fetchSrsQueries(rootQueries: any) {
     const srsFolder = await this.findQueryFolderByName(rootQueries, 'srs');
     if (!srsFolder) {
-      const systemRequirementsQueries = await this.fetchSystemRequirementQueries(rootQueries);
+      const systemRequirementsQueries = await this.fetchSystemRequirementQueries(rootQueries, []);
       const { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree } =
         await this.fetchLinkedRequirementsTraceQueries(rootQueries);
       return {
