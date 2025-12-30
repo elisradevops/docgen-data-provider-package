@@ -681,7 +681,7 @@ describe('PipelinesDataProvider', () => {
   });
 
   describe('getPipelineResourcePipelinesFromObject', () => {
-    it('should return empty set when no pipeline resources exist', async () => {
+    it('should return empty array when no pipeline resources exist', async () => {
       // Arrange
       const inPipeline = {
         resources: {},
@@ -691,7 +691,7 @@ describe('PipelinesDataProvider', () => {
       const result = await pipelinesDataProvider.getPipelineResourcePipelinesFromObject(inPipeline);
 
       // Assert
-      expect(result).toEqual(new Set());
+      expect(result).toEqual([]);
     });
 
     it('should extract pipeline resources from pipeline object', async () => {
@@ -714,11 +714,11 @@ describe('PipelinesDataProvider', () => {
         id: 789,
         definition: { id: 123, type: 'build' },
         buildNumber: '20231201.1',
-        project: { name: 'project1' },
+        project: { name: 'project' },
         repository: { type: 'TfsGit' },
       };
 
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockBuildResponse);
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockBuildResponse); // fixed-url attempt
 
       // Act
       const result = await pipelinesDataProvider.getPipelineResourcePipelinesFromObject(inPipeline);
@@ -730,7 +730,7 @@ describe('PipelinesDataProvider', () => {
         buildId: 789,
         definitionId: 123,
         buildNumber: '20231201.1',
-        teamProject: 'project1',
+        teamProject: 'project',
         provider: 'TfsGit',
       });
     });
@@ -760,226 +760,35 @@ describe('PipelinesDataProvider', () => {
       expect(result).toEqual([]);
     });
 
-    it('should resolve resource pipeline by buildNumber when runId is missing and version is semantic', async () => {
-      // Arrange
+    it('should skip resource when fixed-url returns a build from a different project/pipeline', async () => {
       const inPipeline = {
-        url: 'https://dev.azure.com/org/project1/_apis/pipelines/10/runs/200',
         resources: {
           pipelines: {
-            SOME_PACKAGE: {
+            myPipeline: {
               pipeline: {
                 id: 123,
-                url: 'https://dev.azure.com/org/project1/_apis/pipelines/123?revision=1',
+                name: 'ExpectedPipeline',
+                url: 'https://dev.azure.com/org/project/_apis/pipelines/123?revision=1',
               },
-              project: { name: 'project1' },
-              source: 'project1-system-package',
-              version: '1.0.56',
-              branch: 'main',
             },
           },
         },
       } as unknown as PipelineRun;
 
-      const mockListBuildsResponse = {
-        value: [
-          {
-            id: 789,
-          },
-        ],
-      };
       const mockBuildResponse = {
         id: 789,
-        definition: { id: 123, type: 'build' },
-        buildNumber: '1.0.56',
-        project: { name: 'project1' },
+        definition: { id: 999, name: 'DifferentPipeline', type: 'build' },
+        buildNumber: '20231201.1',
+        project: { name: 'DifferentProject' },
         repository: { type: 'TfsGit' },
       };
 
-      (TFSServices.getItemContent as jest.Mock)
-        .mockResolvedValueOnce(mockListBuildsResponse) // findBuildByDefinitionAndBuildNumber
-        .mockResolvedValueOnce(mockBuildResponse); // getPipelineBuildByBuildId
-
-      // Act
-      const result = await pipelinesDataProvider.getPipelineResourcePipelinesFromObject(inPipeline);
-
-      // Assert
-      expect(result).toHaveLength(1);
-      expect((result as any[])[0]).toEqual({
-        name: 'SOME_PACKAGE',
-        buildId: 789,
-        definitionId: 123,
-        buildNumber: '1.0.56',
-        teamProject: 'project1',
-        provider: 'TfsGit',
-      });
-
-      // Ensure branch normalization was applied in the build search URL
-      expect((TFSServices.getItemContent as jest.Mock).mock.calls[0][0]).toContain('branchName=refs%2Fheads%2Fmain');
-      expect((TFSServices.getItemContent as jest.Mock).mock.calls[0][0]).toContain('buildNumber=1.0.56');
-      expect((TFSServices.getItemContent as jest.Mock).mock.calls[0][0]).toContain('definitions=123');
-    });
-
-    it('should fall back to pipeline run history when buildNumber lookup returns no builds', async () => {
-      // Arrange
-      const inPipeline = {
-        url: 'https://dev.azure.com/org/project1/_apis/pipelines/10/runs/200',
-        resources: {
-          pipelines: {
-            SOME_PACKAGE: {
-              pipeline: {
-                id: 123,
-                url: 'https://dev.azure.com/org/project1/_apis/pipelines/123?revision=1',
-              },
-              project: { name: 'project1' },
-              source: 'project1-system-package',
-              version: '20251109.1',
-              branch: 'main',
-            },
-          },
-        },
-      } as unknown as PipelineRun;
-
-      const mockListBuildsResponseEmpty = { value: [] };
-      const mockRunHistoryResponse = {
-        value: [{ id: 789, name: '20251109.1', result: 'succeeded' }],
-      };
-      const mockBuildResponse = {
-        id: 789,
-        definition: { id: 123, type: 'build' },
-        buildNumber: '20251109.1',
-        project: { name: 'project1' },
-        repository: { type: 'TfsGit' },
-      };
-
-      (TFSServices.getItemContent as jest.Mock)
-        .mockResolvedValueOnce(mockListBuildsResponseEmpty) // findBuildByDefinitionAndBuildNumber
-        .mockResolvedValueOnce(mockListBuildsResponseEmpty) // findBuildByBuildNumber (no definition)
-        .mockResolvedValueOnce(mockRunHistoryResponse) // GetPipelineRunHistory
-        .mockResolvedValueOnce(mockBuildResponse); // getPipelineBuildByBuildId
-
-      // Act
-      const result = await pipelinesDataProvider.getPipelineResourcePipelinesFromObject(inPipeline);
-
-      // Assert
-      expect(result).toHaveLength(1);
-      expect((result as any[])[0]).toEqual({
-        name: 'SOME_PACKAGE',
-        buildId: 789,
-        definitionId: 123,
-        buildNumber: '20251109.1',
-        teamProject: 'project1',
-        provider: 'TfsGit',
-      });
-    });
-
-    it('should fall back to buildNumber-only lookup when definition-based lookup returns no builds', async () => {
-      const inPipeline = {
-        url: 'https://dev.azure.com/org/project1/_apis/pipelines/10/runs/200',
-        resources: {
-          pipelines: {
-            SOME_PACKAGE: {
-              pipeline: {
-                id: 770,
-                url: 'https://dev.azure.com/org/project1/_apis/pipelines/770?revision=1',
-              },
-              project: { name: 'project1' },
-              source: 'project1-system-package',
-              version: '20251109.1',
-              branch: 'main',
-            },
-          },
-        },
-      } as unknown as PipelineRun;
-
-      const mockListBuildsResponseEmpty = { value: [] };
-      const mockListBuildsByNumber = {
-        value: [
-          {
-            id: 789,
-            definition: { id: 123, name: 'project1-system-package' },
-          },
-        ],
-      };
-      const mockBuildResponse = {
-        id: 789,
-        definition: { id: 123, type: 'build' },
-        buildNumber: '20251109.1',
-        project: { name: 'project1' },
-        repository: { type: 'TfsGit' },
-      };
-
-      (TFSServices.getItemContent as jest.Mock)
-        .mockResolvedValueOnce(mockListBuildsResponseEmpty) // findBuildByDefinitionAndBuildNumber
-        .mockResolvedValueOnce(mockListBuildsByNumber) // findBuildByBuildNumber (no definition)
-        .mockResolvedValueOnce(mockBuildResponse); // getPipelineBuildByBuildId
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockBuildResponse);
 
       const result = await pipelinesDataProvider.getPipelineResourcePipelinesFromObject(inPipeline);
 
-      expect(result).toHaveLength(1);
-      expect((result as any[])[0]).toEqual({
-        name: 'SOME_PACKAGE',
-        buildId: 789,
-        definitionId: 123,
-        buildNumber: '20251109.1',
-        teamProject: 'project1',
-        provider: 'TfsGit',
-      });
-
-      // Ensure the second call is the buildNumber-only lookup (no definitions= filter)
-      expect((TFSServices.getItemContent as jest.Mock).mock.calls[1][0]).toContain('buildNumber=20251109.1');
-      expect((TFSServices.getItemContent as jest.Mock).mock.calls[1][0]).not.toContain('definitions=');
-    });
-
-    it('should resolve project name when pipeline resource provides project id (GUID)', async () => {
-      const inPipeline = {
-        url: 'https://dev.azure.com/org/project1/_apis/pipelines/10/runs/200',
-        resources: {
-          pipelines: {
-            SOME_PACKAGE: {
-              pipeline: {
-                id: 123,
-                url: 'https://dev.azure.com/org/1488cb19-7369-4afc-92bf-251d368b85be/_apis/pipelines/123?revision=1',
-              },
-              project: { name: '1488cb19-7369-4afc-92bf-251d368b85be' },
-              source: 'project1-system-package',
-              version: '20251109.1',
-              branch: 'main',
-            },
-          },
-        },
-      } as unknown as PipelineRun;
-
-      const mockProjectResponse = { id: '1488cb19-7369-4afc-92bf-251d368b85be', name: 'Test CMMI' };
-      const mockListBuildsResponse = { value: [{ id: 789 }] };
-      const mockBuildResponse = {
-        id: 789,
-        definition: { id: 123, type: 'build' },
-        buildNumber: '20251109.1',
-        project: { name: 'Test CMMI' },
-        repository: { type: 'TfsGit' },
-      };
-
-      (TFSServices.getItemContent as jest.Mock)
-        .mockResolvedValueOnce(mockProjectResponse) // normalizeProjectName
-        .mockResolvedValueOnce(mockListBuildsResponse) // findBuildByDefinitionAndBuildNumber
-        .mockResolvedValueOnce(mockBuildResponse); // getPipelineBuildByBuildId
-
-      const result = await pipelinesDataProvider.getPipelineResourcePipelinesFromObject(inPipeline);
-
-      expect(result).toHaveLength(1);
-      expect((result as any[])[0]).toEqual({
-        name: 'SOME_PACKAGE',
-        buildId: 789,
-        definitionId: 123,
-        buildNumber: '20251109.1',
-        teamProject: 'Test CMMI',
-        provider: 'TfsGit',
-      });
-
-      // Ensure project-id normalization API was called
-      expect((TFSServices.getItemContent as jest.Mock).mock.calls[0][0]).toContain(
-        `${mockOrgUrl}_apis/projects/1488cb19-7369-4afc-92bf-251d368b85be`
-      );
+      expect(result).toEqual([]);
+      expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1224,6 +1033,126 @@ describe('PipelinesDataProvider', () => {
 
       // Assert
       expect(result).toBe(99);
+    });
+  });
+
+  describe('private helper methods', () => {
+    it('tryGetTeamProjectFromAzureDevOpsUrl should extract project segment before _apis', () => {
+      const fn = (pipelinesDataProvider as any).tryGetTeamProjectFromAzureDevOpsUrl.bind(
+        pipelinesDataProvider
+      );
+      expect(fn('https://dev.azure.com/org/Test/_apis/pipelines/123?revision=1')).toBe('Test');
+      expect(fn('https://dev.azure.com/_apis/pipelines/123?revision=1')).toBeUndefined();
+      expect(fn('https://dev.azure.com/org/_apis/pipelines/123?revision=1')).toBe('org');
+      expect(fn('not-a-url')).toBeUndefined();
+    });
+
+    it('tryBuildBuildApiUrlFromPipelinesApiUrl should rewrite pipelines url to builds url and drop query', () => {
+      const fn = (pipelinesDataProvider as any).tryBuildBuildApiUrlFromPipelinesApiUrl.bind(
+        pipelinesDataProvider
+      );
+      expect(fn('https://dev.azure.com/org/Test/_apis/pipelines/123?revision=1')).toBe(
+        'https://dev.azure.com/org/Test/_apis/build/builds/123'
+      );
+      expect(fn('https://dev.azure.com/org/Test/_apis/build/builds/123')).toBeUndefined();
+      expect(fn('not-a-url')).toBeUndefined();
+    });
+
+    it('tryParseRunIdFromUrl should parse run id from pipelines runs URL and build id from builds URL', () => {
+      const fn = (pipelinesDataProvider as any).tryParseRunIdFromUrl.bind(pipelinesDataProvider);
+      expect(fn('https://dev.azure.com/org/Test/_apis/pipelines/10/runs/555')).toBe(555);
+      expect(fn('https://dev.azure.com/org/Test/_apis/build/builds/777')).toBe(777);
+      expect(fn('https://dev.azure.com/org/Test/_apis/pipelines/10/runs/not-a-number')).toBeUndefined();
+      expect(fn('not-a-url')).toBeUndefined();
+    });
+
+    it('normalizeBranchName should normalize branch to refs/heads form', () => {
+      const fn = (pipelinesDataProvider as any).normalizeBranchName.bind(pipelinesDataProvider);
+      expect(fn('main')).toBe('refs/heads/main');
+      expect(fn('heads/main')).toBe('refs/heads/main');
+      expect(fn('refs/heads/main')).toBe('refs/heads/main');
+      expect(fn('')).toBeUndefined();
+      expect(fn(undefined)).toBeUndefined();
+    });
+
+    it('normalizeProjectName should resolve GUID project id to name and cache it', async () => {
+      const guid = '009c6fae-b000-47fe-994e-be3354b78fbc';
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ name: 'ResolvedProjectName' });
+
+      const fn = (pipelinesDataProvider as any).normalizeProjectName.bind(pipelinesDataProvider);
+      const first = await fn(guid);
+      const second = await fn(guid);
+
+      expect(first).toBe('ResolvedProjectName');
+      expect(second).toBe('ResolvedProjectName');
+      expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}_apis/projects/${encodeURIComponent(guid)}?api-version=6.0`,
+        mockToken,
+        'get',
+        null,
+        null,
+        false
+      );
+    });
+
+    it('normalizeProjectName should return raw GUID when project resolution fails', async () => {
+      const guid = '009c6fae-b000-47fe-994e-be3354b78fbc';
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+      const fn = (pipelinesDataProvider as any).normalizeProjectName.bind(pipelinesDataProvider);
+      const result = await fn(guid);
+      expect(result).toBe(guid);
+    });
+
+    it('findBuildByBuildNumber should prefer matching definition name when provided', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        value: [
+          { id: 1, definition: { name: 'Other' } },
+          { id: 2, definition: { name: 'Expected' } },
+        ],
+      });
+
+      const fn = (pipelinesDataProvider as any).findBuildByBuildNumber.bind(pipelinesDataProvider);
+      const result = await fn('project1', '20251225.2', 'main', 'Expected');
+      expect(result?.id).toBe(2);
+    });
+
+    it('tryGetBuildByIdWithFallback should fall back to non-project-scoped URL when project-scoped lookup fails', async () => {
+      jest
+        .spyOn(pipelinesDataProvider as any, 'getPipelineBuildByBuildId')
+        .mockRejectedValueOnce(new Error('not found'));
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ id: 123 });
+
+      const fn = (pipelinesDataProvider as any).tryGetBuildByIdWithFallback.bind(pipelinesDataProvider);
+      const result = await fn('project1', 123);
+
+      expect(result).toEqual({ id: 123 });
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}_apis/build/builds/123`,
+        mockToken,
+        'get',
+        null,
+        null
+      );
+    });
+
+    it('getPipelineResourcePipelinesFromObject should skip resource when pipelines url cannot be converted to builds url', async () => {
+      const inPipeline = {
+        resources: {
+          pipelines: {
+            myPipeline: {
+              pipeline: {
+                id: 123,
+                url: 'https://dev.azure.com/org/project/_apis/build/builds/123',
+              },
+            },
+          },
+        },
+      } as unknown as PipelineRun;
+
+      const result = await pipelinesDataProvider.getPipelineResourcePipelinesFromObject(inPipeline);
+      expect(result).toEqual([]);
+      expect(TFSServices.getItemContent).not.toHaveBeenCalled();
     });
   });
 
