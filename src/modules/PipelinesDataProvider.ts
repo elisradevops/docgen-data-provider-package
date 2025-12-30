@@ -218,6 +218,21 @@ export default class PipelinesDataProvider {
     return `refs/heads/${b}`;
   }
 
+  private tryBuildBuildApiUrlFromPipelinesApiUrl(url?: string): string | undefined {
+    if (!url) return undefined;
+    try {
+      const parsed = new URL(url);
+      parsed.search = '';
+      const before = parsed.pathname;
+      const after = before.replace('/_apis/pipelines/', '/_apis/build/builds/');
+      if (after === before) return undefined;
+      parsed.pathname = after;
+      return parsed.toString();
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * Searches for a build by build number without restricting by definition id.
    *
@@ -272,8 +287,7 @@ export default class PipelinesDataProvider {
     if (projectName) {
       try {
         return await this.getPipelineBuildByBuildId(projectName, buildId);
-      } catch (e1: any) {
-      }
+      } catch (e1: any) {}
     }
 
     // Some ADO instances allow build lookup without the {project} path segment.
@@ -350,7 +364,9 @@ export default class PipelinesDataProvider {
       return undefined;
     } catch (e: any) {
       logger.error(
-        `Error resolving runId by runName for pipeline ${pipelineId} (${projectName}/${desired}): ${e?.message || e}`
+        `Error resolving runId by runName for pipeline ${pipelineId} (${projectName}/${desired}): ${
+          e?.message || e
+        }`
       );
       return undefined;
     }
@@ -431,9 +447,7 @@ export default class PipelinesDataProvider {
     const definitionType = buildResponse?.definition?.type;
     const repoType = buildResponse?.repository?.type;
     return (
-      !!buildResponse &&
-      definitionType === 'build' &&
-      (repoType === 'TfsGit' || repoType === 'azureReposGit')
+      !!buildResponse && definitionType === 'build' && (repoType === 'TfsGit' || repoType === 'azureReposGit')
     );
   }
 
@@ -461,17 +475,18 @@ export default class PipelinesDataProvider {
     const resourcePipelinesByKey: Map<string, any> = new Map();
 
     if (!inPipeline?.resources?.pipelines) {
-      return new Set();
+      logger.debug('getPipelineResourcePipelinesFromObject: no pipeline resources on run');
+      return [];
     }
     const pipelineEntries = Object.entries(inPipeline.resources.pipelines);
+    logger.debug(
+      `getPipelineResourcePipelinesFromObject: resolving ${pipelineEntries.length} pipeline resources`
+    );
 
     await Promise.all(
       pipelineEntries.map(async ([resourcePipelineAlias, resource]) => {
         const resourcePipelineObj = (resource as any)?.pipeline;
         const pipelineIdCandidate = Number(resourcePipelineObj?.id);
-        const source = (resource as any)?.source;
-        const version = (resource as any)?.version;
-        const branch = (resource as any)?.branch;
 
         const rawProjectName =
           (resource as any)?.project?.name ||
@@ -480,38 +495,101 @@ export default class PipelinesDataProvider {
         const projectName = await this.normalizeProjectName(rawProjectName);
 
         if (!Number.isFinite(pipelineIdCandidate)) {
-          return;
-        }
-
-        let runId: number | undefined = this.inferRunIdFromPipelineResource(resource, resourcePipelineObj?.url);
-        if (typeof runId !== 'number' || !Number.isFinite(runId)) {
-          runId = await this.resolveRunIdFromVersion({
-            projectName,
-            pipelineIdCandidate,
-            version,
-            branch,
-            source,
-          });
-        }
-
-        if (typeof runId !== 'number' || !Number.isFinite(runId)) {
+          logger.warn(
+            `getPipelineResourcePipelinesFromObject: resource ${resourcePipelineAlias} missing numeric pipeline id`
+          );
           return;
         }
 
         let buildResponse: any;
-        try {
-          buildResponse = await this.tryGetBuildByIdWithFallback(projectName, runId);
-        } catch (err: any) {
-          logger.error(`Error fetching pipeline ${resourcePipelineAlias} run ${runId} : ${err.message}`);
+        const fixedUrl = this.tryBuildBuildApiUrlFromPipelinesApiUrl(resourcePipelineObj?.url);
+        if (fixedUrl) {
+          try {
+            const fixedBuildResponse = await TFSServices.getItemContent(
+              fixedUrl,
+              this.token,
+              'get',
+              null,
+              null
+            );
+            if (this.isSupportedResourcePipelineBuild(fixedBuildResponse)) {
+              buildResponse = fixedBuildResponse;
+            }
+          } catch (err: any) {
+            logger.error(
+              `Error fetching pipeline ${resourcePipelineAlias} via fixed build url ${fixedUrl} : ${err.message}`
+            );
+          }
+        } else {
+          logger.warn(
+            `getPipelineResourcePipelinesFromObject: could not convert pipelines url to builds url for ${resourcePipelineAlias}: ${String(
+              resourcePipelineObj?.url || ''
+            )}`
+          );
         }
+
+        // PowerShell-style logic: do not fall back to runId/buildNumber/run-history resolution.
+        if (!this.isSupportedResourcePipelineBuild(buildResponse)) {
+          logger.debug(
+            `getPipelineResourcePipelinesFromObject: skipping ${resourcePipelineAlias} because resolved build is missing/unsupported (project=${String(
+              projectName || ''
+            )}, pipelineIdCandidate=${pipelineIdCandidate})`
+          );
+          return;
+        }
+
         if (this.isSupportedResourcePipelineBuild(buildResponse)) {
+          const buildNumber = String(buildResponse.buildNumber || '').trim();
+          if (!buildNumber) {
+            logger.warn(
+              `Resource pipeline ${resourcePipelineAlias} resolved to buildId=${String(
+                buildResponse?.id
+              )} but buildNumber is missing, skipping`
+            );
+            return;
+          }
+
+          const expectedProjectName = String(projectName || '').trim();
+          const actualProjectName = String(buildResponse?.project?.name || '').trim();
+          if (
+            expectedProjectName &&
+            actualProjectName &&
+            expectedProjectName.toLowerCase() !== actualProjectName.toLowerCase()
+          ) {
+            logger.warn(
+              `Resource pipeline ${resourcePipelineAlias} resolved to buildId=${String(
+                buildResponse?.id
+              )} but project mismatch expected=${expectedProjectName} actual=${actualProjectName}, skipping`
+            );
+            return;
+          }
+
+          const expectedPipelineName = String(resourcePipelineObj?.name || '').trim();
+          const actualPipelineName = String(buildResponse?.definition?.name || '').trim();
+          if (
+            expectedPipelineName &&
+            actualPipelineName &&
+            expectedPipelineName.toLowerCase() !== actualPipelineName.toLowerCase()
+          ) {
+            logger.warn(
+              `Resource pipeline ${resourcePipelineAlias} resolved to buildId=${String(
+                buildResponse?.id
+              )} but pipeline name mismatch expected=${expectedPipelineName} actual=${actualPipelineName}, skipping`
+            );
+            return;
+          }
           const definitionId = buildResponse.definition?.id ?? pipelineIdCandidate;
-          const buildId = buildResponse.id ?? runId;
+          const buildId = buildResponse.id;
+          logger.debug(
+            `getPipelineResourcePipelinesFromObject: resolved ${resourcePipelineAlias} -> ${String(
+              buildResponse?.project?.name || projectName || ''
+            )}/${definitionId} runId=${buildId} repoType=${String(buildResponse?.repository?.type || '')}`
+          );
           const resourcePipelineToAdd = {
-            name: resourcePipelineAlias,
+            name: resourcePipelineObj?.name ?? resourcePipelineAlias,
             buildId,
             definitionId,
-            buildNumber: buildResponse.buildNumber ?? (resource as any)?.runName ?? (resource as any)?.version,
+            buildNumber,
             teamProject: buildResponse.project?.name ?? projectName,
             provider: buildResponse.repository?.type,
           };
@@ -543,7 +621,7 @@ export default class PipelinesDataProvider {
 
     for (const prop in repositories) {
       const resourceRepo = repositories[prop];
-      if (resourceRepo?.repository?.type !== 'azureReposGit') {
+      if (!['azureReposGit', 'TfsGit'].includes(resourceRepo?.repository?.type)) {
         continue;
       }
       const repoId = resourceRepo.repository.id;
@@ -706,11 +784,18 @@ export default class PipelinesDataProvider {
         url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
       }
       try {
-        const { data, headers } = await TFSServices.getItemContentWithHeaders(url, this.token, 'get', null, null);
+        const { data, headers } = await TFSServices.getItemContentWithHeaders(
+          url,
+          this.token,
+          'get',
+          null,
+          null
+        );
         const { value = [] } = data || {};
         all.push(...value);
         // Azure DevOps returns continuation token header for next page
-        continuationToken = headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
+        continuationToken =
+          headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
         page++;
         logger.debug(`GetAllReleaseHistory: fetched page ${page}, cumulative ${all.length} releases`);
       } catch (err: any) {
