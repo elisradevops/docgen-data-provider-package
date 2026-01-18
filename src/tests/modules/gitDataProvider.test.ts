@@ -1140,6 +1140,30 @@ describe('GitDataProvider - GetItemsInCommitRange', () => {
     expect(result.commitsWithNoRelations).toHaveLength(0);
   });
 
+  it('marks commit-linked items as PR-only when only on the merge commit', async () => {
+    const projectId = 'project-123';
+    const repoId = 'repo-456';
+    const commitRange = {
+      value: [
+        {
+          commitId: 'merge-1',
+          workItems: [{ id: 42 }],
+        },
+      ],
+    };
+
+    const populatedItem = { id: 42, fields: { 'System.Title': 'Bug 42' } };
+    (gitDataProvider as any).ticketsDataProvider.GetWorkItem = jest.fn().mockResolvedValue(populatedItem);
+    (gitDataProvider as any).GetPullRequestsLinkedItemsInCommitRange = jest.fn().mockResolvedValue([
+      { workItem: populatedItem, pullrequest: { lastMergeCommit: { commitId: 'merge-1' } } },
+    ]);
+
+    const result = await gitDataProvider.GetItemsInCommitRange(projectId, repoId, commitRange, null, false, true);
+
+    expect(result.commitChangesArray).toHaveLength(1);
+    expect(result.commitChangesArray[0].pullRequestWorkItemOnly).toBe(true);
+  });
+
   it('should include unlinked commits when flag is true', async () => {
     // Arrange
     const projectId = 'project-123';

@@ -217,10 +217,11 @@ export default class GitDataProvider {
     repositoryId: string,
     commitRange: any,
     linkedWiOptions: any,
-    includeUnlinkedCommits: boolean = false
+    includeUnlinkedCommits: boolean = false,
+    includePullRequestWorkItems: boolean = true
   ) {
     logger.info(
-      `GetItemsInCommitRange: includeUnlinkedCommits=${includeUnlinkedCommits}, commits=${
+      `GetItemsInCommitRange: includeUnlinkedCommits=${includeUnlinkedCommits}, includePullRequestWorkItems=${includePullRequestWorkItems}, commits=${
         commitRange?.value?.length || 0
       }`
     );
@@ -228,8 +229,12 @@ export default class GitDataProvider {
     let res: any = [];
     let commitChangesArray: any = [];
     let commitsWithNoRelations: any[] = [];
+    const addedWorkItemIds = new Set<number>();
+    const commits = Array.isArray(commitRange?.value) ? commitRange.value : [];
+    const workItemCommitIds = this.collectWorkItemCommitIds(commits);
+    const commitById = includePullRequestWorkItems ? this.buildCommitById(commits) : new Map<string, any>();
     //extract linked items and append them to result
-    for (const commit of commitRange.value) {
+    for (const commit of commits) {
       if (commit.workItems && commit.workItems.length > 0) {
         for (const wi of commit.workItems) {
           let populatedItem = await this.ticketsDataProvider.GetWorkItem(projectId, wi.id);
@@ -239,6 +244,9 @@ export default class GitDataProvider {
           );
           let changeSet: any = { workItem: populatedItem, commit: commit, linkedItems };
           commitChangesArray.push(changeSet);
+          if (typeof populatedItem?.id === 'number') {
+            addedWorkItemIds.add(populatedItem.id);
+          }
         }
       } else {
         // Handle commits with no linked work items
@@ -257,25 +265,130 @@ export default class GitDataProvider {
       `GetItemsInCommitRange: produced ${commitChangesArray.length} linked changes and ${commitsWithNoRelations.length} unlinked commits`
     );
     //get all items and pr data from pr's in commit range - using the above function
-    let pullRequestsChangesArray = await this.GetPullRequestsLinkedItemsInCommitRange(
-      projectId,
-      repositoryId,
-      commitRange
-    );
-    //merge commit links with pr links
-    logger.info(`got ${pullRequestsChangesArray.length} items from pr's and`);
-    res = [...commitChangesArray, ...pullRequestsChangesArray];
-    let workItemIds: any = [];
-    for (let index = 0; index < res.length; index++) {
-      if (workItemIds.includes(res[index].workItem.id)) {
-        res.splice(index, 1);
-        index--;
-      } else {
-        workItemIds.push(res[index].workItem.id);
-      }
+    let pullRequestsChangesArray: any[] = [];
+    let prWorkItemIds = new Set<number>();
+    let prMergeCommitIds = new Set<string>();
+    if (includePullRequestWorkItems) {
+      const prLinkedItems = await this.GetPullRequestsLinkedItemsInCommitRange(
+        projectId,
+        repositoryId,
+        commitRange
+      );
+      ({ workItemIds: prWorkItemIds, mergeCommitIds: prMergeCommitIds } =
+        this.collectPrWorkItemMetadata(prLinkedItems));
+      pullRequestsChangesArray = prLinkedItems
+        .filter((item: any) => {
+          const workItemId = item?.workItem?.id;
+          if (typeof workItemId !== 'number') {
+            return false;
+          }
+          if (addedWorkItemIds.has(workItemId)) {
+            return false;
+          }
+          addedWorkItemIds.add(workItemId);
+          return true;
+        })
+        .map((item: any) => {
+          const mergeCommitId = item?.pullrequest?.lastMergeCommit?.commitId;
+          const mergeCommit = mergeCommitId ? commitById.get(mergeCommitId) : undefined;
+          return {
+            ...item,
+            commit: mergeCommit ?? item.commit,
+            pullRequestWorkItemOnly: true,
+          };
+        });
     }
+    //merge commit links with pr links
+    logger.info(`GetItemsInCommitRange: added ${pullRequestsChangesArray.length} pull request work items`);
+    this.markPrOnlyOnMergeCommit(commitChangesArray, workItemCommitIds, prWorkItemIds, prMergeCommitIds);
+    res = [...commitChangesArray, ...pullRequestsChangesArray];
+    const workItemIds: Set<number> = new Set();
+    res = res.filter((item: any) => {
+      const workItemId = item?.workItem?.id;
+      if (typeof workItemId !== 'number') {
+        return true;
+      }
+      if (workItemIds.has(workItemId)) {
+        return false;
+      }
+      workItemIds.add(workItemId);
+      return true;
+    });
     return { commitChangesArray: res, commitsWithNoRelations };
   } //GetItemsInCommitRange
+
+  private collectWorkItemCommitIds(commits: any[]): Map<number, Set<string>> {
+    const workItemCommitIds = new Map<number, Set<string>>();
+    for (const commit of commits || []) {
+      const commitId = commit?.commitId;
+      if (!commitId || !Array.isArray(commit?.workItems)) continue;
+      for (const wi of commit.workItems) {
+        const workItemId = wi?.id;
+        if (typeof workItemId !== 'number') continue;
+        const ids = workItemCommitIds.get(workItemId) || new Set<string>();
+        ids.add(commitId);
+        workItemCommitIds.set(workItemId, ids);
+      }
+    }
+    return workItemCommitIds;
+  }
+
+  private buildCommitById(commits: any[]): Map<string, any> {
+    const commitEntries: Array<[string | undefined, any]> = (commits || []).map((commit: any) => [
+      commit?.commitId,
+      commit,
+    ]);
+    return new Map(
+      commitEntries.filter((entry: [string | undefined, any]): entry is [string, any] => {
+        const commitId = entry[0];
+        return typeof commitId === 'string' && commitId !== '';
+      })
+    );
+  }
+
+  private collectPrWorkItemMetadata(prLinkedItems: any[]): {
+    workItemIds: Set<number>;
+    mergeCommitIds: Set<string>;
+  } {
+    const workItemIds = new Set<number>();
+    const mergeCommitIds = new Set<string>();
+    for (const item of prLinkedItems || []) {
+      const workItemId = item?.workItem?.id;
+      if (typeof workItemId === 'number') {
+        workItemIds.add(workItemId);
+      }
+      const commitId = item?.pullrequest?.lastMergeCommit?.commitId;
+      if (typeof commitId === 'string' && commitId !== '') {
+        mergeCommitIds.add(commitId);
+      }
+    }
+    return { workItemIds, mergeCommitIds };
+  }
+
+  private markPrOnlyOnMergeCommit(
+    commitChangesArray: any[],
+    workItemCommitIds: Map<number, Set<string>>,
+    prWorkItemIds: Set<number>,
+    prMergeCommitIds: Set<string>
+  ) {
+    if (prWorkItemIds.size === 0) return;
+    for (const change of commitChangesArray || []) {
+      const workItemId = change?.workItem?.id;
+      const commitId = change?.commit?.commitId;
+      if (typeof workItemId !== 'number' || !commitId) {
+        continue;
+      }
+      const commitIds = workItemCommitIds.get(workItemId);
+      if (
+        commitIds &&
+        commitIds.size === 1 &&
+        prWorkItemIds.has(workItemId) &&
+        prMergeCommitIds.has(commitId)
+      ) {
+        change.pullRequestWorkItemOnly = true;
+      }
+    }
+  }
 
   async GetPullRequestsInCommitRangeWithoutLinkedItems(
     projectId: string,
