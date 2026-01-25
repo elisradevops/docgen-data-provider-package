@@ -168,7 +168,7 @@ export default class GitDataProvider {
     let pullRequestsFilteredArray: any = [];
     let ChangeSetsArray: any = [];
     //get all pr's in git repo
-    let url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repositoryId}/pullrequests?status=completed&includeLinks=true&$top=2000}`;
+    let url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repositoryId}/pullrequests?status=completed&includeLinks=true&$top=2000`;
     logger.debug(`request url: ${url}`);
     let pullRequestsArray = await TFSServices.getItemContent(url, this.token, 'get');
     logger.info(`got ${pullRequestsArray.count} pullrequests for repo: ${repositoryId}`);
@@ -401,7 +401,7 @@ export default class GitDataProvider {
     let orgName = this.orgUrl.split('/').filter(Boolean).pop();
 
     // Get all PRs in the git repo
-    let url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repositoryId}/pullrequests?status=completed&includeLinks=true&$top=2000}`;
+    let url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repositoryId}/pullrequests?status=completed&includeLinks=true&$top=2000`;
     logger.debug(`request url: ${url}`);
     let pullRequestsArray = await TFSServices.getItemContent(url, this.token, 'get');
     logger.info(`got ${pullRequestsArray.count} pullrequests for repo: ${repositoryId}`);
@@ -684,7 +684,7 @@ export default class GitDataProvider {
   }
 
   async GetPullRequestsForRepo(projectName: string, repoID: string) {
-    let url: string = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/pullrequests?status=completed&includeLinks=true&$top=2000}`;
+    let url: string = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoID}/pullrequests?status=completed&includeLinks=true&$top=2000`;
 
     let res: any = await TFSServices.getItemContent(url, this.token, 'get', null, null);
     return res;
@@ -694,7 +694,7 @@ export default class GitDataProvider {
     let pullRequestsFilteredArray: any = [];
     let ChangeSetsArray: any = [];
     //get all pr's in git repo
-    let url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repositoryId}/pullrequests?status=completed&includeLinks=true&$top=2000}`;
+    let url = `${this.orgUrl}${projectId}/_apis/git/repositories/${repositoryId}/pullrequests?status=completed&includeLinks=true&$top=2000`;
     logger.debug(`request url: ${url}`);
     let pullRequestsArray = await TFSServices.getItemContent(url, this.token, 'get');
     logger.info(`got ${pullRequestsArray.count} pullrequests for repo: ${repositoryId}`);
