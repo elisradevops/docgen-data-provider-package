@@ -172,10 +172,15 @@ export default class GitDataProvider {
     logger.debug(`request url: ${url}`);
     let pullRequestsArray = await TFSServices.getItemContent(url, this.token, 'get');
     logger.info(`got ${pullRequestsArray.count} pullrequests for repo: ${repositoryId}`);
+    const commitsInRange = Array.isArray(commitRangeArray?.value)
+      ? commitRangeArray.value.filter((commit: any) => commit && commit.commitId)
+      : [];
     //iterate commit list to filter relavant pullrequests
     pullRequestsArray.value.forEach((pr: any) => {
-      commitRangeArray.value.forEach((commit: any) => {
-        if (pr.lastMergeCommit.commitId == commit.commitId) {
+      const mergeCommitId = pr?.lastMergeCommit?.commitId;
+      if (!mergeCommitId) return;
+      commitsInRange.forEach((commit: any) => {
+        if (mergeCommitId == commit.commitId) {
           pullRequestsFilteredArray.push(pr);
         }
       });
