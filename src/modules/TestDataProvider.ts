@@ -23,6 +23,19 @@ export default class TestDataProvider {
     this.linkedMomLookupMap = new Map<string, any>();
   }
 
+  private isBearerToken(): boolean {
+    const raw = String(this.token || '').trim();
+    if (!raw) return false;
+    if (/^bearer:/i.test(raw) || /^bearer\s+/i.test(raw)) return true;
+    return /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(raw);
+  }
+
+  private joinOrgProject(project: string): string {
+    const base = String(this.orgUrl || '').replace(/\/+$/, '');
+    const proj = String(project || '').replace(/^\/+/, '');
+    return `${base}/${proj}`;
+  }
+
   private async fetchWithCache(url: string, ttlMs = 60000): Promise<any> {
     if (this.cache.has(url)) {
       const cached = this.cache.get(url);
@@ -47,19 +60,18 @@ export default class TestDataProvider {
   }
 
   async GetTestSuiteByTestCase(testCaseId: string): Promise<any> {
-    let url = `${
-      this.orgUrl.endsWith('/') ? this.orgUrl : `${this.orgUrl}/`
-    }_apis/testplan/suites?testCaseId=${testCaseId}`;
+    const base = String(this.orgUrl || '').replace(/\/+$/, '');
+    let url = `${base}/_apis/testplan/suites?testCaseId=${testCaseId}`;
     return await this.fetchWithCache(url);
   }
 
   async GetTestPlans(project: string): Promise<string> {
-    let testPlanUrl: string = `${this.orgUrl}${project}/_apis/test/plans`;
+    let testPlanUrl: string = `${this.joinOrgProject(project)}/_apis/test/plans`;
     return await this.fetchWithCache(testPlanUrl);
   }
 
   async GetTestSuites(project: string, planId: string): Promise<any> {
-    let testsuitesUrl: string = this.orgUrl + project + '/_apis/test/Plans/' + planId + '/suites';
+    let testsuitesUrl: string = `${this.joinOrgProject(project)}/_apis/test/Plans/${planId}/suites`;
     try {
       return await this.fetchWithCache(testsuitesUrl);
     } catch (e: any) {
@@ -75,8 +87,22 @@ export default class TestDataProvider {
     if (!planid) {
       throw new Error('Plan not selected');
     }
-    let url =
-      this.orgUrl + '/' + project + '/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=' + planid;
+    if (this.isBearerToken()) {
+      const url = `${this.joinOrgProject(
+        project
+      )}/_apis/testplan/Plans/${planid}/suites?includeChildren=true&api-version=7.0`;
+      const data = await this.fetchWithCache(url);
+      const suites = Array.isArray(data?.value) ? data.value : Array.isArray(data) ? data : [];
+      const mapped = suites.map((suite: any) => ({
+        ...suite,
+        title: suite?.title || suite?.name || '',
+        parentSuiteId: suite?.parentSuiteId ?? suite?.parentSuite?.id ?? 0,
+      }));
+      return { ...data, testSuites: mapped };
+    }
+    const url = `${this.joinOrgProject(
+      project
+    )}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${planid}`;
     return await this.fetchWithCache(url);
   }
 

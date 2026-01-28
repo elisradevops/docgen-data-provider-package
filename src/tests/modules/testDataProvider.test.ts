@@ -22,6 +22,7 @@ describe('TestDataProvider', () => {
   let testDataProvider: TestDataProvider;
   const mockOrgUrl = 'https://dev.azure.com/orgname/';
   const mockToken = 'mock-token';
+  const mockBearerToken = 'bearer:abc.def.ghi';
   const mockProject = 'project-123';
   const mockPlanId = '456';
   const mockSuiteId = '789';
@@ -215,8 +216,33 @@ describe('TestDataProvider', () => {
       // Assert
       expect(result).toEqual(mockData);
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-        `${mockOrgUrl}/${mockProject}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${mockPlanId}`,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${mockPlanId}`,
         mockToken
+      );
+    });
+
+    it('should use testplan suites endpoint for bearer token and normalize response', async () => {
+      const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+      const mockData = {
+        value: [
+          { id: '123', name: 'Suite 1' },
+          { id: '456', name: 'Suite 2', parentSuite: { id: '123' } },
+        ],
+        count: 2,
+      };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockData);
+
+      const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?includeChildren=true&api-version=7.0`,
+        mockBearerToken
+      );
+      expect(result.testSuites).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: '123', title: 'Suite 1', parentSuiteId: 0 }),
+          expect.objectContaining({ id: '456', title: 'Suite 2', parentSuiteId: '123' }),
+        ])
       );
     });
   });
@@ -235,7 +261,7 @@ describe('TestDataProvider', () => {
 
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-        `${mockOrgUrl}/${mockProject}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${mockPlanId}`,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${mockPlanId}`,
         mockToken
       );
       expect(Helper.findSuitesRecursive).toHaveBeenCalledWith(
@@ -246,6 +272,26 @@ describe('TestDataProvider', () => {
         mockSuiteId,
         true
       );
+      expect(result).toEqual(mockSuiteData);
+    });
+
+    it('should use bearer suites payload when token is bearer', async () => {
+      const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+      const mockTestSuites = {
+        value: [{ id: '123', name: 'Suite 1', parentSuite: { id: 0 } }],
+      };
+      const mockSuiteData = [new suiteData('Suite 1', '123', '456', 1)];
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockTestSuites);
+      (Helper.findSuitesRecursive as jest.Mock).mockReturnValueOnce(mockSuiteData);
+
+      const result = await bearerProvider.GetTestSuiteById(mockProject, mockPlanId, mockSuiteId, true);
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?includeChildren=true&api-version=7.0`,
+        mockBearerToken
+      );
+      const suitesArg = (Helper.findSuitesRecursive as jest.Mock).mock.calls[0][3];
+      expect(suitesArg[0].title).toBe('Suite 1');
       expect(result).toEqual(mockSuiteData);
     });
   });
