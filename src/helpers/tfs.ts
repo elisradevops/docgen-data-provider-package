@@ -42,6 +42,19 @@ export class TFSServices {
     return null;
   }
 
+  private static isJwtToken(rawToken: string): boolean {
+    return /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(String(rawToken || '').trim());
+  }
+
+  private static normalizeToken(rawToken: string): { kind: 'bearer' | 'pat' | 'none'; value: string } {
+    const token = String(rawToken || '').trim();
+    if (!token) return { kind: 'none', value: '' };
+    const bearer = this.getBearerToken(token);
+    if (bearer) return { kind: 'bearer', value: bearer };
+    if (this.isJwtToken(token)) return { kind: 'bearer', value: token };
+    return { kind: 'pat', value: token };
+  }
+
   private static addAuthHeader(config: AxiosRequestConfig, headerName: string, value: string) {
     const existing = (config.headers ?? {}) as any;
     if (
@@ -57,16 +70,14 @@ export class TFSServices {
   }
 
   private static applyAuth(config: AxiosRequestConfig, rawToken: string) {
-    const bearer = this.getBearerToken(rawToken);
-    if (bearer) {
-      this.addAuthHeader(config, 'Authorization', `Bearer ${bearer}`);
+    const normalized = this.normalizeToken(rawToken);
+    if (normalized.kind === 'bearer') {
+      this.addAuthHeader(config, 'Authorization', `Bearer ${normalized.value}`);
       delete (config as any).auth;
       return;
     }
-
-    const token = String(rawToken || '').trim();
-    if (token) {
-      (config as any).auth = { username: '', password: token };
+    if (normalized.kind === 'pat') {
+      (config as any).auth = { username: '', password: normalized.value };
     }
   }
 
