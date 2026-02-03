@@ -335,6 +335,47 @@ export default class ResultDataProvider {
   }
 
   /**
+   * Fetches and processes a flat list of test reporter rows for a given test plan.
+   * Returns raw row data suitable for post-processing/formatting by the caller.
+   */
+  public async getTestReporterFlatResults(
+    testPlanId: string,
+    projectName: string,
+    selectedSuiteIds: number[] | undefined,
+    selectedFields: string[] = [],
+    includeAllHistory: boolean = false
+  ) {
+    logger.debug(
+      `Fetching flat test reporter results for test plan ID: ${testPlanId}, project name: ${projectName}`
+    );
+    try {
+      const planName = await this.fetchTestPlanName(testPlanId, projectName);
+      const suites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
+      const testData = await this.fetchTestData(suites, projectName, testPlanId, false);
+      const runResults = await this.fetchAllResultDataTestReporter(
+        testData,
+        projectName,
+        selectedFields,
+        false,
+        includeAllHistory
+      );
+
+      const rows = this.alignStepsWithIterationsFlatReport(
+        testData,
+        runResults,
+        true,
+        testPlanId,
+        planName
+      );
+
+      return { planId: testPlanId, planName, rows: rows || [] };
+    } catch (error: any) {
+      logger.error(`Error during getTestReporterFlatResults: ${error.message}`);
+      return { planId: testPlanId, planName: '', rows: [] };
+    }
+  }
+
+  /**
    * Mapping each attachment to a proper URL for downloading it
    * @param runResults Array of run results
    */
@@ -413,10 +454,17 @@ export default class ResultDataProvider {
       const filteredSuites = this.filterSuites(flatTestSuites, selectedSuiteIds);
       const suiteMap = this.createSuiteMap(treeTestSuites);
 
-      return filteredSuites.map((testSuite: any) => ({
-        testSuiteId: testSuite.id,
-        testGroupName: this.buildTestGroupName(testSuite.id, suiteMap, isHierarchyGroupName),
-      }));
+      return filteredSuites.map((testSuite: any) => {
+        const parentSuite = testSuite.parentSuite;
+        return {
+          testSuiteId: testSuite.id,
+          suiteId: testSuite.id,
+          suiteName: testSuite.name,
+          parentSuiteId: parentSuite?.id,
+          parentSuiteName: parentSuite?.name,
+          testGroupName: this.buildTestGroupName(testSuite.id, suiteMap, isHierarchyGroupName),
+        };
+      });
     } catch (error: any) {
       logger.error(`Error during fetching Test Suites: ${error.message}`);
       return [];
@@ -584,6 +632,7 @@ export default class ResultDataProvider {
    */
   private mapTestPoint(testPoint: any, projectName: string): any {
     return {
+      testPointId: testPoint.id,
       testCaseId: testPoint.testCaseReference.id,
       testCaseName: testPoint.testCaseReference.name,
       testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${testPoint.testCaseReference.id}`,
@@ -601,6 +650,7 @@ export default class ResultDataProvider {
    */
   private mapTestPointForCrossPlans(testPoint: any, projectName: string): any {
     return {
+      testPointId: testPoint.id,
       testCaseId: testPoint.testCase.id,
       testCaseName: testPoint.testCase.name,
       testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${testPoint.testCase.id}`,
@@ -2408,6 +2458,60 @@ export default class ResultDataProvider {
         }
 
         return baseObj;
+      },
+    });
+  }
+
+  /**
+   * Builds flat test reporter rows that include suite/testcase/run/step data.
+   */
+  private alignStepsWithIterationsFlatReport(
+    testData: any[],
+    iterations: any[],
+    includeNotRunTestCases: boolean,
+    planId: string,
+    planName: string
+  ): any[] {
+    return this.alignStepsWithIterationsBase(testData, iterations, includeNotRunTestCases, true, true, {
+      selectedFields: [],
+      shouldProcessStepLevel: (fetchedTestCase) =>
+        fetchedTestCase != null &&
+        fetchedTestCase.iteration != null &&
+        fetchedTestCase.iteration.actionResults != null,
+      createResultObject: ({ testItem, point, fetchedTestCase, actionResult }) => {
+        const suiteId = testItem?.testSuiteId ?? testItem?.suiteId;
+        const suiteName = testItem?.suiteName ?? testItem?.testGroupName ?? '';
+        const parentSuiteId = testItem?.parentSuiteId;
+        const parentSuiteName = testItem?.parentSuiteName;
+        const customFields = fetchedTestCase?.customFields ?? {};
+        const toNumber = (value: any) => {
+          if (value === null || value === undefined) return undefined;
+          const n = Number.parseInt(String(value), 10);
+          return Number.isFinite(n) ? n : undefined;
+        };
+        const stepPosition = actionResult?.stepPosition;
+        const parsedStepIdentifier = toNumber(actionResult?.stepIdentifier);
+
+        return {
+          planId,
+          planName,
+          suiteId,
+          suiteName,
+          parentSuiteId,
+          parentSuiteName,
+          testCaseId: point?.testCaseId,
+          customFields,
+          pointOutcome: point?.outcome,
+          testCaseResultMessage: fetchedTestCase?.testCaseResult?.resultMessage ?? '',
+          executionDate: fetchedTestCase?.executionDate ?? '',
+          runDateCompleted: point?.lastResultDetails?.dateCompleted ?? fetchedTestCase?.executionDate ?? '',
+          runStatsOutcome: point?.lastResultDetails?.outcome ?? point?.outcome,
+          testRunId: point?.lastRunId,
+          testPointId: point?.testPointId,
+          tester: fetchedTestCase?.runBy ?? point?.lastResultDetails?.runBy?.displayName ?? '',
+          stepOutcome: actionResult?.outcome,
+          stepStepIdentifier: stepPosition ?? parsedStepIdentifier,
+        };
       },
     });
   }
