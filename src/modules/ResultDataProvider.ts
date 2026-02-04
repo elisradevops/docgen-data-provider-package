@@ -462,6 +462,7 @@ export default class ResultDataProvider {
           suiteName: testSuite.name,
           parentSuiteId: parentSuite?.id,
           parentSuiteName: parentSuite?.name,
+          suitePath: this.buildSuitePath(testSuite.id, suiteMap),
           testGroupName: this.buildTestGroupName(testSuite.id, suiteMap, isHierarchyGroupName),
         };
       });
@@ -535,6 +536,24 @@ export default class ResultDataProvider {
     return parts.length > 3
       ? `${parts[1]}/.../${parts[parts.length - 1]}`
       : `${parts[1]}/${parts[parts.length - 1]}`;
+  }
+
+  /**
+   * Builds the full suite path from the root to the suite.
+   */
+  private buildSuitePath(suiteId: number, suiteMap: Map<number, any>): string {
+    const parts: string[] = [];
+    let currentSuite = suiteMap.get(suiteId);
+
+    while (currentSuite) {
+      const name = String(currentSuite?.name || '').trim();
+      if (name) parts.unshift(name);
+      const parentId = currentSuite?.parentSuite?.id;
+      if (!parentId) break;
+      currentSuite = suiteMap.get(parentId);
+    }
+
+    return parts.join('/');
   }
 
   private async fetchCrossTestPoints(projectName: string, testCaseIds: any[]): Promise<any[]> {
@@ -2483,13 +2502,13 @@ export default class ResultDataProvider {
         const suiteName = testItem?.suiteName ?? testItem?.testGroupName ?? '';
         const parentSuiteId = testItem?.parentSuiteId;
         const parentSuiteName = testItem?.parentSuiteName;
+        const suitePath = testItem?.suitePath ?? '';
         const customFields = fetchedTestCase?.customFields ?? {};
         const toNumber = (value: any) => {
           if (value === null || value === undefined) return undefined;
           const n = Number.parseInt(String(value), 10);
           return Number.isFinite(n) ? n : undefined;
         };
-        const stepPosition = actionResult?.stepPosition;
         const parsedStepIdentifier = toNumber(actionResult?.stepIdentifier);
 
         return {
@@ -2499,6 +2518,7 @@ export default class ResultDataProvider {
           suiteName,
           parentSuiteId,
           parentSuiteName,
+          suitePath,
           testCaseId: point?.testCaseId,
           customFields,
           pointOutcome: point?.outcome,
@@ -2510,7 +2530,7 @@ export default class ResultDataProvider {
           testPointId: point?.testPointId,
           tester: fetchedTestCase?.runBy ?? point?.lastResultDetails?.runBy?.displayName ?? '',
           stepOutcome: actionResult?.outcome,
-          stepStepIdentifier: stepPosition ?? parsedStepIdentifier,
+          stepStepIdentifier: parsedStepIdentifier ?? actionResult?.stepIdentifier ?? '',
         };
       },
     });
