@@ -2520,6 +2520,7 @@ export default class ResultDataProvider {
           parentSuiteName,
           suitePath,
           testCaseId: point?.testCaseId,
+          testCaseName: point?.testCaseName,
           customFields,
           pointOutcome: point?.outcome,
           testCaseResultMessage: fetchedTestCase?.testCaseResult?.resultMessage ?? '',
@@ -2530,7 +2531,7 @@ export default class ResultDataProvider {
           testPointId: point?.testPointId,
           tester: fetchedTestCase?.runBy ?? point?.lastResultDetails?.runBy?.displayName ?? '',
           stepOutcome: actionResult?.outcome,
-          stepStepIdentifier: parsedStepIdentifier ?? actionResult?.stepIdentifier ?? '',
+          stepStepIdentifier: actionResult?.stepPosition ?? '',
         };
       },
     });
