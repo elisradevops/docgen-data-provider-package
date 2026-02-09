@@ -1074,6 +1074,192 @@ describe('ResultDataProvider', () => {
     });
   });
 
+  describe('getMewpL2CoverageFlatResults', () => {
+    it('should map SR ids from step action/expected and aggregate passed/failed/not-run by requirement', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [
+            { testCaseId: 101, lastRunId: 11, lastResultId: 22, testCaseName: 'TC 101' },
+            { testCaseId: 102, lastRunId: 0, lastResultId: 0, testCaseName: 'TC 102' },
+          ],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 102,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 5001,
+          requirementId: 'SR1001',
+          title: 'Covered requirement',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [101],
+        },
+        {
+          workItemId: 5002,
+          requirementId: 'SR1002',
+          title: 'Uncovered requirement',
+          responsibility: 'IL',
+          linkedTestCaseIds: [],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
+        {
+          testCaseId: 101,
+          iteration: {
+            actionResults: [
+              {
+                action: 'Validate <b>S</b><b>R</b> 1 0 0 1 happy path',
+                expected: '',
+                outcome: 'Passed',
+              },
+              { action: 'Validate SR1001 failed flow', expected: '&nbsp;', outcome: 'Failed' },
+              { action: '', expected: 'Pending S R 1 0 0 1 scenario', outcome: 'Unspecified' },
+            ],
+          },
+        },
+        {
+          testCaseId: 102,
+          iteration: undefined,
+        },
+      ]);
+      jest
+        .spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps')
+        .mockResolvedValueOnce([
+          {
+            stepId: '1',
+            stepPosition: '1',
+            action: 'Definition contains SR1002',
+            expected: '',
+            isSharedStepTitle: false,
+          },
+        ]);
+
+      const result = await (resultDataProvider as any).getMewpL2CoverageFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          sheetName: expect.stringContaining('MEWP L2 Coverage'),
+          columnOrder: expect.arrayContaining(['Requirement ID', 'Number of steps not run']),
+        })
+      );
+
+      const covered = result.rows.find((row: any) => row['Requirement ID'] === 'SR1001');
+      const uncovered = result.rows.find((row: any) => row['Requirement ID'] === 'SR1002');
+
+      expect(covered).toEqual(
+        expect.objectContaining({
+          'Number of passed steps': 1,
+          'Number of failed steps': 1,
+          'Number of steps not run': 1,
+        })
+      );
+      expect(uncovered).toEqual(
+        expect.objectContaining({
+          'Number of passed steps': 0,
+          'Number of failed steps': 0,
+          'Number of steps not run': 1,
+        })
+      );
+    });
+
+    it('should extract SR ids from HTML/spacing and return unique ids per step text', () => {
+      const text =
+        'A: <b>S</b><b>R</b> 0 0 0 1; B: SR0002; C: S R 0 0 0 3; D: SR0002; E: &lt;b&gt;SR&lt;/b&gt;0004';
+      const codes = (resultDataProvider as any).extractRequirementCodesFromText(text);
+      expect([...codes].sort()).toEqual(['SR1', 'SR2', 'SR3', 'SR4']);
+    });
+
+    it('should not backfill definition steps as not-run when a real run exists but has no action results', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 101, lastRunId: 88, lastResultId: 99, testCaseName: 'TC 101' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 101,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 7001,
+          requirementId: 'SR2001',
+          title: 'Has run but no actions',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [101],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
+        {
+          testCaseId: 101,
+          lastRunId: 88,
+          lastResultId: 99,
+          iteration: {
+            actionResults: [],
+          },
+        },
+      ]);
+
+      const parseSpy = jest
+        .spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps')
+        .mockResolvedValueOnce([
+          {
+            stepId: '1',
+            stepPosition: '1',
+            action: 'SR2001 from definition',
+            expected: '',
+            isSharedStepTitle: false,
+          },
+        ]);
+
+      const result = await (resultDataProvider as any).getMewpL2CoverageFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      const row = result.rows.find((item: any) => item['Requirement ID'] === 'SR2001');
+      expect(parseSpy).not.toHaveBeenCalled();
+      expect(row).toEqual(
+        expect.objectContaining({
+          'Number of passed steps': 0,
+          'Number of failed steps': 0,
+          'Number of steps not run': 0,
+        })
+      );
+    });
+
+    it('should not infer requirement id from unrelated SR text in non-identifier fields', () => {
+      const requirementId = (resultDataProvider as any).extractMewpRequirementIdentifier(
+        {
+          'System.Description': 'random text with SR9999 that is unrelated',
+          'Custom.CustomerId': 'customer id unknown',
+          'System.Title': 'Requirement without explicit SR code',
+        },
+        4321
+      );
+
+      expect(requirementId).toBe('4321');
+    });
+  });
+
   describe('fetchResultDataForTestReporter (runResultField switch)', () => {
     it('should populate requested runResultField values including testCaseResult URL branches', async () => {
       jest
@@ -2584,6 +2770,244 @@ describe('ResultDataProvider', () => {
       expect(actionResults[0]).toEqual(expect.objectContaining({ stepIdentifier: '1', action: 'A1' }));
       expect(actionResults[1]).toEqual(
         expect.objectContaining({ stepIdentifier: '2', action: 'A2', isSharedStepTitle: true })
+      );
+    });
+
+    it('should fall back to parsed test steps when actionResults are missing for latest run', async () => {
+      const point = { testCaseId: 1, lastRunId: 10, lastResultId: 20 };
+      const fetchResultMethod = jest.fn().mockResolvedValue({
+        testCase: { id: 1, name: 'TC' },
+        stepsResultXml: '<steps></steps>',
+        iterationDetails: [{}],
+      });
+
+      const createResponseObject = (resultData: any) => ({ iteration: resultData.iterationDetails[0] });
+
+      const helper = (resultDataProvider as any).testStepParserHelper;
+      helper.parseTestSteps.mockResolvedValueOnce([
+        { stepId: 172, stepPosition: '1', action: 'Step 1', expected: 'Expected 1', isSharedStepTitle: false },
+        { stepId: 173, stepPosition: '2', action: 'Step 2', expected: 'Expected 2', isSharedStepTitle: false },
+      ]);
+
+      const res = await (resultDataProvider as any).fetchResultDataBase(
+        mockProjectName,
+        'suite1',
+        point,
+        fetchResultMethod,
+        createResponseObject,
+        []
+      );
+
+      const actionResults = res.iteration.actionResults;
+      expect(actionResults).toHaveLength(2);
+      expect(actionResults[0]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '172',
+          stepPosition: '1',
+          action: 'Step 1',
+          expected: 'Expected 1',
+          outcome: 'Unspecified',
+        })
+      );
+      expect(actionResults[1]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '173',
+          stepPosition: '2',
+          action: 'Step 2',
+          expected: 'Expected 2',
+          outcome: 'Unspecified',
+        })
+      );
+    });
+
+    it('should create synthetic iteration and fall back to parsed test steps when iterationDetails are missing', async () => {
+      const point = { testCaseId: 1, lastRunId: 10, lastResultId: 20 };
+      const fetchResultMethod = jest.fn().mockResolvedValue({
+        testCase: { id: 1, name: 'TC' },
+        stepsResultXml: '<steps></steps>',
+        iterationDetails: [],
+      });
+
+      const createResponseObject = (resultData: any) => ({ iteration: resultData.iterationDetails[0] });
+
+      const helper = (resultDataProvider as any).testStepParserHelper;
+      helper.parseTestSteps.mockResolvedValueOnce([
+        { stepId: 301, stepPosition: '1', action: 'S1', expected: 'E1', isSharedStepTitle: false },
+      ]);
+
+      const res = await (resultDataProvider as any).fetchResultDataBase(
+        mockProjectName,
+        'suite1',
+        point,
+        fetchResultMethod,
+        createResponseObject,
+        []
+      );
+
+      expect(res.iteration).toBeDefined();
+      expect(res.iteration.actionResults).toHaveLength(1);
+      expect(res.iteration.actionResults[0]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '301',
+          stepPosition: '1',
+          action: 'S1',
+          expected: 'E1',
+          outcome: 'Unspecified',
+        })
+      );
+    });
+
+    it('should fall back to parsed test steps when actionResults is an empty array', async () => {
+      const point = { testCaseId: 1, lastRunId: 10, lastResultId: 20 };
+      const fetchResultMethod = jest.fn().mockResolvedValue({
+        testCase: { id: 1, name: 'TC' },
+        stepsResultXml: '<steps></steps>',
+        iterationDetails: [{ actionResults: [] }],
+      });
+
+      const createResponseObject = (resultData: any) => ({ iteration: resultData.iterationDetails[0] });
+
+      const helper = (resultDataProvider as any).testStepParserHelper;
+      helper.parseTestSteps.mockResolvedValueOnce([
+        { stepId: 11, stepPosition: '1', action: 'A1', expected: 'E1', isSharedStepTitle: false },
+        { stepId: 22, stepPosition: '2', action: 'A2', expected: 'E2', isSharedStepTitle: false },
+      ]);
+
+      const res = await (resultDataProvider as any).fetchResultDataBase(
+        mockProjectName,
+        'suite1',
+        point,
+        fetchResultMethod,
+        createResponseObject,
+        []
+      );
+
+      expect(helper.parseTestSteps).toHaveBeenCalledTimes(1);
+      expect(res.iteration.actionResults).toHaveLength(2);
+      expect(res.iteration.actionResults[0]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '11',
+          stepPosition: '1',
+          action: 'A1',
+          expected: 'E1',
+          outcome: 'Unspecified',
+        })
+      );
+      expect(res.iteration.actionResults[1]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '22',
+          stepPosition: '2',
+          action: 'A2',
+          expected: 'E2',
+          outcome: 'Unspecified',
+        })
+      );
+    });
+  });
+
+  describe('getTestReporterFlatResults', () => {
+    it('should return flat rows with logical step numbering for fallback-generated action results', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan 12');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([
+        {
+          testSuiteId: 200,
+          suiteId: 200,
+          suiteName: 'suite 2.1',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel2',
+          suitePath: 'Root/Rel2/suite 2.1',
+          testGroupName: 'suite 2.1',
+        },
+      ]);
+
+      const testData = [
+        {
+          testSuiteId: 200,
+          suiteId: 200,
+          suiteName: 'suite 2.1',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel2',
+          suitePath: 'Root/Rel2/suite 2.1',
+          testGroupName: 'suite 2.1',
+          testPointsItems: [
+            {
+              testCaseId: 17,
+              testCaseName: 'TC 17',
+              outcome: 'Unspecified',
+              lastRunId: 99,
+              lastResultId: 88,
+              testPointId: 501,
+              lastResultDetails: {
+                dateCompleted: '2026-02-01T10:00:00.000Z',
+                outcome: 'Unspecified',
+                runBy: { displayName: 'tester user' },
+              },
+            },
+          ],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 17,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ];
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce(testData);
+      jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
+        {
+          testCaseId: 17,
+          lastRunId: 99,
+          lastResultId: 88,
+          executionDate: '2026-02-01T10:00:00.000Z',
+          testCaseResult: { resultMessage: '' },
+          customFields: { 'Custom.SubSystem': 'SYS' },
+          runBy: 'tester user',
+          iteration: {
+            actionResults: [
+              {
+                stepIdentifier: '172',
+                stepPosition: '1',
+                actionPath: '1',
+                action: 'fallback action',
+                expected: 'fallback expected',
+                outcome: 'Unspecified',
+                errorMessage: '',
+                isSharedStepTitle: false,
+              },
+            ],
+          },
+        },
+      ]);
+
+      const result = await resultDataProvider.getTestReporterFlatResults(
+        mockTestPlanId,
+        mockProjectName,
+        undefined,
+        [],
+        false
+      );
+
+      expect(result.planId).toBe(mockTestPlanId);
+      expect(result.planName).toBe('Plan 12');
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          planId: mockTestPlanId,
+          planName: 'Plan 12',
+          suiteId: 200,
+          suiteName: 'suite 2.1',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel2',
+          suitePath: 'Root/Rel2/suite 2.1',
+          testCaseId: 17,
+          testCaseName: 'TC 17',
+          testRunId: 99,
+          testPointId: 501,
+          stepOutcome: 'Unspecified',
+          stepStepIdentifier: '1',
+        })
       );
     });
   });
