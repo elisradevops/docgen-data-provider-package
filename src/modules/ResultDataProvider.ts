@@ -29,6 +29,17 @@ const pLimit = require('p-limit');
  * Instantiate the class with the organization URL and token, and use the provided methods to fetch and process test data.
  */
 export default class ResultDataProvider {
+  private static readonly MEWP_L2_COVERAGE_COLUMNS = [
+    'Customer Requirement',
+    'Requirement ID',
+    'Requirement Title',
+    'Responsibility',
+    'SAPWBS / Responsibility',
+    'Number of passed steps',
+    'Number of failed steps',
+    'Number of steps not run',
+  ];
+
   orgUrl: string = '';
   token: string = '';
   private limit = pLimit(10);
@@ -376,6 +387,121 @@ export default class ResultDataProvider {
   }
 
   /**
+   * Builds MEWP L2 requirement coverage rows for audit reporting.
+   * Rows are one Requirement-TestCase pair; uncovered requirements are emitted with empty test-case columns.
+   */
+  public async getMewpL2CoverageFlatResults(
+    testPlanId: string,
+    projectName: string,
+    selectedSuiteIds: number[] | undefined
+  ) {
+    const defaultPayload = {
+      sheetName: `MEWP L2 Coverage - Plan ${testPlanId}`,
+      columnOrder: [...ResultDataProvider.MEWP_L2_COVERAGE_COLUMNS],
+      rows: [] as any[],
+    };
+
+    try {
+      const planName = await this.fetchTestPlanName(testPlanId, projectName);
+      const suites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
+      const testData = await this.fetchTestData(suites, projectName, testPlanId, false);
+
+      const requirements = await this.fetchMewpL2Requirements(projectName);
+      if (requirements.length === 0) {
+        return {
+          ...defaultPayload,
+          sheetName: this.buildMewpCoverageSheetName(planName, testPlanId),
+        };
+      }
+
+      const requirementIndex = new Map<
+        string,
+        { passed: number; failed: number; notRun: number }
+      >();
+      const requirementKeys = new Set<string>();
+      requirements.forEach((requirement) => {
+        const key = this.toRequirementKey(requirement.requirementId);
+        if (!key) return;
+        requirementKeys.add(key);
+        if (!requirementIndex.has(key)) {
+          requirementIndex.set(key, { passed: 0, failed: 0, notRun: 0 });
+        }
+      });
+
+      const parsedDefinitionStepsByTestCase = new Map<number, TestSteps[]>();
+      const testCaseStepsXmlMap = this.buildTestCaseStepsXmlMap(testData);
+
+      const runResults = await this.fetchAllResultDataTestReporter(testData, projectName, [], false, false);
+      for (const runResult of runResults) {
+        const testCaseId = Number(runResult?.testCaseId);
+        const actionResults = Array.isArray(runResult?.iteration?.actionResults)
+          ? runResult.iteration.actionResults
+          : [];
+        const hasExecutedRun =
+          Number(runResult?.lastRunId || 0) > 0 && Number(runResult?.lastResultId || 0) > 0;
+
+        if (actionResults.length > 0) {
+          for (const actionResult of actionResults) {
+            if (actionResult?.isSharedStepTitle) continue;
+            const stepStatus = this.classifyRequirementStepOutcome(actionResult?.outcome);
+            this.accumulateRequirementCountsFromStepText(
+              `${String(actionResult?.action || '')} ${String(actionResult?.expected || '')}`,
+              stepStatus,
+              requirementKeys,
+              requirementIndex
+            );
+          }
+          continue;
+        }
+
+        // Do not force "not run" from definition steps when a run exists:
+        // some runs may have missing/unmapped actionResults.
+        if (hasExecutedRun) {
+          continue;
+        }
+
+        if (!Number.isFinite(testCaseId)) continue;
+        if (!parsedDefinitionStepsByTestCase.has(testCaseId)) {
+          const stepsXml = testCaseStepsXmlMap.get(testCaseId) || '';
+          const parsed =
+            stepsXml && String(stepsXml).trim() !== ''
+              ? await this.testStepParserHelper.parseTestSteps(stepsXml, new Map<number, number>())
+              : [];
+          parsedDefinitionStepsByTestCase.set(testCaseId, parsed);
+        }
+
+        const definitionSteps = parsedDefinitionStepsByTestCase.get(testCaseId) || [];
+        for (const step of definitionSteps) {
+          if (step?.isSharedStepTitle) continue;
+          this.accumulateRequirementCountsFromStepText(
+            `${String(step?.action || '')} ${String(step?.expected || '')}`,
+            'notRun',
+            requirementKeys,
+            requirementIndex
+          );
+        }
+      }
+
+      const rows: any[] = requirements.map((requirement) => {
+        const key = this.toRequirementKey(requirement.requirementId);
+        const summary = key && requirementIndex.has(key)
+          ? requirementIndex.get(key)!
+          : { passed: 0, failed: 0, notRun: 0 };
+        return this.createMewpCoverageRow(requirement, summary);
+      });
+
+      return {
+        sheetName: this.buildMewpCoverageSheetName(planName, testPlanId),
+        columnOrder: [...ResultDataProvider.MEWP_L2_COVERAGE_COLUMNS],
+        rows,
+      };
+    } catch (error: any) {
+      logger.error(`Error during getMewpL2CoverageFlatResults: ${error.message}`);
+      return defaultPayload;
+    }
+  }
+
+  /**
    * Mapping each attachment to a proper URL for downloading it
    * @param runResults Array of run results
    */
@@ -411,6 +537,344 @@ export default class ResultDataProvider {
 
       return { ...restResult };
     });
+  }
+
+  private buildMewpCoverageSheetName(planName: string, testPlanId: string): string {
+    const suffix = String(planName || '').trim() || `Plan ${testPlanId}`;
+    return `MEWP L2 Coverage - ${suffix}`;
+  }
+
+  private createMewpCoverageRow(
+    requirement: {
+      requirementId: string;
+      title: string;
+      responsibility: string;
+    },
+    stepSummary: { passed: number; failed: number; notRun: number }
+  ) {
+    const requirementId = String(requirement.requirementId || '').trim();
+    const requirementTitle = String(requirement.title || '').trim();
+    const customerRequirement = [requirementId, requirementTitle].filter(Boolean).join(' - ');
+    const responsibility = String(requirement.responsibility || '').trim();
+
+    return {
+      'Customer Requirement': customerRequirement || requirementId || requirementTitle,
+      'Requirement ID': requirementId,
+      'Requirement Title': requirementTitle,
+      Responsibility: responsibility,
+      'SAPWBS / Responsibility': responsibility,
+      'Number of passed steps': Number.isFinite(stepSummary?.passed) ? stepSummary.passed : 0,
+      'Number of failed steps': Number.isFinite(stepSummary?.failed) ? stepSummary.failed : 0,
+      'Number of steps not run': Number.isFinite(stepSummary?.notRun) ? stepSummary.notRun : 0,
+    };
+  }
+
+  private buildTestCaseStepsXmlMap(testData: any[]): Map<number, string> {
+    const map = new Map<number, string>();
+    for (const suite of testData || []) {
+      const testCasesItems = Array.isArray(suite?.testCasesItems) ? suite.testCasesItems : [];
+      for (const testCase of testCasesItems) {
+        const id = Number(testCase?.workItem?.id);
+        if (!Number.isFinite(id)) continue;
+        if (map.has(id)) continue;
+        const fields = testCase?.workItem?.workItemFields;
+        const stepsXml = this.extractStepsXmlFromWorkItemFields(fields);
+        if (stepsXml) {
+          map.set(id, stepsXml);
+        }
+      }
+    }
+    return map;
+  }
+
+  private extractStepsXmlFromWorkItemFields(workItemFields: any): string {
+    if (!Array.isArray(workItemFields)) return '';
+    const isStepsKey = (name: string) => {
+      const normalized = String(name || '').toLowerCase().trim();
+      return normalized === 'steps' || normalized === 'microsoft.vsts.tcm.steps';
+    };
+
+    for (const field of workItemFields) {
+      const keyCandidates = [field?.key, field?.name, field?.referenceName, field?.id];
+      const hasStepsKey = keyCandidates.some((candidate) => isStepsKey(String(candidate || '')));
+      if (!hasStepsKey) continue;
+      const value = String(field?.value || '').trim();
+      if (value) return value;
+    }
+
+    return '';
+  }
+
+  private classifyRequirementStepOutcome(outcome: any): 'passed' | 'failed' | 'notRun' {
+    const normalized = String(outcome || '')
+      .trim()
+      .toLowerCase();
+    if (normalized === 'passed') return 'passed';
+    if (normalized === 'failed') return 'failed';
+    return 'notRun';
+  }
+
+  private accumulateRequirementCountsFromStepText(
+    stepText: string,
+    status: 'passed' | 'failed' | 'notRun',
+    requirementKeys: Set<string>,
+    counters: Map<string, { passed: number; failed: number; notRun: number }>
+  ) {
+    const codes = this.extractRequirementCodesFromText(stepText);
+    for (const code of codes) {
+      if (requirementKeys.size > 0 && !requirementKeys.has(code)) continue;
+      if (!counters.has(code)) {
+        counters.set(code, { passed: 0, failed: 0, notRun: 0 });
+      }
+      const counter = counters.get(code)!;
+      if (status === 'passed') counter.passed += 1;
+      else if (status === 'failed') counter.failed += 1;
+      else counter.notRun += 1;
+    }
+  }
+
+  private extractRequirementCodesFromText(text: string): Set<string> {
+    const out = new Set<string>();
+    const source = this.normalizeRequirementStepText(text);
+    // Supports SR<ID> patterns even when HTML formatting breaks the token,
+    // e.g. "S<b>R</b> 0 0 1" or "S R 0 0 1".
+    const regex = /S[\s\u00A0]*R(?:[\s\u00A0\-_]*\d){1,12}/gi;
+    let match: RegExpExecArray | null = null;
+    while ((match = regex.exec(source)) !== null) {
+      const digitsOnly = String(match[0] || '').replace(/\D/g, '');
+      const digits = Number.parseInt(digitsOnly, 10);
+      if (Number.isFinite(digits)) {
+        out.add(`SR${digits}`);
+      }
+    }
+    return out;
+  }
+
+  private normalizeRequirementStepText(text: string): string {
+    const raw = String(text || '');
+    if (!raw) return '';
+
+    return raw
+      .replace(/&nbsp;|&#160;|&#xA0;/gi, ' ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/\s+/g, ' ');
+  }
+
+  private toRequirementKey(requirementId: string): string {
+    const normalized = this.normalizeMewpRequirementCode(requirementId);
+    if (!normalized) return '';
+    const digits = Number.parseInt(normalized.replace(/^SR/i, ''), 10);
+    if (!Number.isFinite(digits)) return '';
+    return `SR${digits}`;
+  }
+
+  private async fetchMewpL2Requirements(projectName: string): Promise<
+    Array<{
+      workItemId: number;
+      requirementId: string;
+      title: string;
+      responsibility: string;
+      linkedTestCaseIds: number[];
+    }>
+  > {
+    const workItemTypeNames = await this.fetchMewpRequirementTypeNames(projectName);
+    if (workItemTypeNames.length === 0) {
+      return [];
+    }
+
+    const quotedTypeNames = workItemTypeNames
+      .map((name) => `'${String(name).replace(/'/g, "''")}'`)
+      .join(', ');
+    const wiql = `SELECT [System.Id]
+FROM WorkItems
+WHERE [System.TeamProject] = @project
+  AND [System.WorkItemType] IN (${quotedTypeNames})
+ORDER BY [System.Id]`;
+    const wiqlUrl = `${this.orgUrl}${projectName}/_apis/wit/wiql?api-version=7.1-preview.2`;
+    const wiqlResponse = await TFSServices.postRequest(wiqlUrl, this.token, 'Post', { query: wiql }, null);
+    const workItemRefs = Array.isArray(wiqlResponse?.data?.workItems) ? wiqlResponse.data.workItems : [];
+    const requirementIds = workItemRefs
+      .map((item: any) => Number(item?.id))
+      .filter((id: number) => Number.isFinite(id));
+
+    if (requirementIds.length === 0) {
+      return [];
+    }
+
+    const workItems = await this.fetchWorkItemsByIds(projectName, requirementIds, true);
+    const requirements = workItems.map((wi: any) => {
+      const fields = wi?.fields || {};
+      return {
+        workItemId: Number(wi?.id || 0),
+        requirementId: this.extractMewpRequirementIdentifier(fields, Number(wi?.id || 0)),
+        title: String(fields['System.Title'] || ''),
+        responsibility: this.deriveMewpResponsibility(fields),
+        linkedTestCaseIds: this.extractLinkedTestCaseIdsFromRequirement(wi?.relations || []),
+      };
+    });
+
+    return requirements.sort((a, b) => String(a.requirementId).localeCompare(String(b.requirementId)));
+  }
+
+  private async fetchMewpRequirementTypeNames(projectName: string): Promise<string[]> {
+    try {
+      const url = `${this.orgUrl}${projectName}/_apis/wit/workitemtypes?api-version=7.1-preview.2`;
+      const result = await TFSServices.getItemContent(url, this.token);
+      const values = Array.isArray(result?.value) ? result.value : [];
+      const matched = values
+        .map((item: any) => String(item?.name || ''))
+        .filter((name: string) => /requirement/i.test(name) || /^epic$/i.test(name));
+      const unique = Array.from(new Set<string>(matched));
+      if (unique.length > 0) {
+        return unique;
+      }
+    } catch (error: any) {
+      logger.debug(`Could not fetch MEWP work item types, using defaults: ${error?.message || error}`);
+    }
+
+    return ['Requirement', 'Epic'];
+  }
+
+  private async fetchWorkItemsByIds(
+    projectName: string,
+    workItemIds: number[],
+    includeRelations: boolean
+  ): Promise<any[]> {
+    const ids = [...new Set(workItemIds.filter((id) => Number.isFinite(id)))];
+    if (ids.length === 0) return [];
+
+    const CHUNK_SIZE = 200;
+    const allItems: any[] = [];
+
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      const idsQuery = chunk.join(',');
+      const expandParam = includeRelations ? '&$expand=relations' : '';
+      const url = `${this.orgUrl}${projectName}/_apis/wit/workitems?ids=${idsQuery}${expandParam}&api-version=7.1-preview.3`;
+      const response = await TFSServices.getItemContent(url, this.token);
+      const values = Array.isArray(response?.value) ? response.value : [];
+      allItems.push(...values);
+    }
+
+    return allItems;
+  }
+
+  private extractLinkedTestCaseIdsFromRequirement(relations: any[]): number[] {
+    const out = new Set<number>();
+    for (const relation of Array.isArray(relations) ? relations : []) {
+      const rel = String(relation?.rel || '')
+        .trim()
+        .toLowerCase();
+      const isRequirementToTestLink = rel.includes('testedby') || rel.includes('.tests');
+      if (!isRequirementToTestLink) continue;
+
+      const url = String(relation?.url || '');
+      const match = /\/workItems\/(\d+)/i.exec(url);
+      if (!match) continue;
+      const id = Number(match[1]);
+      if (Number.isFinite(id)) out.add(id);
+    }
+    return [...out].sort((a, b) => a - b);
+  }
+
+  private extractMewpRequirementIdentifier(fields: Record<string, any>, fallbackWorkItemId: number): string {
+    const entries = Object.entries(fields || {});
+
+    // First pass: only trusted identifier-like fields.
+    const strictHints = [
+      'customerid',
+      'customer id',
+      'customerrequirementid',
+      'requirementid',
+      'externalid',
+      'srid',
+      'sapwbsid',
+    ];
+    for (const [key, value] of entries) {
+      const normalizedKey = String(key || '').toLowerCase();
+      if (!strictHints.some((hint) => normalizedKey.includes(hint))) continue;
+
+      const valueAsString = this.toMewpComparableText(value);
+      if (!valueAsString) continue;
+      const normalized = this.normalizeMewpRequirementCode(valueAsString);
+      if (normalized) return normalized;
+    }
+
+    // Second pass: weaker hints, but still key-based only.
+    const looseHints = ['customer', 'requirement', 'external', 'sapwbs', 'sr'];
+    for (const [key, value] of entries) {
+      const normalizedKey = String(key || '').toLowerCase();
+      if (!looseHints.some((hint) => normalizedKey.includes(hint))) continue;
+
+      const valueAsString = this.toMewpComparableText(value);
+      if (!valueAsString) continue;
+      const normalized = this.normalizeMewpRequirementCode(valueAsString);
+      if (normalized) return normalized;
+    }
+
+    // Optional fallback from title only (avoid scanning all fields and accidental SR matches).
+    const title = this.toMewpComparableText(fields?.['System.Title']);
+    const titleCode = this.normalizeMewpRequirementCode(title);
+    if (titleCode) return titleCode;
+
+    return String(fallbackWorkItemId || '');
+  }
+
+  private deriveMewpResponsibility(fields: Record<string, any>): string {
+    const areaPath = this.toMewpComparableText(fields?.['System.AreaPath']);
+    const fromAreaPath = this.resolveMewpResponsibility(areaPath);
+    if (fromAreaPath) return fromAreaPath;
+
+    const keyHints = ['sapwbs', 'responsibility', 'owner'];
+    for (const [key, value] of Object.entries(fields || {})) {
+      const normalizedKey = String(key || '').toLowerCase();
+      if (!keyHints.some((hint) => normalizedKey.includes(hint))) continue;
+      const resolved = this.resolveMewpResponsibility(this.toMewpComparableText(value));
+      if (resolved) return resolved;
+    }
+
+    return '';
+  }
+
+  private resolveMewpResponsibility(value: string): string {
+    const text = String(value || '')
+      .trim()
+      .toLowerCase();
+    if (!text) return '';
+
+    if (/(^|[^a-z0-9])esuk([^a-z0-9]|$)/i.test(text)) return 'ESUK';
+    if (/(^|[^a-z0-9])il([^a-z0-9]|$)/i.test(text)) return 'IL';
+    return '';
+  }
+
+  private normalizeMewpRequirementCode(value: string): string {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const match = /\bSR[\s\-_]*([0-9]+)\b/i.exec(text);
+    if (!match) return '';
+    return `SR${match[1]}`;
+  }
+
+  private toMewpComparableText(value: any): string {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return String(value).trim();
+    }
+    if (typeof value === 'object') {
+      const displayName = (value as any).displayName;
+      if (displayName) return String(displayName).trim();
+      const name = (value as any).name;
+      if (name) return String(name).trim();
+      const uniqueName = (value as any).uniqueName;
+      if (uniqueName) return String(uniqueName).trim();
+    }
+    return String(value).trim();
   }
 
   private async fetchTestPlanName(testPlanId: string, teamProject: string): Promise<string> {
