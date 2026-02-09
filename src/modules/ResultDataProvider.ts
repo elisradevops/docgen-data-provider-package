@@ -2344,13 +2344,22 @@ ORDER BY [System.Id]`;
         ...additionalArgs
       );
 
-      const iteration =
+      let iteration =
         resultData.iterationDetails?.length > 0
           ? resultData.iterationDetails[resultData.iterationDetails.length - 1]
           : undefined;
 
+      if (resultData.stepsResultXml && !iteration) {
+        iteration = { actionResults: [] };
+        if (!Array.isArray(resultData.iterationDetails)) {
+          resultData.iterationDetails = [];
+        }
+        resultData.iterationDetails.push(iteration);
+      }
+
       if (resultData.stepsResultXml && iteration) {
-        const actionResultsWithSharedModels = iteration.actionResults.filter(
+        const actionResults = Array.isArray(iteration.actionResults) ? iteration.actionResults : [];
+        const actionResultsWithSharedModels = actionResults.filter(
           (result: any) => result.sharedStepModel
         );
 
@@ -2374,7 +2383,7 @@ ORDER BY [System.Id]`;
           stepMap.set(step.stepId.toString(), step);
         }
 
-        for (const actionResult of iteration.actionResults) {
+        for (const actionResult of actionResults) {
           const step = stepMap.get(actionResult.stepIdentifier);
           if (step) {
             actionResult.stepPosition = step.stepPosition;
@@ -2383,10 +2392,28 @@ ORDER BY [System.Id]`;
             actionResult.isSharedStepTitle = step.isSharedStepTitle;
           }
         }
-        //Sort by step position
-        iteration.actionResults = iteration.actionResults
-          .filter((result: any) => result.stepPosition)
-          .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
+
+        if (actionResults.length > 0) {
+          // Sort mapped action results by logical step position.
+          iteration.actionResults = actionResults
+            .filter((result: any) => result.stepPosition)
+            .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
+        } else {
+          // Fallback for runs that have no action results: emit test definition steps as Not Run.
+          iteration.actionResults = stepsList
+            .filter((step: any) => step?.stepPosition)
+            .map((step: any) => ({
+              stepIdentifier: String(step?.stepId ?? step?.stepPosition ?? ''),
+              stepPosition: step.stepPosition,
+              action: step.action,
+              expected: step.expected,
+              isSharedStepTitle: step.isSharedStepTitle,
+              outcome: 'Unspecified',
+              errorMessage: '',
+              actionPath: String(step?.stepPosition ?? ''),
+            }))
+            .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
+        }
       }
 
       return resultData?.testCase

@@ -2772,6 +2772,244 @@ describe('ResultDataProvider', () => {
         expect.objectContaining({ stepIdentifier: '2', action: 'A2', isSharedStepTitle: true })
       );
     });
+
+    it('should fall back to parsed test steps when actionResults are missing for latest run', async () => {
+      const point = { testCaseId: 1, lastRunId: 10, lastResultId: 20 };
+      const fetchResultMethod = jest.fn().mockResolvedValue({
+        testCase: { id: 1, name: 'TC' },
+        stepsResultXml: '<steps></steps>',
+        iterationDetails: [{}],
+      });
+
+      const createResponseObject = (resultData: any) => ({ iteration: resultData.iterationDetails[0] });
+
+      const helper = (resultDataProvider as any).testStepParserHelper;
+      helper.parseTestSteps.mockResolvedValueOnce([
+        { stepId: 172, stepPosition: '1', action: 'Step 1', expected: 'Expected 1', isSharedStepTitle: false },
+        { stepId: 173, stepPosition: '2', action: 'Step 2', expected: 'Expected 2', isSharedStepTitle: false },
+      ]);
+
+      const res = await (resultDataProvider as any).fetchResultDataBase(
+        mockProjectName,
+        'suite1',
+        point,
+        fetchResultMethod,
+        createResponseObject,
+        []
+      );
+
+      const actionResults = res.iteration.actionResults;
+      expect(actionResults).toHaveLength(2);
+      expect(actionResults[0]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '172',
+          stepPosition: '1',
+          action: 'Step 1',
+          expected: 'Expected 1',
+          outcome: 'Unspecified',
+        })
+      );
+      expect(actionResults[1]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '173',
+          stepPosition: '2',
+          action: 'Step 2',
+          expected: 'Expected 2',
+          outcome: 'Unspecified',
+        })
+      );
+    });
+
+    it('should create synthetic iteration and fall back to parsed test steps when iterationDetails are missing', async () => {
+      const point = { testCaseId: 1, lastRunId: 10, lastResultId: 20 };
+      const fetchResultMethod = jest.fn().mockResolvedValue({
+        testCase: { id: 1, name: 'TC' },
+        stepsResultXml: '<steps></steps>',
+        iterationDetails: [],
+      });
+
+      const createResponseObject = (resultData: any) => ({ iteration: resultData.iterationDetails[0] });
+
+      const helper = (resultDataProvider as any).testStepParserHelper;
+      helper.parseTestSteps.mockResolvedValueOnce([
+        { stepId: 301, stepPosition: '1', action: 'S1', expected: 'E1', isSharedStepTitle: false },
+      ]);
+
+      const res = await (resultDataProvider as any).fetchResultDataBase(
+        mockProjectName,
+        'suite1',
+        point,
+        fetchResultMethod,
+        createResponseObject,
+        []
+      );
+
+      expect(res.iteration).toBeDefined();
+      expect(res.iteration.actionResults).toHaveLength(1);
+      expect(res.iteration.actionResults[0]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '301',
+          stepPosition: '1',
+          action: 'S1',
+          expected: 'E1',
+          outcome: 'Unspecified',
+        })
+      );
+    });
+
+    it('should fall back to parsed test steps when actionResults is an empty array', async () => {
+      const point = { testCaseId: 1, lastRunId: 10, lastResultId: 20 };
+      const fetchResultMethod = jest.fn().mockResolvedValue({
+        testCase: { id: 1, name: 'TC' },
+        stepsResultXml: '<steps></steps>',
+        iterationDetails: [{ actionResults: [] }],
+      });
+
+      const createResponseObject = (resultData: any) => ({ iteration: resultData.iterationDetails[0] });
+
+      const helper = (resultDataProvider as any).testStepParserHelper;
+      helper.parseTestSteps.mockResolvedValueOnce([
+        { stepId: 11, stepPosition: '1', action: 'A1', expected: 'E1', isSharedStepTitle: false },
+        { stepId: 22, stepPosition: '2', action: 'A2', expected: 'E2', isSharedStepTitle: false },
+      ]);
+
+      const res = await (resultDataProvider as any).fetchResultDataBase(
+        mockProjectName,
+        'suite1',
+        point,
+        fetchResultMethod,
+        createResponseObject,
+        []
+      );
+
+      expect(helper.parseTestSteps).toHaveBeenCalledTimes(1);
+      expect(res.iteration.actionResults).toHaveLength(2);
+      expect(res.iteration.actionResults[0]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '11',
+          stepPosition: '1',
+          action: 'A1',
+          expected: 'E1',
+          outcome: 'Unspecified',
+        })
+      );
+      expect(res.iteration.actionResults[1]).toEqual(
+        expect.objectContaining({
+          stepIdentifier: '22',
+          stepPosition: '2',
+          action: 'A2',
+          expected: 'E2',
+          outcome: 'Unspecified',
+        })
+      );
+    });
+  });
+
+  describe('getTestReporterFlatResults', () => {
+    it('should return flat rows with logical step numbering for fallback-generated action results', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan 12');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([
+        {
+          testSuiteId: 200,
+          suiteId: 200,
+          suiteName: 'suite 2.1',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel2',
+          suitePath: 'Root/Rel2/suite 2.1',
+          testGroupName: 'suite 2.1',
+        },
+      ]);
+
+      const testData = [
+        {
+          testSuiteId: 200,
+          suiteId: 200,
+          suiteName: 'suite 2.1',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel2',
+          suitePath: 'Root/Rel2/suite 2.1',
+          testGroupName: 'suite 2.1',
+          testPointsItems: [
+            {
+              testCaseId: 17,
+              testCaseName: 'TC 17',
+              outcome: 'Unspecified',
+              lastRunId: 99,
+              lastResultId: 88,
+              testPointId: 501,
+              lastResultDetails: {
+                dateCompleted: '2026-02-01T10:00:00.000Z',
+                outcome: 'Unspecified',
+                runBy: { displayName: 'tester user' },
+              },
+            },
+          ],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 17,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ];
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce(testData);
+      jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
+        {
+          testCaseId: 17,
+          lastRunId: 99,
+          lastResultId: 88,
+          executionDate: '2026-02-01T10:00:00.000Z',
+          testCaseResult: { resultMessage: '' },
+          customFields: { 'Custom.SubSystem': 'SYS' },
+          runBy: 'tester user',
+          iteration: {
+            actionResults: [
+              {
+                stepIdentifier: '172',
+                stepPosition: '1',
+                actionPath: '1',
+                action: 'fallback action',
+                expected: 'fallback expected',
+                outcome: 'Unspecified',
+                errorMessage: '',
+                isSharedStepTitle: false,
+              },
+            ],
+          },
+        },
+      ]);
+
+      const result = await resultDataProvider.getTestReporterFlatResults(
+        mockTestPlanId,
+        mockProjectName,
+        undefined,
+        [],
+        false
+      );
+
+      expect(result.planId).toBe(mockTestPlanId);
+      expect(result.planName).toBe('Plan 12');
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          planId: mockTestPlanId,
+          planName: 'Plan 12',
+          suiteId: 200,
+          suiteName: 'suite 2.1',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel2',
+          suitePath: 'Root/Rel2/suite 2.1',
+          testCaseId: 17,
+          testCaseName: 'TC 17',
+          testRunId: 99,
+          testPointId: 501,
+          stepOutcome: 'Unspecified',
+          stepStepIdentifier: '1',
+        })
+      );
+    });
   });
 
   describe('getCombinedResultsSummary - appendix branches', () => {
