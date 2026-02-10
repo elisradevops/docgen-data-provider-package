@@ -30,14 +30,14 @@ const pLimit = require('p-limit');
  */
 export default class ResultDataProvider {
   private static readonly MEWP_L2_COVERAGE_COLUMNS = [
-    'Customer Requirement',
-    'Requirement ID',
-    'Requirement Title',
-    'Responsibility',
-    'SAPWBS / Responsibility',
+    'Customer ID',
+    'Title (Customer name)',
+    'Responsibility - SAPWBS (ESUK/IL)',
+    'Test case id',
+    'Test case title',
     'Number of passed steps',
     'Number of failed steps',
-    'Number of steps not run',
+    'Number of not run tests',
   ];
 
   orgUrl: string = '';
@@ -393,7 +393,8 @@ export default class ResultDataProvider {
   public async getMewpL2CoverageFlatResults(
     testPlanId: string,
     projectName: string,
-    selectedSuiteIds: number[] | undefined
+    selectedSuiteIds: number[] | undefined,
+    linkedQueryRequest?: any
   ) {
     const defaultPayload = {
       sheetName: `MEWP L2 Coverage - Plan ${testPlanId}`,
@@ -406,7 +407,7 @@ export default class ResultDataProvider {
       const suites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
       const testData = await this.fetchTestData(suites, projectName, testPlanId, false);
 
-      const requirements = await this.fetchMewpL2Requirements(projectName);
+      const requirements = await this.fetchMewpL2Requirements(projectName, linkedQueryRequest);
       if (requirements.length === 0) {
         return {
           ...defaultPayload,
@@ -414,26 +415,28 @@ export default class ResultDataProvider {
         };
       }
 
-      const requirementIndex = new Map<
-        string,
-        { passed: number; failed: number; notRun: number }
-      >();
+      const requirementIndex = new Map<string, Map<number, { passed: number; failed: number; notRun: number }>>();
+      const observedTestCaseIdsByRequirement = new Map<string, Set<number>>();
       const requirementKeys = new Set<string>();
       requirements.forEach((requirement) => {
         const key = this.toRequirementKey(requirement.requirementId);
         if (!key) return;
         requirementKeys.add(key);
-        if (!requirementIndex.has(key)) {
-          requirementIndex.set(key, { passed: 0, failed: 0, notRun: 0 });
-        }
       });
 
       const parsedDefinitionStepsByTestCase = new Map<number, TestSteps[]>();
       const testCaseStepsXmlMap = this.buildTestCaseStepsXmlMap(testData);
+      const testCaseTitleMap = this.buildMewpTestCaseTitleMap(testData);
 
       const runResults = await this.fetchAllResultDataTestReporter(testData, projectName, [], false, false);
       for (const runResult of runResults) {
-        const testCaseId = Number(runResult?.testCaseId);
+        const testCaseId = this.extractMewpTestCaseId(runResult);
+        const runTestCaseTitle = this.toMewpComparableText(
+          runResult?.testCase?.name || runResult?.testCaseName || runResult?.testCaseTitle
+        );
+        if (Number.isFinite(testCaseId) && testCaseId > 0 && runTestCaseTitle && !testCaseTitleMap.has(testCaseId)) {
+          testCaseTitleMap.set(testCaseId, runTestCaseTitle);
+        }
         const actionResults = Array.isArray(runResult?.iteration?.actionResults)
           ? runResult.iteration.actionResults
           : [];
@@ -447,8 +450,10 @@ export default class ResultDataProvider {
             this.accumulateRequirementCountsFromStepText(
               `${String(actionResult?.action || '')} ${String(actionResult?.expected || '')}`,
               stepStatus,
+              testCaseId,
               requirementKeys,
-              requirementIndex
+              requirementIndex,
+              observedTestCaseIdsByRequirement
             );
           }
           continue;
@@ -476,19 +481,20 @@ export default class ResultDataProvider {
           this.accumulateRequirementCountsFromStepText(
             `${String(step?.action || '')} ${String(step?.expected || '')}`,
             'notRun',
+            testCaseId,
             requirementKeys,
-            requirementIndex
+            requirementIndex,
+            observedTestCaseIdsByRequirement
           );
         }
       }
 
-      const rows: any[] = requirements.map((requirement) => {
-        const key = this.toRequirementKey(requirement.requirementId);
-        const summary = key && requirementIndex.has(key)
-          ? requirementIndex.get(key)!
-          : { passed: 0, failed: 0, notRun: 0 };
-        return this.createMewpCoverageRow(requirement, summary);
-      });
+      const rows = this.buildMewpCoverageRows(
+        requirements,
+        requirementIndex,
+        observedTestCaseIdsByRequirement,
+        testCaseTitleMap
+      );
 
       return {
         sheetName: this.buildMewpCoverageSheetName(planName, testPlanId),
@@ -550,23 +556,131 @@ export default class ResultDataProvider {
       title: string;
       responsibility: string;
     },
+    testCaseId: number | undefined,
+    testCaseTitle: string,
     stepSummary: { passed: number; failed: number; notRun: number }
   ) {
-    const requirementId = String(requirement.requirementId || '').trim();
-    const requirementTitle = String(requirement.title || '').trim();
-    const customerRequirement = [requirementId, requirementTitle].filter(Boolean).join(' - ');
+    const customerId = String(requirement.requirementId || '').trim();
+    const customerTitle = String(requirement.title || '').trim();
     const responsibility = String(requirement.responsibility || '').trim();
+    const safeTestCaseId = Number.isFinite(testCaseId) && Number(testCaseId) > 0 ? Number(testCaseId) : '';
 
     return {
-      'Customer Requirement': customerRequirement || requirementId || requirementTitle,
-      'Requirement ID': requirementId,
-      'Requirement Title': requirementTitle,
-      Responsibility: responsibility,
-      'SAPWBS / Responsibility': responsibility,
+      'Customer ID': customerId,
+      'Title (Customer name)': customerTitle,
+      'Responsibility - SAPWBS (ESUK/IL)': responsibility,
+      'Test case id': safeTestCaseId,
+      'Test case title': String(testCaseTitle || '').trim(),
       'Number of passed steps': Number.isFinite(stepSummary?.passed) ? stepSummary.passed : 0,
       'Number of failed steps': Number.isFinite(stepSummary?.failed) ? stepSummary.failed : 0,
-      'Number of steps not run': Number.isFinite(stepSummary?.notRun) ? stepSummary.notRun : 0,
+      'Number of not run tests': Number.isFinite(stepSummary?.notRun) ? stepSummary.notRun : 0,
     };
+  }
+
+  private buildMewpCoverageRows(
+    requirements: Array<{
+      requirementId: string;
+      title: string;
+      responsibility: string;
+      linkedTestCaseIds: number[];
+    }>,
+    requirementIndex: Map<string, Map<number, { passed: number; failed: number; notRun: number }>>,
+    observedTestCaseIdsByRequirement: Map<string, Set<number>>,
+    testCaseTitleMap: Map<number, string>
+  ): any[] {
+    const rows: any[] = [];
+    for (const requirement of requirements) {
+      const key = this.toRequirementKey(requirement.requirementId);
+      const linkedTestCaseIds = (requirement?.linkedTestCaseIds || []).filter(
+        (id) => Number.isFinite(id) && Number(id) > 0
+      );
+      const observedTestCaseIds = key
+        ? Array.from(observedTestCaseIdsByRequirement.get(key) || [])
+        : [];
+
+      const testCaseIds = Array.from(new Set<number>([...linkedTestCaseIds, ...observedTestCaseIds])).sort(
+        (a, b) => a - b
+      );
+
+      if (testCaseIds.length === 0) {
+        rows.push(
+          this.createMewpCoverageRow(requirement, undefined, '', {
+            passed: 0,
+            failed: 0,
+            notRun: 0,
+          })
+        );
+        continue;
+      }
+
+      for (const testCaseId of testCaseIds) {
+        const summary = key
+          ? requirementIndex.get(key)?.get(testCaseId) || { passed: 0, failed: 0, notRun: 0 }
+          : { passed: 0, failed: 0, notRun: 0 };
+        rows.push(
+          this.createMewpCoverageRow(
+            requirement,
+            testCaseId,
+            String(testCaseTitleMap.get(testCaseId) || ''),
+            summary
+          )
+        );
+      }
+    }
+
+    return rows;
+  }
+
+  private buildMewpTestCaseTitleMap(testData: any[]): Map<number, string> {
+    const map = new Map<number, string>();
+
+    const readTitleFromWorkItemFields = (workItemFields: any): string => {
+      if (!Array.isArray(workItemFields)) return '';
+      for (const field of workItemFields) {
+        const keyCandidates = [field?.key, field?.name, field?.referenceName, field?.id]
+          .map((item) => String(item || '').toLowerCase().trim());
+        const isTitleField =
+          keyCandidates.includes('system.title') || keyCandidates.includes('title');
+        if (!isTitleField) continue;
+        const value = this.toMewpComparableText(field?.value);
+        if (value) return value;
+      }
+      return '';
+    };
+
+    for (const suite of testData || []) {
+      const testPointsItems = Array.isArray(suite?.testPointsItems) ? suite.testPointsItems : [];
+      for (const point of testPointsItems) {
+        const pointTestCaseId = Number(point?.testCaseId || point?.testCase?.id);
+        if (!Number.isFinite(pointTestCaseId) || pointTestCaseId <= 0 || map.has(pointTestCaseId)) continue;
+        const pointTitle = this.toMewpComparableText(point?.testCaseName || point?.testCase?.name);
+        if (pointTitle) map.set(pointTestCaseId, pointTitle);
+      }
+
+      const testCasesItems = Array.isArray(suite?.testCasesItems) ? suite.testCasesItems : [];
+      for (const testCase of testCasesItems) {
+        const id = Number(testCase?.workItem?.id || testCase?.testCaseId || testCase?.id);
+        if (!Number.isFinite(id) || id <= 0 || map.has(id)) continue;
+        const fromDirectFields = this.toMewpComparableText(
+          testCase?.testCaseName || testCase?.name || testCase?.workItem?.name
+        );
+        if (fromDirectFields) {
+          map.set(id, fromDirectFields);
+          continue;
+        }
+        const fromWorkItemField = readTitleFromWorkItemFields(testCase?.workItem?.workItemFields);
+        if (fromWorkItemField) {
+          map.set(id, fromWorkItemField);
+        }
+      }
+    }
+
+    return map;
+  }
+
+  private extractMewpTestCaseId(runResult: any): number {
+    const testCaseId = Number(runResult?.testCaseId || runResult?.testCase?.id || 0);
+    return Number.isFinite(testCaseId) ? testCaseId : 0;
   }
 
   private buildTestCaseStepsXmlMap(testData: any[]): Map<number, string> {
@@ -617,16 +731,30 @@ export default class ResultDataProvider {
   private accumulateRequirementCountsFromStepText(
     stepText: string,
     status: 'passed' | 'failed' | 'notRun',
+    testCaseId: number,
     requirementKeys: Set<string>,
-    counters: Map<string, { passed: number; failed: number; notRun: number }>
+    counters: Map<string, Map<number, { passed: number; failed: number; notRun: number }>>,
+    observedTestCaseIdsByRequirement: Map<string, Set<number>>
   ) {
+    if (!Number.isFinite(testCaseId) || testCaseId <= 0) return;
+
     const codes = this.extractRequirementCodesFromText(stepText);
     for (const code of codes) {
       if (requirementKeys.size > 0 && !requirementKeys.has(code)) continue;
       if (!counters.has(code)) {
-        counters.set(code, { passed: 0, failed: 0, notRun: 0 });
+        counters.set(code, new Map<number, { passed: number; failed: number; notRun: number }>());
       }
-      const counter = counters.get(code)!;
+      const perTestCaseCounters = counters.get(code)!;
+      if (!perTestCaseCounters.has(testCaseId)) {
+        perTestCaseCounters.set(testCaseId, { passed: 0, failed: 0, notRun: 0 });
+      }
+
+      if (!observedTestCaseIdsByRequirement.has(code)) {
+        observedTestCaseIdsByRequirement.set(code, new Set<number>());
+      }
+      observedTestCaseIdsByRequirement.get(code)!.add(testCaseId);
+
+      const counter = perTestCaseCounters.get(testCaseId)!;
       if (status === 'passed') counter.passed += 1;
       else if (status === 'failed') counter.failed += 1;
       else counter.notRun += 1;
@@ -674,7 +802,7 @@ export default class ResultDataProvider {
     return `SR${digits}`;
   }
 
-  private async fetchMewpL2Requirements(projectName: string): Promise<
+  private async fetchMewpL2Requirements(projectName: string, linkedQueryRequest?: any): Promise<
     Array<{
       workItemId: number;
       requirementId: string;
@@ -683,6 +811,11 @@ export default class ResultDataProvider {
       linkedTestCaseIds: number[];
     }>
   > {
+    const queryHref = this.extractMewpQueryHref(linkedQueryRequest);
+    if (queryHref) {
+      return this.fetchMewpL2RequirementsFromQuery(projectName, queryHref);
+    }
+
     const workItemTypeNames = await this.fetchMewpRequirementTypeNames(projectName);
     if (workItemTypeNames.length === 0) {
       return [];
@@ -720,6 +853,225 @@ ORDER BY [System.Id]`;
     });
 
     return requirements.sort((a, b) => String(a.requirementId).localeCompare(String(b.requirementId)));
+  }
+
+  private extractMewpQueryHref(linkedQueryRequest?: any): string {
+    const mode = String(linkedQueryRequest?.linkedQueryMode || '')
+      .trim()
+      .toLowerCase();
+    if (mode !== 'query') return '';
+
+    return String(linkedQueryRequest?.testAssociatedQuery?.wiql?.href || '').trim();
+  }
+
+  private async fetchMewpL2RequirementsFromQuery(
+    projectName: string,
+    queryHref: string
+  ): Promise<
+    Array<{
+      workItemId: number;
+      requirementId: string;
+      title: string;
+      responsibility: string;
+      linkedTestCaseIds: number[];
+    }>
+  > {
+    try {
+      const ticketsDataProvider = new TicketsDataProvider(this.orgUrl, this.token);
+      const queryResult = await ticketsDataProvider.GetQueryResultsFromWiql(
+        queryHref,
+        true,
+        new Map<number, Set<any>>()
+      );
+
+      const requirementTypeNames = await this.fetchMewpRequirementTypeNames(projectName);
+      const requirementTypeSet = new Set(
+        requirementTypeNames.map((name) => String(name || '').trim().toLowerCase())
+      );
+
+      const requirementsById = new Map<
+        number,
+        {
+          workItemId: number;
+          requirementId: string;
+          title: string;
+          responsibility: string;
+          linkedTestCaseIds: Set<number>;
+        }
+      >();
+
+      const upsertRequirement = (workItem: any) => {
+        this.upsertMewpRequirement(requirementsById, workItem, requirementTypeSet);
+      };
+
+      const linkRequirementToTestCase = (requirementWorkItem: any, testCaseWorkItem: any) => {
+        const requirementId = Number(requirementWorkItem?.id || 0);
+        const testCaseId = Number(testCaseWorkItem?.id || 0);
+        if (!Number.isFinite(requirementId) || requirementId <= 0) return;
+        if (!Number.isFinite(testCaseId) || testCaseId <= 0) return;
+
+        upsertRequirement(requirementWorkItem);
+        const requirement = requirementsById.get(requirementId);
+        if (!requirement) return;
+        requirement.linkedTestCaseIds.add(testCaseId);
+      };
+
+      if (Array.isArray(queryResult?.fetchedWorkItems)) {
+        for (const workItem of queryResult.fetchedWorkItems) {
+          upsertRequirement(workItem);
+        }
+      }
+
+      if (queryResult?.sourceTargetsMap && typeof queryResult.sourceTargetsMap.entries === 'function') {
+        for (const [sourceItem, targets] of queryResult.sourceTargetsMap.entries()) {
+          const sourceType = this.getMewpWorkItemType(sourceItem);
+          const sourceIsRequirement = this.isMewpRequirementType(sourceType, requirementTypeSet);
+          const sourceIsTestCase = this.isMewpTestCaseType(sourceType);
+
+          if (sourceIsRequirement) {
+            upsertRequirement(sourceItem);
+          }
+
+          const relatedItems = Array.isArray(targets) ? targets : [];
+          for (const targetItem of relatedItems) {
+            const targetType = this.getMewpWorkItemType(targetItem);
+            const targetIsRequirement = this.isMewpRequirementType(targetType, requirementTypeSet);
+            const targetIsTestCase = this.isMewpTestCaseType(targetType);
+
+            if (targetIsRequirement) {
+              upsertRequirement(targetItem);
+            }
+
+            if (sourceIsRequirement && targetIsTestCase) {
+              linkRequirementToTestCase(sourceItem, targetItem);
+            } else if (sourceIsTestCase && targetIsRequirement) {
+              linkRequirementToTestCase(targetItem, sourceItem);
+            }
+          }
+        }
+      }
+
+      await this.hydrateMewpRequirementsFromWorkItems(projectName, requirementsById);
+
+      return [...requirementsById.values()]
+        .map((requirement) => ({
+          workItemId: requirement.workItemId,
+          requirementId: requirement.requirementId,
+          title: requirement.title,
+          responsibility: requirement.responsibility,
+          linkedTestCaseIds: [...requirement.linkedTestCaseIds].sort((a, b) => a - b),
+        }))
+        .sort((a, b) => String(a.requirementId).localeCompare(String(b.requirementId)));
+    } catch (error: any) {
+      logger.error(`Could not fetch MEWP requirements from query: ${error?.message || error}`);
+      return [];
+    }
+  }
+
+  private upsertMewpRequirement(
+    requirementsById: Map<
+      number,
+      {
+        workItemId: number;
+        requirementId: string;
+        title: string;
+        responsibility: string;
+        linkedTestCaseIds: Set<number>;
+      }
+    >,
+    workItem: any,
+    requirementTypeSet: Set<string>
+  ) {
+    const workItemId = Number(workItem?.id || 0);
+    if (!Number.isFinite(workItemId) || workItemId <= 0) return;
+
+    const fields = workItem?.fields || {};
+    const workItemType = this.getMewpWorkItemType(workItem);
+    if (!this.isMewpRequirementType(workItemType, requirementTypeSet)) return;
+
+    const existing = requirementsById.get(workItemId) || {
+      workItemId,
+      requirementId: String(workItemId),
+      title: '',
+      responsibility: '',
+      linkedTestCaseIds: new Set<number>(),
+    };
+
+    const extractedRequirementId = this.extractMewpRequirementIdentifier(fields, workItemId);
+    const extractedTitle = this.toMewpComparableText(fields?.['System.Title']);
+    const extractedResponsibility = this.deriveMewpResponsibility(fields);
+
+    existing.requirementId = extractedRequirementId || existing.requirementId || String(workItemId);
+    if (extractedTitle) {
+      existing.title = extractedTitle;
+    }
+    if (extractedResponsibility) {
+      existing.responsibility = extractedResponsibility;
+    }
+
+    requirementsById.set(workItemId, existing);
+  }
+
+  private async hydrateMewpRequirementsFromWorkItems(
+    projectName: string,
+    requirementsById: Map<
+      number,
+      {
+        workItemId: number;
+        requirementId: string;
+        title: string;
+        responsibility: string;
+        linkedTestCaseIds: Set<number>;
+      }
+    >
+  ) {
+    const requirementIds = [...requirementsById.keys()];
+    if (requirementIds.length === 0) return;
+
+    const fetchedRequirements = await this.fetchWorkItemsByIds(projectName, requirementIds, true);
+    for (const requirementWorkItem of fetchedRequirements) {
+      const workItemId = Number(requirementWorkItem?.id || 0);
+      if (!Number.isFinite(workItemId) || workItemId <= 0) continue;
+      const current = requirementsById.get(workItemId);
+      if (!current) continue;
+
+      const fields = requirementWorkItem?.fields || {};
+      const requirementId = this.extractMewpRequirementIdentifier(fields, workItemId);
+      const title = this.toMewpComparableText(fields?.['System.Title']);
+      const responsibility = this.deriveMewpResponsibility(fields);
+      const linkedTestCaseIds = this.extractLinkedTestCaseIdsFromRequirement(
+        requirementWorkItem?.relations || []
+      );
+
+      current.requirementId = requirementId || current.requirementId || String(workItemId);
+      if (title) {
+        current.title = title;
+      }
+      if (responsibility) {
+        current.responsibility = responsibility;
+      }
+      linkedTestCaseIds.forEach((testCaseId) => current.linkedTestCaseIds.add(testCaseId));
+    }
+  }
+
+  private getMewpWorkItemType(workItem: any): string {
+    return this.toMewpComparableText(workItem?.fields?.['System.WorkItemType']);
+  }
+
+  private isMewpRequirementType(workItemType: string, requirementTypeSet: Set<string>): boolean {
+    const normalized = String(workItemType || '')
+      .trim()
+      .toLowerCase();
+    if (!normalized) return false;
+    if (requirementTypeSet.has(normalized)) return true;
+    return normalized.includes('requirement') || normalized === 'epic';
+  }
+
+  private isMewpTestCaseType(workItemType: string): boolean {
+    const normalized = String(workItemType || '')
+      .trim()
+      .toLowerCase();
+    return normalized === 'test case' || normalized === 'testcase';
   }
 
   private async fetchMewpRequirementTypeNames(projectName: string): Promise<string[]> {

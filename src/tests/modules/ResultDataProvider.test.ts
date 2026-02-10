@@ -1075,7 +1075,102 @@ describe('ResultDataProvider', () => {
   });
 
   describe('getMewpL2CoverageFlatResults', () => {
-    it('should map SR ids from step action/expected and aggregate passed/failed/not-run by requirement', async () => {
+    it('should support query-mode requirement scope for MEWP coverage', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 101, lastRunId: 10, lastResultId: 20, testCaseName: 'TC 101' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 101,
+                workItemFields: [{ key: 'System.Title', value: 'TC 101' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpRequirementTypeNames').mockResolvedValueOnce([
+        'Requirement',
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchWorkItemsByIds').mockResolvedValueOnce([
+        {
+          id: 9001,
+          fields: {
+            'System.WorkItemType': 'Requirement',
+            'System.Title': 'Requirement from query',
+            'Custom.CustomerId': 'SR3001',
+            'System.AreaPath': 'MEWP\\IL',
+          },
+          relations: [
+            {
+              rel: 'Microsoft.VSTS.Common.TestedBy-Forward',
+              url: 'https://dev.azure.com/org/_apis/wit/workItems/101',
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
+        {
+          testCaseId: 101,
+          testCase: { id: 101, name: 'TC 101' },
+          iteration: {
+            actionResults: [{ action: 'Validate SR3001', expected: '', outcome: 'Passed' }],
+          },
+        },
+      ]);
+
+      const TicketsProviderMock: any = require('../../modules/TicketsDataProvider').default;
+      TicketsProviderMock.mockImplementationOnce(() => ({
+        GetQueryResultsFromWiql: jest.fn().mockResolvedValue({
+          fetchedWorkItems: [
+            {
+              id: 9001,
+              fields: {
+                'System.WorkItemType': 'Requirement',
+                'System.Title': 'Requirement from query',
+                'Custom.CustomerId': 'SR3001',
+                'System.AreaPath': 'MEWP\\IL',
+              },
+            },
+          ],
+        }),
+      }));
+
+      const result = await (resultDataProvider as any).getMewpL2CoverageFlatResults(
+        '123',
+        mockProjectName,
+        [1],
+        {
+          linkedQueryMode: 'query',
+          testAssociatedQuery: { wiql: { href: 'https://example.com/wiql' } },
+        }
+      );
+
+      const row = result.rows.find((item: any) => item['Customer ID'] === 'SR3001');
+      expect(row).toEqual(
+        expect.objectContaining({
+          'Title (Customer name)': 'Requirement from query',
+          'Responsibility - SAPWBS (ESUK/IL)': 'IL',
+          'Test case id': 101,
+          'Test case title': 'TC 101',
+          'Number of passed steps': 1,
+          'Number of failed steps': 0,
+          'Number of not run tests': 0,
+        })
+      );
+
+      expect(TicketsProviderMock).toHaveBeenCalled();
+      const instance = TicketsProviderMock.mock.results[0].value;
+      expect(instance.GetQueryResultsFromWiql).toHaveBeenCalledWith(
+        'https://example.com/wiql',
+        true,
+        expect.any(Map)
+      );
+    });
+
+    it('should map SR ids from steps and output requirement-test-case coverage rows', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
       jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
@@ -1105,7 +1200,14 @@ describe('ResultDataProvider', () => {
         {
           workItemId: 5002,
           requirementId: 'SR1002',
-          title: 'Uncovered requirement',
+          title: 'Referenced from non-linked step text',
+          responsibility: 'IL',
+          linkedTestCaseIds: [],
+        },
+        {
+          workItemId: 5003,
+          requirementId: 'SR1003',
+          title: 'Not covered by any test case',
           responsibility: 'IL',
           linkedTestCaseIds: [],
         },
@@ -1113,6 +1215,7 @@ describe('ResultDataProvider', () => {
       jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
         {
           testCaseId: 101,
+          testCase: { id: 101, name: 'TC 101' },
           iteration: {
             actionResults: [
               {
@@ -1127,6 +1230,7 @@ describe('ResultDataProvider', () => {
         },
         {
           testCaseId: 102,
+          testCase: { id: 102, name: 'TC 102' },
           iteration: undefined,
         },
       ]);
@@ -1151,25 +1255,50 @@ describe('ResultDataProvider', () => {
       expect(result).toEqual(
         expect.objectContaining({
           sheetName: expect.stringContaining('MEWP L2 Coverage'),
-          columnOrder: expect.arrayContaining(['Requirement ID', 'Number of steps not run']),
+          columnOrder: expect.arrayContaining(['Customer ID', 'Test case id', 'Number of not run tests']),
         })
       );
 
-      const covered = result.rows.find((row: any) => row['Requirement ID'] === 'SR1001');
-      const uncovered = result.rows.find((row: any) => row['Requirement ID'] === 'SR1002');
+      const covered = result.rows.find(
+        (row: any) => row['Customer ID'] === 'SR1001' && row['Test case id'] === 101
+      );
+      const inferredByStepText = result.rows.find(
+        (row: any) => row['Customer ID'] === 'SR1002' && row['Test case id'] === 102
+      );
+      const uncovered = result.rows.find(
+        (row: any) =>
+          row['Customer ID'] === 'SR1003' &&
+          (row['Test case id'] === '' || row['Test case id'] === undefined || row['Test case id'] === null)
+      );
 
       expect(covered).toEqual(
         expect.objectContaining({
+          'Title (Customer name)': 'Covered requirement',
+          'Responsibility - SAPWBS (ESUK/IL)': 'ESUK',
+          'Test case title': 'TC 101',
           'Number of passed steps': 1,
           'Number of failed steps': 1,
-          'Number of steps not run': 1,
+          'Number of not run tests': 1,
+        })
+      );
+      expect(inferredByStepText).toEqual(
+        expect.objectContaining({
+          'Title (Customer name)': 'Referenced from non-linked step text',
+          'Responsibility - SAPWBS (ESUK/IL)': 'IL',
+          'Test case title': 'TC 102',
+          'Number of passed steps': 0,
+          'Number of failed steps': 0,
+          'Number of not run tests': 1,
         })
       );
       expect(uncovered).toEqual(
         expect.objectContaining({
+          'Title (Customer name)': 'Not covered by any test case',
+          'Responsibility - SAPWBS (ESUK/IL)': 'IL',
+          'Test case title': '',
           'Number of passed steps': 0,
           'Number of failed steps': 0,
-          'Number of steps not run': 1,
+          'Number of not run tests': 0,
         })
       );
     });
@@ -1235,13 +1364,15 @@ describe('ResultDataProvider', () => {
         [1]
       );
 
-      const row = result.rows.find((item: any) => item['Requirement ID'] === 'SR2001');
+      const row = result.rows.find(
+        (item: any) => item['Customer ID'] === 'SR2001' && item['Test case id'] === 101
+      );
       expect(parseSpy).not.toHaveBeenCalled();
       expect(row).toEqual(
         expect.objectContaining({
           'Number of passed steps': 0,
           'Number of failed steps': 0,
-          'Number of steps not run': 0,
+          'Number of not run tests': 0,
         })
       );
     });
