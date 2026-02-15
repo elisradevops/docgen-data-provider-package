@@ -1075,101 +1075,6 @@ describe('ResultDataProvider', () => {
   });
 
   describe('getMewpL2CoverageFlatResults', () => {
-    it('should support query-mode requirement scope for MEWP coverage', async () => {
-      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
-      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
-      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
-        {
-          testPointsItems: [{ testCaseId: 101, lastRunId: 10, lastResultId: 20, testCaseName: 'TC 101' }],
-          testCasesItems: [
-            {
-              workItem: {
-                id: 101,
-                workItemFields: [{ key: 'System.Title', value: 'TC 101' }],
-              },
-            },
-          ],
-        },
-      ]);
-      jest.spyOn(resultDataProvider as any, 'fetchMewpRequirementTypeNames').mockResolvedValueOnce([
-        'Requirement',
-      ]);
-      jest.spyOn(resultDataProvider as any, 'fetchWorkItemsByIds').mockResolvedValueOnce([
-        {
-          id: 9001,
-          fields: {
-            'System.WorkItemType': 'Requirement',
-            'System.Title': 'Requirement from query',
-            'Custom.CustomerId': 'SR3001',
-            'System.AreaPath': 'MEWP\\IL',
-          },
-          relations: [
-            {
-              rel: 'Microsoft.VSTS.Common.TestedBy-Forward',
-              url: 'https://dev.azure.com/org/_apis/wit/workItems/101',
-            },
-          ],
-        },
-      ]);
-      jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
-        {
-          testCaseId: 101,
-          testCase: { id: 101, name: 'TC 101' },
-          iteration: {
-            actionResults: [{ action: 'Validate SR3001', expected: '', outcome: 'Passed' }],
-          },
-        },
-      ]);
-
-      const TicketsProviderMock: any = require('../../modules/TicketsDataProvider').default;
-      TicketsProviderMock.mockImplementationOnce(() => ({
-        GetQueryResultsFromWiql: jest.fn().mockResolvedValue({
-          fetchedWorkItems: [
-            {
-              id: 9001,
-              fields: {
-                'System.WorkItemType': 'Requirement',
-                'System.Title': 'Requirement from query',
-                'Custom.CustomerId': 'SR3001',
-                'System.AreaPath': 'MEWP\\IL',
-              },
-            },
-          ],
-        }),
-      }));
-
-      const result = await (resultDataProvider as any).getMewpL2CoverageFlatResults(
-        '123',
-        mockProjectName,
-        [1],
-        {
-          linkedQueryMode: 'query',
-          testAssociatedQuery: { wiql: { href: 'https://example.com/wiql' } },
-        }
-      );
-
-      const row = result.rows.find((item: any) => item['Customer ID'] === 'SR3001');
-      expect(row).toEqual(
-        expect.objectContaining({
-          'Title (Customer name)': 'Requirement from query',
-          'Responsibility - SAPWBS (ESUK/IL)': 'IL',
-          'Test case id': 101,
-          'Test case title': 'TC 101',
-          'Number of passed steps': 1,
-          'Number of failed steps': 0,
-          'Number of not run tests': 0,
-        })
-      );
-
-      expect(TicketsProviderMock).toHaveBeenCalled();
-      const instance = TicketsProviderMock.mock.results[0].value;
-      expect(instance.GetQueryResultsFromWiql).toHaveBeenCalledWith(
-        'https://example.com/wiql',
-        true,
-        expect.any(Map)
-      );
-    });
-
     it('should map SR ids from steps and output requirement-test-case coverage rows', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
@@ -1387,7 +1292,16 @@ describe('ResultDataProvider', () => {
         4321
       );
 
-      expect(requirementId).toBe('4321');
+      expect(requirementId).toBe('SR4321');
+    });
+
+    it('should derive responsibility from Custom.SAPWBS when present', () => {
+      const responsibility = (resultDataProvider as any).deriveMewpResponsibility({
+        'Custom.SAPWBS': 'IL',
+        'System.AreaPath': 'MEWP\\ESUK',
+      });
+
+      expect(responsibility).toBe('IL');
     });
   });
 
