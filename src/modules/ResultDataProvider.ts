@@ -598,6 +598,69 @@ export default class ResultDataProvider {
         );
       }
 
+      const requirementBaseKeys = new Set<string>(
+        requirements.map((item) => String(item?.baseKey || '').trim()).filter((item) => !!item)
+      );
+      const externalL3L4BaseKeys = new Set<string>([...externalL3L4ByBaseKey.keys()]);
+      const externalL3L4OverlapKeys = [...externalL3L4BaseKeys].filter((key) => requirementBaseKeys.has(key));
+      const failedRequirementBaseKeys = new Set<string>();
+      const failedTestCaseIds = new Set<number>();
+      for (const [requirementBaseKey, byTestCase] of requirementIndex.entries()) {
+        for (const [testCaseId, counts] of byTestCase.entries()) {
+          if (Number(counts?.failed || 0) > 0) {
+            failedRequirementBaseKeys.add(requirementBaseKey);
+            failedTestCaseIds.add(testCaseId);
+          }
+        }
+      }
+      const externalBugTestCaseIds = new Set<number>([...externalBugsByTestCase.keys()]);
+      const externalBugFailedTestCaseOverlap = [...externalBugTestCaseIds].filter((id) =>
+        failedTestCaseIds.has(id)
+      );
+      const externalBugBaseKeys = new Set<string>();
+      for (const bugs of externalBugsByTestCase.values()) {
+        for (const bug of bugs || []) {
+          const key = String(bug?.requirementBaseKey || '').trim();
+          if (key) externalBugBaseKeys.add(key);
+        }
+      }
+      const externalBugRequirementOverlap = [...externalBugBaseKeys].filter((key) =>
+        requirementBaseKeys.has(key)
+      );
+      const externalBugFailedRequirementOverlap = [...externalBugBaseKeys].filter((key) =>
+        failedRequirementBaseKeys.has(key)
+      );
+      logger.info(
+        `MEWP coverage join diagnostics: requirementBaseKeys=${requirementBaseKeys.size} ` +
+          `failedRequirementBaseKeys=${failedRequirementBaseKeys.size} failedTestCases=${failedTestCaseIds.size}; ` +
+          `externalL3L4BaseKeys=${externalL3L4BaseKeys.size} externalL3L4Overlap=${externalL3L4OverlapKeys.length}; ` +
+          `externalBugTestCases=${externalBugTestCaseIds.size} externalBugFailedTestCaseOverlap=${externalBugFailedTestCaseOverlap.length}; ` +
+          `externalBugBaseKeys=${externalBugBaseKeys.size} externalBugRequirementOverlap=${externalBugRequirementOverlap.length} ` +
+          `externalBugFailedRequirementOverlap=${externalBugFailedRequirementOverlap.length}`
+      );
+      if (externalL3L4BaseKeys.size > 0 && externalL3L4OverlapKeys.length === 0) {
+        const sampleReq = [...requirementBaseKeys].slice(0, 5);
+        const sampleExt = [...externalL3L4BaseKeys].slice(0, 5);
+        logger.warn(
+          `MEWP coverage join diagnostics: no L3/L4 key overlap found. ` +
+            `sampleRequirementKeys=${sampleReq.join(', ')} sampleExternalL3L4Keys=${sampleExt.join(', ')}`
+        );
+      }
+      if (externalBugBaseKeys.size > 0 && externalBugRequirementOverlap.length === 0) {
+        const sampleReq = [...requirementBaseKeys].slice(0, 5);
+        const sampleExt = [...externalBugBaseKeys].slice(0, 5);
+        logger.warn(
+          `MEWP coverage join diagnostics: no bug requirement-key overlap found. ` +
+            `sampleRequirementKeys=${sampleReq.join(', ')} sampleExternalBugKeys=${sampleExt.join(', ')}`
+        );
+      }
+      if (externalBugTestCaseIds.size > 0 && externalBugFailedTestCaseOverlap.length === 0) {
+        logger.warn(
+          `MEWP coverage join diagnostics: no overlap between external bug test cases and failed test cases. ` +
+            `Bug rows remain empty because bugs are shown only for failed L2s.`
+        );
+      }
+
       const rows = this.buildMewpCoverageRows(
         requirements,
         requirementIndex,
