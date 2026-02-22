@@ -478,6 +478,45 @@ export default class ResultDataProvider {
         options?.externalL3L4File,
         requirementSapWbsByBaseKey
       );
+      const hasExternalBugsFile = !!String(
+        options?.externalBugsFile?.name ||
+          options?.externalBugsFile?.objectName ||
+          options?.externalBugsFile?.text ||
+          options?.externalBugsFile?.url ||
+          ''
+      ).trim();
+      const hasExternalL3L4File = !!String(
+        options?.externalL3L4File?.name ||
+          options?.externalL3L4File?.objectName ||
+          options?.externalL3L4File?.text ||
+          options?.externalL3L4File?.url ||
+          ''
+      ).trim();
+      const externalBugLinksCount = [...externalBugsByTestCase.values()].reduce(
+        (sum, items) => sum + (Array.isArray(items) ? items.length : 0),
+        0
+      );
+      const externalL3L4LinksCount = [...externalL3L4ByBaseKey.values()].reduce(
+        (sum, items) => sum + (Array.isArray(items) ? items.length : 0),
+        0
+      );
+      logger.info(
+        `MEWP coverage external ingestion summary: ` +
+          `bugsFileProvided=${hasExternalBugsFile} bugsTestCases=${externalBugsByTestCase.size} bugsLinks=${externalBugLinksCount}; ` +
+          `l3l4FileProvided=${hasExternalL3L4File} l3l4BaseKeys=${externalL3L4ByBaseKey.size} l3l4Links=${externalL3L4LinksCount}`
+      );
+      if (hasExternalBugsFile && externalBugLinksCount === 0) {
+        logger.warn(
+          `MEWP coverage: external bugs file was provided but produced 0 links. ` +
+            `Check SR/test-case/state values in ingestion logs.`
+        );
+      }
+      if (hasExternalL3L4File && externalL3L4LinksCount === 0) {
+        logger.warn(
+          `MEWP coverage: external L3/L4 file was provided but produced 0 links. ` +
+            `Check SR/AREA34/state/SAPWBS filters in ingestion logs.`
+        );
+      }
       if (requirements.length === 0) {
         return {
           ...defaultPayload,
@@ -566,6 +605,24 @@ export default class ResultDataProvider {
         linkedRequirementsByTestCase,
         externalL3L4ByBaseKey,
         externalBugsByTestCase
+      );
+      const coverageRowStats = rows.reduce(
+        (acc, row) => {
+          const hasBug = Number(row?.['Bug ID'] || 0) > 0;
+          const hasL3 = String(row?.['L3 REQ ID'] || '').trim() !== '';
+          const hasL4 = String(row?.['L4 REQ ID'] || '').trim() !== '';
+          if (hasBug) acc.bugRows += 1;
+          if (hasL3) acc.l3Rows += 1;
+          if (hasL4) acc.l4Rows += 1;
+          if (!hasBug && !hasL3 && !hasL4) acc.baseOnlyRows += 1;
+          return acc;
+        },
+        { bugRows: 0, l3Rows: 0, l4Rows: 0, baseOnlyRows: 0 }
+      );
+      logger.info(
+        `MEWP coverage output summary: requirements=${requirements.length} rows=${rows.length} ` +
+          `bugRows=${coverageRowStats.bugRows} l3Rows=${coverageRowStats.l3Rows} ` +
+          `l4Rows=${coverageRowStats.l4Rows} baseOnlyRows=${coverageRowStats.baseOnlyRows}`
       );
 
       return {
