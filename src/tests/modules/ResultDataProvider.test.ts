@@ -2,6 +2,8 @@ import { TFSServices } from '../../helpers/tfs';
 import ResultDataProvider from '../../modules/ResultDataProvider';
 import logger from '../../utils/logger';
 import Utils from '../../utils/testStepParserHelper';
+import axios from 'axios';
+import * as XLSX from 'xlsx';
 
 // Mock dependencies
 jest.mock('../../helpers/tfs');
@@ -23,6 +25,12 @@ describe('ResultDataProvider', () => {
   const mockToken = 'mock-token';
   const mockProjectName = 'test-project';
   const mockTestPlanId = '12345';
+  const buildWorkbookBuffer = (rows: any[][]): Buffer => {
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -1098,6 +1106,8 @@ describe('ResultDataProvider', () => {
         {
           workItemId: 5001,
           requirementId: 'SR1001',
+          baseKey: 'SR1001',
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
           title: 'Covered requirement',
           responsibility: 'ESUK',
           linkedTestCaseIds: [101],
@@ -1105,6 +1115,8 @@ describe('ResultDataProvider', () => {
         {
           workItemId: 5002,
           requirementId: 'SR1002',
+          baseKey: 'SR1002',
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
           title: 'Referenced from non-linked step text',
           responsibility: 'IL',
           linkedTestCaseIds: [],
@@ -1112,6 +1124,8 @@ describe('ResultDataProvider', () => {
         {
           workItemId: 5003,
           requirementId: 'SR1003',
+          baseKey: 'SR1003',
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
           title: 'Not covered by any test case',
           responsibility: 'IL',
           linkedTestCaseIds: [],
@@ -1125,11 +1139,11 @@ describe('ResultDataProvider', () => {
             actionResults: [
               {
                 action: 'Validate <b>S</b><b>R</b> 1 0 0 1 happy path',
-                expected: '',
+                expected: '<b>S</b><b>R</b> 1 0 0 1',
                 outcome: 'Passed',
               },
-              { action: 'Validate SR1001 failed flow', expected: '&nbsp;', outcome: 'Failed' },
-              { action: '', expected: 'Pending S R 1 0 0 1 scenario', outcome: 'Unspecified' },
+              { action: 'Validate SR1001 failed flow', expected: 'SR1001', outcome: 'Failed' },
+              { action: '', expected: 'S R 1 0 0 1', outcome: 'Unspecified' },
             ],
           },
         },
@@ -1146,7 +1160,7 @@ describe('ResultDataProvider', () => {
             stepId: '1',
             stepPosition: '1',
             action: 'Definition contains SR1002',
-            expected: '',
+            expected: 'SR1002',
             isSharedStepTitle: false,
           },
         ]);
@@ -1160,59 +1174,71 @@ describe('ResultDataProvider', () => {
       expect(result).toEqual(
         expect.objectContaining({
           sheetName: expect.stringContaining('MEWP L2 Coverage'),
-          columnOrder: expect.arrayContaining(['Customer ID', 'Test case id', 'Number of not run tests']),
+          columnOrder: expect.arrayContaining(['L2 REQ ID', 'L2 REQ Title', 'L2 Run Status']),
         })
       );
 
-      const covered = result.rows.find(
-        (row: any) => row['Customer ID'] === 'SR1001' && row['Test case id'] === 101
-      );
-      const inferredByStepText = result.rows.find(
-        (row: any) => row['Customer ID'] === 'SR1002' && row['Test case id'] === 102
-      );
-      const uncovered = result.rows.find(
-        (row: any) =>
-          row['Customer ID'] === 'SR1003' &&
-          (row['Test case id'] === '' || row['Test case id'] === undefined || row['Test case id'] === null)
-      );
+      const covered = result.rows.find((row: any) => row['L2 REQ ID'] === 'SR1001');
+      const inferredByStepText = result.rows.find((row: any) => row['L2 REQ ID'] === 'SR1002');
+      const uncovered = result.rows.find((row: any) => row['L2 REQ ID'] === 'SR1003');
 
       expect(covered).toEqual(
         expect.objectContaining({
-          'Title (Customer name)': 'Covered requirement',
-          'Responsibility - SAPWBS (ESUK/IL)': 'ESUK',
-          'Test case title': 'TC 101',
-          'Number of passed steps': 1,
-          'Number of failed steps': 1,
-          'Number of not run tests': 1,
+          'L2 REQ Title': 'Covered requirement',
+          'L2 SubSystem': '',
+          'L2 Run Status': 'Fail',
+          'Bug ID': '',
+          'L3 REQ ID': '',
+          'L4 REQ ID': '',
         })
       );
       expect(inferredByStepText).toEqual(
         expect.objectContaining({
-          'Title (Customer name)': 'Referenced from non-linked step text',
-          'Responsibility - SAPWBS (ESUK/IL)': 'IL',
-          'Test case title': 'TC 102',
-          'Number of passed steps': 0,
-          'Number of failed steps': 0,
-          'Number of not run tests': 1,
+          'L2 REQ Title': 'Referenced from non-linked step text',
+          'L2 SubSystem': '',
+          'L2 Run Status': 'Not Run',
         })
       );
       expect(uncovered).toEqual(
         expect.objectContaining({
-          'Title (Customer name)': 'Not covered by any test case',
-          'Responsibility - SAPWBS (ESUK/IL)': 'IL',
-          'Test case title': '',
-          'Number of passed steps': 0,
-          'Number of failed steps': 0,
-          'Number of not run tests': 0,
+          'L2 REQ Title': 'Not covered by any test case',
+          'L2 SubSystem': '',
+          'L2 Run Status': 'Not Run',
         })
       );
     });
 
     it('should extract SR ids from HTML/spacing and return unique ids per step text', () => {
       const text =
-        'A: <b>S</b><b>R</b> 0 0 0 1; B: SR0002; C: S R 0 0 0 3; D: SR0002; E: &lt;b&gt;SR&lt;/b&gt;0004';
+        '<b>S</b><b>R</b> 0 0 0 1; SR0002; S R 0 0 0 3; SR0002; &lt;b&gt;SR&lt;/b&gt;0004';
       const codes = (resultDataProvider as any).extractRequirementCodesFromText(text);
-      expect([...codes].sort()).toEqual(['SR1', 'SR2', 'SR3', 'SR4']);
+      expect([...codes].sort()).toEqual(['SR0001', 'SR0002', 'SR0003', 'SR0004']);
+    });
+
+    it('should keep only clean SR tokens and ignore noisy version/VVRM fragments', () => {
+      const extract = (text: string) =>
+        [...((resultDataProvider as any).extractRequirementCodesFromText(text) as Set<string>)].sort();
+
+      expect(extract('SR12413; SR24513; SR25135 VVRM2425')).toEqual(['SR12413', 'SR24513']);
+      expect(extract('SR12413; SR12412; SR12413-V3.24')).toEqual(['SR12412', 'SR12413']);
+      expect(extract('SR12413; SR12412; SR12413 V3.24')).toEqual(['SR12412', 'SR12413']);
+      expect(extract('SR12413, SR12412, SR12413-V3.24')).toEqual(['SR12412', 'SR12413']);
+
+      const extractWithSuffix = (text: string) =>
+        [
+          ...((resultDataProvider as any).extractRequirementCodesFromExpectedText(
+            text,
+            true
+          ) as Set<string>),
+        ].sort();
+      expect(extractWithSuffix('SR0095-2,3; SR0100-1,2,3,4')).toEqual([
+        'SR0095-2',
+        'SR0095-3',
+        'SR0100-1',
+        'SR0100-2',
+        'SR0100-3',
+        'SR0100-4',
+      ]);
     });
 
     it('should not backfill definition steps as not-run when a real run exists but has no action results', async () => {
@@ -1235,6 +1261,8 @@ describe('ResultDataProvider', () => {
         {
           workItemId: 7001,
           requirementId: 'SR2001',
+          baseKey: 'SR2001',
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
           title: 'Has run but no actions',
           responsibility: 'ESUK',
           linkedTestCaseIds: [101],
@@ -1269,15 +1297,11 @@ describe('ResultDataProvider', () => {
         [1]
       );
 
-      const row = result.rows.find(
-        (item: any) => item['Customer ID'] === 'SR2001' && item['Test case id'] === 101
-      );
+      const row = result.rows.find((item: any) => item['L2 REQ ID'] === 'SR2001');
       expect(parseSpy).not.toHaveBeenCalled();
       expect(row).toEqual(
         expect.objectContaining({
-          'Number of passed steps': 0,
-          'Number of failed steps': 0,
-          'Number of not run tests': 0,
+          'L2 Run Status': 'Not Run',
         })
       );
     });
@@ -1302,6 +1326,1411 @@ describe('ResultDataProvider', () => {
       });
 
       expect(responsibility).toBe('IL');
+    });
+
+    it('should derive responsibility from AreaPath suffix ATP/ATP\\\\ESUK when SAPWBS is empty', () => {
+      const esuk = (resultDataProvider as any).deriveMewpResponsibility({
+        'Custom.SAPWBS': '',
+        'System.AreaPath': 'MEWP\\Customer Requirements\\Level 2\\ATP\\ESUK',
+      });
+      const il = (resultDataProvider as any).deriveMewpResponsibility({
+        'Custom.SAPWBS': '',
+        'System.AreaPath': 'MEWP\\Customer Requirements\\Level 2\\ATP',
+      });
+
+      expect(esuk).toBe('ESUK');
+      expect(il).toBe('IL');
+    });
+
+    it('should emit additive rows for bugs and L3/L4 links without bug duplication', () => {
+      const requirements = [
+        {
+          requirementId: 'SR5303',
+          baseKey: 'SR5303',
+          title: 'Req 5303',
+          subSystem: 'Power',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [101],
+        },
+      ];
+
+      const requirementIndex = new Map([
+        [
+          'SR5303',
+          new Map([
+            [
+              101,
+              {
+                passed: 0,
+                failed: 1,
+                notRun: 0,
+              },
+            ],
+          ]),
+        ],
+      ]);
+
+      const observedTestCaseIdsByRequirement = new Map<string, Set<number>>([
+        ['SR5303', new Set([101])],
+      ]);
+
+      const linkedRequirementsByTestCase = new Map([
+        [
+          101,
+          {
+            baseKeys: new Set(['SR5303']),
+            fullCodes: new Set(['SR5303']),
+            bugIds: new Set([10003, 20003]),
+          },
+        ],
+      ]);
+
+      const externalBugsByTestCase = new Map([
+        [
+          101,
+          [
+            { id: 10003, title: 'Bug 10003', responsibility: 'Elisra', requirementBaseKey: 'SR5303' },
+            { id: 20003, title: 'Bug 20003', responsibility: 'ESUK', requirementBaseKey: 'SR5303' },
+          ],
+        ],
+      ]);
+
+      const l3l4ByBaseKey = new Map([
+        [
+          'SR5303',
+          [
+            { id: '9003', title: 'L3 9003', level: 'L3' as const },
+            { id: '9103', title: 'L4 9103', level: 'L4' as const },
+          ],
+        ],
+      ]);
+
+      const rows = (resultDataProvider as any).buildMewpCoverageRows(
+        requirements,
+        requirementIndex,
+        observedTestCaseIdsByRequirement,
+        linkedRequirementsByTestCase,
+        l3l4ByBaseKey,
+        externalBugsByTestCase
+      );
+
+      expect(rows).toHaveLength(4);
+      expect(rows.map((row: any) => row['Bug ID'])).toEqual([10003, 20003, '', '']);
+      expect(rows[2]).toEqual(
+        expect.objectContaining({
+          'L3 REQ ID': '9003',
+          'L4 REQ ID': '',
+        })
+      );
+      expect(rows[3]).toEqual(
+        expect.objectContaining({
+          'L3 REQ ID': '',
+          'L4 REQ ID': '9103',
+        })
+      );
+    });
+
+    it('should not emit bug rows from ADO-linked bug ids when external bugs source is empty', () => {
+      const requirements = [
+        {
+          requirementId: 'SR5304',
+          baseKey: 'SR5304',
+          title: 'Req 5304',
+          subSystem: 'Power',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [101],
+        },
+      ];
+      const requirementIndex = new Map([
+        [
+          'SR5304',
+          new Map([
+            [
+              101,
+              {
+                passed: 0,
+                failed: 1,
+                notRun: 0,
+              },
+            ],
+          ]),
+        ],
+      ]);
+      const observedTestCaseIdsByRequirement = new Map<string, Set<number>>([
+        ['SR5304', new Set([101])],
+      ]);
+      const linkedRequirementsByTestCase = new Map([
+        [
+          101,
+          {
+            baseKeys: new Set(['SR5304']),
+            fullCodes: new Set(['SR5304']),
+            bugIds: new Set([55555]), // must be ignored in MEWP coverage mode
+          },
+        ],
+      ]);
+
+      const rows = (resultDataProvider as any).buildMewpCoverageRows(
+        requirements,
+        requirementIndex,
+        observedTestCaseIdsByRequirement,
+        linkedRequirementsByTestCase,
+        new Map(),
+        new Map()
+      );
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]['L2 Run Status']).toBe('Fail');
+      expect(rows[0]['Bug ID']).toBe('');
+      expect(rows[0]['Bug Title']).toBe('');
+      expect(rows[0]['Bug Responsibility']).toBe('');
+    });
+
+    it('should fallback bug responsibility from requirement when external bug row has unknown responsibility', () => {
+      const requirements = [
+        {
+          requirementId: 'SR5305',
+          baseKey: 'SR5305',
+          title: 'Req 5305',
+          subSystem: 'Auth',
+          responsibility: 'IL',
+          linkedTestCaseIds: [202],
+        },
+      ];
+      const requirementIndex = new Map([
+        [
+          'SR5305',
+          new Map([
+            [
+              202,
+              {
+                passed: 0,
+                failed: 1,
+                notRun: 0,
+              },
+            ],
+          ]),
+        ],
+      ]);
+      const observedTestCaseIdsByRequirement = new Map<string, Set<number>>([
+        ['SR5305', new Set([202])],
+      ]);
+      const linkedRequirementsByTestCase = new Map([
+        [
+          202,
+          {
+            baseKeys: new Set(['SR5305']),
+            fullCodes: new Set(['SR5305']),
+            bugIds: new Set(),
+          },
+        ],
+      ]);
+      const externalBugsByTestCase = new Map([
+        [
+          202,
+          [
+            {
+              id: 99001,
+              title: 'External bug without SAPWBS',
+              responsibility: 'Unknown',
+              requirementBaseKey: 'SR5305',
+            },
+          ],
+        ],
+      ]);
+
+      const rows = (resultDataProvider as any).buildMewpCoverageRows(
+        requirements,
+        requirementIndex,
+        observedTestCaseIdsByRequirement,
+        linkedRequirementsByTestCase,
+        new Map(),
+        externalBugsByTestCase
+      );
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]['Bug ID']).toBe(99001);
+      expect(rows[0]['Bug Responsibility']).toBe('Elisra');
+    });
+  });
+
+  describe('getMewpInternalValidationFlatResults', () => {
+    it('should skip test cases with no in-scope expected requirements and no linked requirements', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [
+            { testCaseId: 101, testCaseName: 'TC 101' },
+            { testCaseId: 102, testCaseName: 'TC 102' },
+          ],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 101,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+            {
+              workItem: {
+                id: 102,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 5001,
+          requirementId: 'SR0001',
+          baseKey: 'SR0001',
+          title: 'Req 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [101],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([[101, { baseKeys: new Set(['SR0001']), fullCodes: new Set(['SR0001']) }]])
+      );
+      jest
+        .spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps')
+        .mockResolvedValueOnce([
+          {
+            stepId: '1',
+            stepPosition: '1',
+            action: '',
+            expected: 'SR0001',
+            isSharedStepTitle: false,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            stepId: '1',
+            stepPosition: '1',
+            action: '',
+            expected: '',
+            isSharedStepTitle: false,
+          },
+        ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(2);
+      expect(result.rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            'Test Case ID': 101,
+            'Validation Status': 'Pass',
+            'Mentioned but Not Linked': '',
+            'Linked but Not Mentioned': '',
+          }),
+          expect.objectContaining({
+            'Test Case ID': 102,
+            'Validation Status': 'Pass',
+            'Mentioned but Not Linked': '',
+            'Linked but Not Mentioned': '',
+          }),
+        ])
+      );
+    });
+
+    it('should ignore non-L2 SR mentions and still report only real L2 discrepancies', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 101, testCaseName: 'TC 101' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 101,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 5001,
+          requirementId: 'SR0001',
+          baseKey: 'SR0001',
+          title: 'Req 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [101],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map()
+      );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: '',
+          expected: 'SR0001; SR9999',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 101,
+          'Mentioned but Not Linked': 'Step 1: SR0001',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Fail',
+        })
+      );
+    });
+
+    it('should emit Direction A rows with step context for missing sibling links', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 101, testCaseName: 'TC 101' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 101,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 5001,
+          requirementId: 'SR0001',
+          baseKey: 'SR0001',
+          title: 'Req parent',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [101],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 5002,
+          requirementId: 'SR0001-1',
+          baseKey: 'SR0001',
+          title: 'Req child',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2\\MOP',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([[101, { baseKeys: new Set(['SR0001']), fullCodes: new Set(['SR0001']) }]])
+      );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '2',
+          stepPosition: '2',
+          action: '',
+          expected: 'SR0001; SR0002',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            'Test Case ID': 101,
+            'Mentioned but Not Linked': expect.stringContaining('Step 2: SR0001-1'),
+            'Validation Status': 'Fail',
+          }),
+        ])
+      );
+    });
+
+    it('should not duplicate Direction A discrepancy when same requirement is repeated in multiple steps', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 101, testCaseName: 'TC 101' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 101,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 5001,
+          requirementId: 'SR0001',
+          baseKey: 'SR0001',
+          title: 'Req 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest
+        .spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase')
+        .mockResolvedValueOnce(new Map());
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: '',
+          expected: 'SR0001',
+          isSharedStepTitle: false,
+        },
+        {
+          stepId: '2',
+          stepPosition: '2',
+          action: '',
+          expected: 'SR0001',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 101,
+          'Mentioned but Not Linked': 'Step 1: SR0001',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Fail',
+        })
+      );
+    });
+
+    it('should produce one detailed row per test case with correct bidirectional discrepancies', async () => {
+      const mockDetailedStepsByTestCase = new Map<number, any[]>([
+        [
+          201,
+          [
+            {
+              stepId: '1',
+              stepPosition: '1',
+              action: 'Validate parent SR0511 and SR0095 siblings',
+              expected: '<b>sr0511</b>; SR0095-2,3; VVRM-05',
+              isSharedStepTitle: false,
+            },
+            {
+              stepId: '2',
+              stepPosition: '2',
+              action: 'Noisy requirement-like token should be ignored',
+              expected: 'SR0511-V3.24',
+              isSharedStepTitle: false,
+            },
+            {
+              stepId: '3',
+              stepPosition: '3',
+              action: 'Regression note',
+              expected: 'Verification note only',
+              isSharedStepTitle: false,
+            },
+          ],
+        ],
+        [
+          202,
+          [
+            {
+              stepId: '1',
+              stepPosition: '1',
+              action: 'Linked SR0200 exists but is not cleanly mentioned in expected result',
+              expected: 'VVRM-22; SR0200 V3.1',
+              isSharedStepTitle: false,
+            },
+            {
+              stepId: '2',
+              stepPosition: '2',
+              action: 'Execution notes',
+              expected: 'Notes without SR requirement token',
+              isSharedStepTitle: false,
+            },
+          ],
+        ],
+        [
+          203,
+          [
+            {
+              stepId: '1',
+              stepPosition: '1',
+              action: 'Primary requirement validation for SR0100-1',
+              expected: '<i>SR0100-1</i>',
+              isSharedStepTitle: false,
+            },
+            {
+              stepId: '3',
+              stepPosition: '3',
+              action: 'Repeated mention should not create duplicate mismatch',
+              expected: 'SR0100-1; SR0100-1',
+              isSharedStepTitle: false,
+            },
+          ],
+        ],
+      ]);
+      const mockLinkedRequirementsByTestCase = new Map<number, any>([
+        [
+          201,
+          {
+            baseKeys: new Set(['SR0511', 'SR0095', 'SR8888']),
+            fullCodes: new Set(['SR0511', 'SR0095-2', 'SR8888']),
+          },
+        ],
+        [
+          202,
+          {
+            baseKeys: new Set(['SR0200']),
+            fullCodes: new Set(['SR0200']),
+          },
+        ],
+        [
+          203,
+          {
+            baseKeys: new Set(['SR0100']),
+            fullCodes: new Set(['SR0100-1']),
+          },
+        ],
+      ]);
+
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [
+            { testCaseId: 201, testCaseName: 'TC 201 - Mixed discrepancies' },
+            { testCaseId: 202, testCaseName: 'TC 202 - Link only' },
+            { testCaseId: 203, testCaseName: 'TC 203 - Fully valid' },
+          ],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 201,
+                workItemFields: [{ key: 'Steps', value: '<steps id="mock-steps-tc-201"></steps>' }],
+              },
+            },
+            {
+              workItem: {
+                id: 202,
+                workItemFields: [{ key: 'Steps', value: '<steps id="mock-steps-tc-202"></steps>' }],
+              },
+            },
+            {
+              workItem: {
+                id: 203,
+                workItemFields: [{ key: 'Steps', value: '<steps id="mock-steps-tc-203"></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 6001,
+          requirementId: 'SR0511',
+          baseKey: 'SR0511',
+          title: 'Parent 0511',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [201],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 6002,
+          requirementId: 'SR0511-1',
+          baseKey: 'SR0511',
+          title: 'Child 0511-1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2\\MOP',
+        },
+        {
+          workItemId: 6003,
+          requirementId: 'SR0511-2',
+          baseKey: 'SR0511',
+          title: 'Child 0511-2',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2\\MOP',
+        },
+        {
+          workItemId: 6004,
+          requirementId: 'SR0095-2',
+          baseKey: 'SR0095',
+          title: 'SR0095 child 2',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2\\MOP',
+        },
+        {
+          workItemId: 6005,
+          requirementId: 'SR0095-3',
+          baseKey: 'SR0095',
+          title: 'SR0095 child 3',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2\\MOP',
+        },
+        {
+          workItemId: 6006,
+          requirementId: 'SR0200',
+          baseKey: 'SR0200',
+          title: 'SR0200 standalone',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [202],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 6007,
+          requirementId: 'SR0100-1',
+          baseKey: 'SR0100',
+          title: 'SR0100 child 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [203],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2\\MOP',
+        },
+      ]);
+      jest
+        .spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase')
+        .mockResolvedValueOnce(mockLinkedRequirementsByTestCase);
+      jest
+        .spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps')
+        .mockImplementation(async (...args: unknown[]) => {
+          const stepsXml = String(args?.[0] || '');
+          const testCaseMatch = /mock-steps-tc-(\d+)/i.exec(stepsXml);
+          const testCaseId = Number(testCaseMatch?.[1] || 0);
+          return mockDetailedStepsByTestCase.get(testCaseId) || [];
+        });
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(3);
+      const byTestCase = new Map<number, any>(result.rows.map((row: any) => [row['Test Case ID'], row]));
+      expect(new Set(result.rows.map((row: any) => row['Test Case ID']))).toEqual(new Set([201, 202, 203]));
+
+      expect(byTestCase.get(201)).toEqual(
+        expect.objectContaining({
+          'Test Case Title': 'TC 201 - Mixed discrepancies',
+          'Mentioned but Not Linked': 'Step 1: SR0095-3, SR0511-1, SR0511-2',
+          'Linked but Not Mentioned': 'SR8888',
+          'Validation Status': 'Fail',
+        })
+      );
+      expect(String(byTestCase.get(201)['Mentioned but Not Linked'] || '')).not.toContain('VVRM');
+
+      expect(byTestCase.get(202)).toEqual(
+        expect.objectContaining({
+          'Test Case Title': 'TC 202 - Link only',
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': 'SR0200',
+          'Validation Status': 'Fail',
+        })
+      );
+
+      expect(byTestCase.get(203)).toEqual(
+        expect.objectContaining({
+          'Test Case Title': 'TC 203 - Fully valid',
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Pass',
+        })
+      );
+
+      expect((resultDataProvider as any).testStepParserHelper.parseTestSteps).toHaveBeenCalledTimes(3);
+      const parseCalls = ((resultDataProvider as any).testStepParserHelper.parseTestSteps as jest.Mock).mock.calls;
+      const parsedCaseIds = parseCalls
+        .map(([xml]: [string]) => {
+          const match = /mock-steps-tc-(\d+)/i.exec(String(xml || ''));
+          return Number(match?.[1] || 0);
+        })
+        .filter((id: number) => Number.isFinite(id) && id > 0);
+      expect(new Set(parsedCaseIds)).toEqual(new Set([201, 202, 203]));
+    });
+
+    it('should parse TC-0042 mixed expected text and keep only valid SR requirement codes', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 42, testCaseName: 'TC-0042' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 42,
+                workItemFields: [{ key: 'Steps', value: '<steps id="mock-steps-tc-0042"></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 7001,
+          requirementId: 'SR0036',
+          baseKey: 'SR0036',
+          title: 'SR0036',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7002,
+          requirementId: 'SR0215',
+          baseKey: 'SR0215',
+          title: 'SR0215',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7003,
+          requirementId: 'SR0539',
+          baseKey: 'SR0539',
+          title: 'SR0539',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7004,
+          requirementId: 'SR0348',
+          baseKey: 'SR0348',
+          title: 'SR0348',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7005,
+          requirementId: 'SR0027',
+          baseKey: 'SR0027',
+          title: 'SR0027',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7006,
+          requirementId: 'SR0041',
+          baseKey: 'SR0041',
+          title: 'SR0041',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7007,
+          requirementId: 'SR0550',
+          baseKey: 'SR0550',
+          title: 'SR0550',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7008,
+          requirementId: 'SR0550-2',
+          baseKey: 'SR0550',
+          title: 'SR0550-2',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2\\MOP',
+        },
+        {
+          workItemId: 7009,
+          requirementId: 'SR0817',
+          baseKey: 'SR0817',
+          title: 'SR0817',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7010,
+          requirementId: 'SR0818',
+          baseKey: 'SR0818',
+          title: 'SR0818',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 7011,
+          requirementId: 'SR0859',
+          baseKey: 'SR0859',
+          title: 'SR0859',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest
+        .spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase')
+        .mockResolvedValueOnce(
+          new Map([
+            [
+              42,
+              {
+                baseKeys: new Set([
+                  'SR0036',
+                  'SR0215',
+                  'SR0539',
+                  'SR0348',
+                  'SR0041',
+                  'SR0550',
+                  'SR0817',
+                  'SR0818',
+                  'SR0859',
+                ]),
+                fullCodes: new Set([
+                  'SR0036',
+                  'SR0215',
+                  'SR0539',
+                  'SR0348',
+                  'SR0041',
+                  'SR0550',
+                  'SR0550-2',
+                  'SR0817',
+                  'SR0818',
+                  'SR0859',
+                ]),
+              },
+            ],
+          ])
+        );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action:
+            'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.',
+          expected:
+            'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. (SR0036; SR0215; VVRM-1; SR0817-V3.2; SR0818-V3.3; SR0859-V3.4)',
+          isSharedStepTitle: false,
+        },
+        {
+          stepId: '2',
+          stepPosition: '2',
+          action:
+            'Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.',
+          expected:
+            'Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. (SR0539; SR0348; VVRM-1)',
+          isSharedStepTitle: false,
+        },
+        {
+          stepId: '3',
+          stepPosition: '3',
+          action:
+            'Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.',
+          expected:
+            'Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. (SR0027, SR0036; SR0041; VVRM-2)',
+          isSharedStepTitle: false,
+        },
+        {
+          stepId: '4',
+          stepPosition: '4',
+          action:
+            'Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.',
+          expected:
+            'Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. (SR0550-2)',
+          isSharedStepTitle: false,
+        },
+        {
+          stepId: '5',
+          stepPosition: '5',
+          action: 'Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit.',
+          expected: 'Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit. (VVRM-1)',
+          isSharedStepTitle: false,
+        },
+        {
+          stepId: '6',
+          stepPosition: '6',
+          action:
+            'Neque porro quisquam est qui dolorem ipsum quia dolor sit amet consectetur adipisci velit.',
+          expected:
+            'Neque porro quisquam est qui dolorem ipsum quia dolor sit amet consectetur adipisci velit. (SR0041; SR0550; VVRM-3)',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 42,
+          'Test Case Title': 'TC-0042',
+          'Mentioned but Not Linked': 'Step 3: SR0027',
+          'Linked but Not Mentioned': 'SR0817; SR0818; SR0859',
+          'Validation Status': 'Fail',
+        })
+      );
+      expect(String(result.rows[0]['Mentioned but Not Linked'] || '')).not.toContain('VVRM');
+      expect(String(result.rows[0]['Linked but Not Mentioned'] || '')).not.toContain('VVRM');
+    });
+  });
+
+  describe('MEWP rel fallback scoping', () => {
+    it('should fallback to previous Rel run when latest selected Rel has no run for a test case', async () => {
+      const suites = [
+        { testSuiteId: 10, suiteName: 'Rel10 / Validation' },
+        { testSuiteId: 11, suiteName: 'Rel11 / Validation' },
+      ];
+      const allSuites = [
+        { testSuiteId: 10, suiteName: 'Rel10 / Validation' },
+        { testSuiteId: 11, suiteName: 'Rel11 / Validation' },
+      ];
+      const rawTestData = [
+        {
+          suiteName: 'Rel10 / Validation',
+          testPointsItems: [
+            { testCaseId: 501, lastRunId: 100, lastResultId: 200 },
+            { testCaseId: 502, lastRunId: 300, lastResultId: 400 },
+          ],
+          testCasesItems: [{ workItem: { id: 501 } }, { workItem: { id: 502 } }],
+        },
+        {
+          suiteName: 'Rel11 / Validation',
+          testPointsItems: [
+            { testCaseId: 501, lastRunId: 0, lastResultId: 0 },
+            { testCaseId: 502, lastRunId: 500, lastResultId: 600 },
+          ],
+          testCasesItems: [{ workItem: { id: 501 } }, { workItem: { id: 502 } }],
+        },
+      ];
+
+      const fetchSuitesSpy = jest
+        .spyOn(resultDataProvider as any, 'fetchTestSuites')
+        .mockResolvedValueOnce(suites)
+        .mockResolvedValueOnce(allSuites);
+      const fetchDataSpy = jest
+        .spyOn(resultDataProvider as any, 'fetchTestData')
+        .mockResolvedValueOnce(rawTestData);
+
+      const scoped = await (resultDataProvider as any).fetchMewpScopedTestData(
+        '123',
+        mockProjectName,
+        [11],
+        true
+      );
+
+      expect(fetchSuitesSpy).toHaveBeenCalledTimes(2);
+      expect(fetchDataSpy).toHaveBeenCalledTimes(1);
+      expect(scoped).toHaveLength(1);
+      const selectedPoints = scoped[0].testPointsItems;
+      const tc501 = selectedPoints.find((item: any) => item.testCaseId === 501);
+      const tc502 = selectedPoints.find((item: any) => item.testCaseId === 502);
+      expect(tc501).toEqual(expect.objectContaining({ lastRunId: 100, lastResultId: 200 }));
+      expect(tc502).toEqual(expect.objectContaining({ lastRunId: 500, lastResultId: 600 }));
+    });
+  });
+
+  describe('MEWP external ingestion validation/parsing', () => {
+    const validBugsSource = {
+      name: 'bugs.xlsx',
+      url: 'https://minio.local/mewp-external-ingestion/MEWP/mewp-external-ingestion/bugs/bugs.xlsx',
+      sourceType: 'mewpExternalIngestion',
+    };
+    const validL3L4Source = {
+      name: 'l3l4.xlsx',
+      url: 'https://minio.local/mewp-external-ingestion/MEWP/mewp-external-ingestion/l3l4/l3l4.xlsx',
+      sourceType: 'mewpExternalIngestion',
+    };
+
+    it('should validate external files when required columns exist in A3 header row', async () => {
+      const bugsBuffer = buildWorkbookBuffer([
+        ['', '', '', '', ''],
+        ['', '', '', '', ''],
+        ['Elisra_SortIndex', 'SR', 'TargetWorkItemId', 'Title', 'TargetState'],
+        ['101', 'SR0001', '9001', 'Bug one', 'Active'],
+      ]);
+      const l3l4Buffer = buildWorkbookBuffer([
+        ['', '', '', '', '', '', '', ''],
+        ['', '', '', '', '', '', '', ''],
+        [
+          'SR',
+          'AREA 34',
+          'TargetWorkItemId Level 3',
+          'TargetTitleLevel3',
+          'TargetStateLevel 3',
+          'TargetWorkItemIdLevel 4',
+          'TargetTitleLevel4',
+          'TargetStateLevel 4',
+        ],
+        ['SR0001', 'Level 3', '7001', 'Req L3', 'Active', '', '', ''],
+      ]);
+      const axiosSpy = jest
+        .spyOn(axios, 'get')
+        .mockResolvedValueOnce({ data: bugsBuffer, headers: {} } as any)
+        .mockResolvedValueOnce({ data: l3l4Buffer, headers: {} } as any);
+
+      const result = await (resultDataProvider as any).validateMewpExternalFiles({
+        externalBugsFile: validBugsSource,
+        externalL3L4File: validL3L4Source,
+      });
+
+      expect(axiosSpy).toHaveBeenCalledTimes(2);
+      expect(result.valid).toBe(true);
+      expect(result.bugs).toEqual(
+        expect.objectContaining({
+          valid: true,
+          headerRow: 'A3',
+          matchedRequiredColumns: 5,
+        })
+      );
+      expect(result.l3l4).toEqual(
+        expect.objectContaining({
+          valid: true,
+          headerRow: 'A3',
+          matchedRequiredColumns: 8,
+        })
+      );
+    });
+
+    it('should accept A1 fallback header row for backward compatibility', async () => {
+      const bugsBuffer = buildWorkbookBuffer([
+        ['Elisra_SortIndex', 'SR', 'TargetWorkItemId', 'Title', 'TargetState'],
+        ['101', 'SR0001', '9001', 'Bug one', 'Active'],
+      ]);
+      jest.spyOn(axios, 'get').mockResolvedValueOnce({ data: bugsBuffer, headers: {} } as any);
+
+      const result = await (resultDataProvider as any).validateMewpExternalFiles({
+        externalBugsFile: validBugsSource,
+      });
+
+      expect(result.valid).toBe(true);
+      expect(result.bugs).toEqual(
+        expect.objectContaining({
+          valid: true,
+          headerRow: 'A1',
+        })
+      );
+    });
+
+    it('should fail validation when required columns are missing', async () => {
+      const invalidBuffer = buildWorkbookBuffer([
+        ['', '', ''],
+        ['', '', ''],
+        ['Elisra_SortIndex', 'TargetWorkItemId', 'TargetState'],
+        ['101', '9001', 'Active'],
+      ]);
+      jest.spyOn(axios, 'get').mockResolvedValueOnce({ data: invalidBuffer, headers: {} } as any);
+
+      const result = await (resultDataProvider as any).validateMewpExternalFiles({
+        externalBugsFile: validBugsSource,
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.bugs).toEqual(
+        expect.objectContaining({
+          valid: false,
+          matchedRequiredColumns: 3,
+          missingRequiredColumns: expect.arrayContaining(['SR', 'Title']),
+        })
+      );
+    });
+
+    it('should reject files from non-dedicated bucket/object path', async () => {
+      const result = await (resultDataProvider as any).validateMewpExternalFiles({
+        externalBugsFile: {
+          name: 'bugs.xlsx',
+          url: 'https://minio.local/mewp-external-ingestion/MEWP/other-prefix/bugs.xlsx',
+          sourceType: 'mewpExternalIngestion',
+        },
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.bugs?.message || '').toContain('Invalid object path');
+    });
+
+    it('should filter external bugs by SR/state and dedupe by bug+requirement', async () => {
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce([
+        {
+          Elisra_SortIndex: '101',
+          SR: 'SR0001',
+          TargetWorkItemId: '9001',
+          Title: 'Bug one',
+          TargetState: 'Active',
+          SAPWBS: 'ESUK',
+        },
+        {
+          Elisra_SortIndex: '101',
+          SR: 'SR0001',
+          TargetWorkItemId: '9001',
+          Title: 'Bug one duplicate',
+          TargetState: 'Active',
+        },
+        {
+          Elisra_SortIndex: '101',
+          SR: '',
+          TargetWorkItemId: '9002',
+          Title: 'Missing SR',
+          TargetState: 'Active',
+        },
+        {
+          Elisra_SortIndex: '101',
+          SR: 'SR0002',
+          TargetWorkItemId: '9003',
+          Title: 'Closed bug',
+          TargetState: 'Closed',
+        },
+      ]);
+
+      const map = await (resultDataProvider as any).loadExternalBugsByTestCase(validBugsSource);
+      const bugs = map.get(101) || [];
+
+      expect(bugs).toHaveLength(1);
+      expect(bugs[0]).toEqual(
+        expect.objectContaining({
+          id: 9001,
+          requirementBaseKey: 'SR0001',
+          responsibility: 'ESUK',
+        })
+      );
+    });
+
+    it('should require Elisra_SortIndex and ignore rows that only provide WorkItemId', async () => {
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce([
+        {
+          WorkItemId: '101',
+          SR: 'SR0001',
+          TargetWorkItemId: '9010',
+          Title: 'Bug without Elisra_SortIndex',
+          TargetState: 'Active',
+        },
+      ]);
+
+      const map = await (resultDataProvider as any).loadExternalBugsByTestCase(validBugsSource);
+      expect(map.size).toBe(0);
+    });
+
+    it('should parse external L3/L4 file using AREA 34 semantics and terminal-state filtering', async () => {
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce([
+        {
+          SR: 'SR0001',
+          'AREA 34': 'Level 4',
+          'TargetWorkItemId Level 3': '7001',
+          TargetTitleLevel3: 'L4 From Level3 Column',
+          'TargetStateLevel 3': 'Active',
+        },
+        {
+          SR: 'SR0001',
+          'AREA 34': 'Level 3',
+          'TargetWorkItemId Level 3': '7002',
+          TargetTitleLevel3: 'L3 Requirement',
+          'TargetStateLevel 3': 'Active',
+          'TargetWorkItemIdLevel 4': '7003',
+          TargetTitleLevel4: 'L4 Requirement',
+          'TargetStateLevel 4': 'Closed',
+        },
+      ]);
+
+      const map = await (resultDataProvider as any).loadExternalL3L4ByBaseKey(validL3L4Source);
+      expect(map.get('SR0001')).toEqual([
+        { id: '7002', title: 'L3 Requirement', level: 'L3' },
+        { id: '7001', title: 'L4 From Level3 Column', level: 'L4' },
+      ]);
+    });
+
+    it('should exclude external open L3/L4 rows when SAPWBS resolves to ESUK', async () => {
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce([
+        {
+          SR: 'SR0001',
+          'AREA 34': 'Level 3',
+          'TargetWorkItemId Level 3': '7101',
+          TargetTitleLevel3: 'L3 ESUK',
+          'TargetStateLevel 3': 'Active',
+          'TargetSapWbsLevel 3': 'ESUK',
+          'TargetWorkItemIdLevel 4': '7201',
+          TargetTitleLevel4: 'L4 IL',
+          'TargetStateLevel 4': 'Active',
+          'TargetSapWbsLevel 4': 'IL',
+        },
+        {
+          SR: 'SR0001',
+          'AREA 34': 'Level 3',
+          'TargetWorkItemId Level 3': '7102',
+          TargetTitleLevel3: 'L3 IL',
+          'TargetStateLevel 3': 'Active',
+          'TargetSapWbsLevel 3': 'IL',
+        },
+      ]);
+
+      const map = await (resultDataProvider as any).loadExternalL3L4ByBaseKey(validL3L4Source);
+      expect(map.get('SR0001')).toEqual([
+        { id: '7102', title: 'L3 IL', level: 'L3' },
+        { id: '7201', title: 'L4 IL', level: 'L4' },
+      ]);
+    });
+
+    it('should fallback L3/L4 SAPWBS exclusion from SR-mapped requirement when row SAPWBS is empty', async () => {
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce([
+        {
+          SR: 'SR0001',
+          'AREA 34': 'Level 3',
+          'TargetWorkItemId Level 3': '7301',
+          TargetTitleLevel3: 'L3 From ESUK Requirement',
+          'TargetStateLevel 3': 'Active',
+          'TargetSapWbsLevel 3': '',
+        },
+        {
+          SR: 'SR0002',
+          'AREA 34': 'Level 3',
+          'TargetWorkItemId Level 3': '7302',
+          TargetTitleLevel3: 'L3 From IL Requirement',
+          'TargetStateLevel 3': 'Active',
+          'TargetSapWbsLevel 3': '',
+        },
+      ]);
+
+      const map = await (resultDataProvider as any).loadExternalL3L4ByBaseKey(
+        validL3L4Source,
+        new Map([
+          ['SR0001', 'ESUK'],
+          ['SR0002', 'IL'],
+        ])
+      );
+
+      expect(map.has('SR0001')).toBe(false);
+      expect(map.get('SR0002')).toEqual([{ id: '7302', title: 'L3 From IL Requirement', level: 'L3' }]);
+    });
+
+    it('should resolve bug responsibility from AreaPath when SAPWBS is empty', () => {
+      const fromEsukAreaPath = (resultDataProvider as any).resolveBugResponsibility({
+        'Custom.SAPWBS': '',
+        'System.AreaPath': 'MEWP\\Customer Requirements\\Level 2\\ATP\\ESUK',
+      });
+      const fromIlAreaPath = (resultDataProvider as any).resolveBugResponsibility({
+        'Custom.SAPWBS': '',
+        'System.AreaPath': 'MEWP\\Customer Requirements\\Level 2\\ATP',
+      });
+      const unknown = (resultDataProvider as any).resolveBugResponsibility({
+        'Custom.SAPWBS': '',
+        'System.AreaPath': 'MEWP\\Other\\Area',
+      });
+
+      expect(fromEsukAreaPath).toBe('ESUK');
+      expect(fromIlAreaPath).toBe('Elisra');
+      expect(unknown).toBe('Unknown');
+    });
+
+    it('should handle 1000 external bug rows and keep only in-scope parsed items', async () => {
+      const rows: any[] = [];
+      for (let i = 1; i <= 1000; i++) {
+        rows.push({
+          Elisra_SortIndex: String(4000 + (i % 20)),
+          SR: `SR${String(6000 + (i % 50)).padStart(4, '0')}`,
+          TargetWorkItemId: String(900000 + i),
+          Title: `Bug ${i}`,
+          TargetState: i % 10 === 0 ? 'Closed' : 'Active',
+          SAPWBS: i % 2 === 0 ? 'ESUK' : 'IL',
+        });
+      }
+
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce(rows);
+
+      const startedAt = Date.now();
+      const map = await (resultDataProvider as any).loadExternalBugsByTestCase({
+        name: 'bulk-bugs.xlsx',
+        url: 'https://minio.local/mewp-external-ingestion/MEWP/mewp-external-ingestion/bugs/bulk-bugs.xlsx',
+        sourceType: 'mewpExternalIngestion',
+      });
+      const elapsedMs = Date.now() - startedAt;
+
+      const totalParsed = [...map.values()].reduce((sum, items) => sum + (items?.length || 0), 0);
+      expect(totalParsed).toBe(900); // every 10th row is closed and filtered out
+      expect(elapsedMs).toBeLessThan(5000);
+    });
+
+    it('should handle 1000 external L3/L4 rows and map all active links', async () => {
+      const rows: any[] = [];
+      for (let i = 1; i <= 1000; i++) {
+        rows.push({
+          SR: `SR${String(7000 + (i % 25)).padStart(4, '0')}`,
+          'AREA 34': i % 3 === 0 ? 'Level 4' : 'Level 3',
+          'TargetWorkItemId Level 3': String(800000 + i),
+          TargetTitleLevel3: `L3/L4 Title ${i}`,
+          'TargetStateLevel 3': i % 11 === 0 ? 'Resolved' : 'Active',
+          'TargetWorkItemIdLevel 4': String(810000 + i),
+          TargetTitleLevel4: `L4 Title ${i}`,
+          'TargetStateLevel 4': i % 13 === 0 ? 'Closed' : 'Active',
+        });
+      }
+
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce(rows);
+
+      const startedAt = Date.now();
+      const map = await (resultDataProvider as any).loadExternalL3L4ByBaseKey({
+        name: 'bulk-l3l4.xlsx',
+        url: 'https://minio.local/mewp-external-ingestion/MEWP/mewp-external-ingestion/l3l4/bulk-l3l4.xlsx',
+        sourceType: 'mewpExternalIngestion',
+      });
+      const elapsedMs = Date.now() - startedAt;
+
+      const totalLinks = [...map.values()].reduce((sum, items) => sum + (items?.length || 0), 0);
+      expect(totalLinks).toBeGreaterThan(700);
+      expect(elapsedMs).toBeLessThan(5000);
+    });
+  });
+
+  describe('MEWP high-volume requirement token parsing', () => {
+    it('should parse 1000 expected-result requirement tokens with noisy fragments', () => {
+      const tokens: string[] = [];
+      for (let i = 1; i <= 1000; i++) {
+        const code = `SR${String(10000 + i)}`;
+        tokens.push(code);
+        if (i % 100 === 0) tokens.push(`${code} V3.24`);
+        if (i % 125 === 0) tokens.push(`${code} VVRM2425`);
+      }
+      const sourceText = tokens.join('; ');
+
+      const startedAt = Date.now();
+      const codes = (resultDataProvider as any).extractRequirementCodesFromText(sourceText) as Set<string>;
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(codes.size).toBe(1000);
+      expect(codes.has('SR10001')).toBe(true);
+      expect(codes.has('SR11000')).toBe(true);
+      expect(elapsedMs).toBeLessThan(3000);
     });
   });
 
