@@ -472,6 +472,11 @@ export default class ResultDataProvider {
         allRequirements,
         scopedRequirementKeys?.size ? scopedRequirementKeys : undefined
       );
+      const l2ToLinkedL1BaseKeys = await this.buildMewpL2ToLinkedL1BaseKeys(
+        allRequirements,
+        projectName,
+        testData
+      );
       const requirementSapWbsByBaseKey = this.buildRequirementSapWbsByBaseKey(allRequirements);
       const externalBugsByTestCase = await this.loadExternalBugsByTestCase(options?.externalBugsFile);
       const externalL3L4ByBaseKey = await this.loadExternalL3L4ByBaseKey(
@@ -523,6 +528,10 @@ export default class ResultDataProvider {
           sheetName: this.buildMewpCoverageSheetName(planName, testPlanId),
         };
       }
+      const externalJoinKeysByL2 = this.buildMewpExternalJoinKeysByL2Requirement(
+        requirements,
+        l2ToLinkedL1BaseKeys
+      );
 
       const requirementIndex: MewpRequirementIndex = new Map();
       const observedTestCaseIdsByRequirement = new Map<string, Set<number>>();
@@ -601,8 +610,16 @@ export default class ResultDataProvider {
       const requirementBaseKeys = new Set<string>(
         requirements.map((item) => String(item?.baseKey || '').trim()).filter((item) => !!item)
       );
+      const externalJoinKeyUniverse = new Set<string>();
+      for (const keySet of externalJoinKeysByL2.values()) {
+        for (const key of keySet) {
+          if (key) externalJoinKeyUniverse.add(key);
+        }
+      }
       const externalL3L4BaseKeys = new Set<string>([...externalL3L4ByBaseKey.keys()]);
-      const externalL3L4OverlapKeys = [...externalL3L4BaseKeys].filter((key) => requirementBaseKeys.has(key));
+      const externalL3L4OverlapKeys = [...externalL3L4BaseKeys].filter((key) =>
+        externalJoinKeyUniverse.has(key)
+      );
       const failedRequirementBaseKeys = new Set<string>();
       const failedTestCaseIds = new Set<number>();
       for (const [requirementBaseKey, byTestCase] of requirementIndex.entries()) {
@@ -625,13 +642,14 @@ export default class ResultDataProvider {
         }
       }
       const externalBugRequirementOverlap = [...externalBugBaseKeys].filter((key) =>
-        requirementBaseKeys.has(key)
+        externalJoinKeyUniverse.has(key)
       );
       const externalBugFailedRequirementOverlap = [...externalBugBaseKeys].filter((key) =>
-        failedRequirementBaseKeys.has(key)
+        externalJoinKeyUniverse.has(key)
       );
       logger.info(
         `MEWP coverage join diagnostics: requirementBaseKeys=${requirementBaseKeys.size} ` +
+          `externalJoinKeys=${externalJoinKeyUniverse.size} ` +
           `failedRequirementBaseKeys=${failedRequirementBaseKeys.size} failedTestCases=${failedTestCaseIds.size}; ` +
           `externalL3L4BaseKeys=${externalL3L4BaseKeys.size} externalL3L4Overlap=${externalL3L4OverlapKeys.length}; ` +
           `externalBugTestCases=${externalBugTestCaseIds.size} externalBugFailedTestCaseOverlap=${externalBugFailedTestCaseOverlap.length}; ` +
@@ -640,18 +658,22 @@ export default class ResultDataProvider {
       );
       if (externalL3L4BaseKeys.size > 0 && externalL3L4OverlapKeys.length === 0) {
         const sampleReq = [...requirementBaseKeys].slice(0, 5);
+        const sampleJoin = [...externalJoinKeyUniverse].slice(0, 5);
         const sampleExt = [...externalL3L4BaseKeys].slice(0, 5);
         logger.warn(
           `MEWP coverage join diagnostics: no L3/L4 key overlap found. ` +
-            `sampleRequirementKeys=${sampleReq.join(', ')} sampleExternalL3L4Keys=${sampleExt.join(', ')}`
+            `sampleRequirementKeys=${sampleReq.join(', ')} sampleJoinKeys=${sampleJoin.join(', ')} ` +
+            `sampleExternalL3L4Keys=${sampleExt.join(', ')}`
         );
       }
       if (externalBugBaseKeys.size > 0 && externalBugRequirementOverlap.length === 0) {
         const sampleReq = [...requirementBaseKeys].slice(0, 5);
+        const sampleJoin = [...externalJoinKeyUniverse].slice(0, 5);
         const sampleExt = [...externalBugBaseKeys].slice(0, 5);
         logger.warn(
           `MEWP coverage join diagnostics: no bug requirement-key overlap found. ` +
-            `sampleRequirementKeys=${sampleReq.join(', ')} sampleExternalBugKeys=${sampleExt.join(', ')}`
+            `sampleRequirementKeys=${sampleReq.join(', ')} sampleJoinKeys=${sampleJoin.join(', ')} ` +
+            `sampleExternalBugKeys=${sampleExt.join(', ')}`
         );
       }
       if (externalBugTestCaseIds.size > 0 && externalBugFailedTestCaseOverlap.length === 0) {
@@ -667,7 +689,8 @@ export default class ResultDataProvider {
         observedTestCaseIdsByRequirement,
         linkedRequirementsByTestCase,
         externalL3L4ByBaseKey,
-        externalBugsByTestCase
+        externalBugsByTestCase,
+        externalJoinKeysByL2
       );
       const coverageRowStats = rows.reduce(
         (acc, row) => {
@@ -757,14 +780,26 @@ export default class ResultDataProvider {
       }
 
       const validL2BaseKeys = new Set<string>([...requirementFamilies.keys()]);
+      const diagnostics = {
+        totalTestCases: 0,
+        totalParsedSteps: 0,
+        totalStepsWithMentions: 0,
+        totalMentionedCustomerIds: 0,
+        testCasesWithoutMentionedCustomerIds: 0,
+        failingRows: 0,
+      };
 
       for (const testCaseId of [...allTestCaseIds].sort((a, b) => a - b)) {
+        diagnostics.totalTestCases += 1;
         const stepsXml = stepsXmlByTestCase.get(testCaseId) || '';
         const parsedSteps =
           stepsXml && String(stepsXml).trim() !== ''
             ? await this.testStepParserHelper.parseTestSteps(stepsXml, new Map<number, number>())
             : [];
+        const executableSteps = parsedSteps.filter((step) => !step?.isSharedStepTitle);
+        diagnostics.totalParsedSteps += executableSteps.length;
         const mentionEntries = this.extractRequirementMentionsFromExpectedSteps(parsedSteps, true);
+        diagnostics.totalStepsWithMentions += mentionEntries.length;
         const mentionedL2Only = new Set<string>();
         const mentionedCodeFirstStep = new Map<string, string>();
         const mentionedBaseFirstStep = new Map<string, string>();
@@ -786,6 +821,10 @@ export default class ResultDataProvider {
               }
             }
           }
+        }
+        diagnostics.totalMentionedCustomerIds += mentionedL2Only.size;
+        if (mentionedL2Only.size === 0) {
+          diagnostics.testCasesWithoutMentionedCustomerIds += 1;
         }
 
         const mentionedBaseKeys = new Set<string>(
@@ -874,6 +913,15 @@ export default class ResultDataProvider {
         const linkedButNotMentioned = sortedExtraLinked.join('; ');
         const validationStatus: 'Pass' | 'Fail' =
           mentionedButNotLinked || linkedButNotMentioned ? 'Fail' : 'Pass';
+        if (validationStatus === 'Fail') diagnostics.failingRows += 1;
+        logger.debug(
+          `MEWP internal validation parse diagnostics: ` +
+            `testCaseId=${testCaseId} parsedSteps=${executableSteps.length} ` +
+            `stepsWithMentions=${mentionEntries.length} customerIdsFound=${mentionedL2Only.size} ` +
+            `linkedRequirements=${linkedFullCodes.size} mentionedButNotLinked=${sortedMissingMentioned.length + sortedMissingFamily.length} ` +
+            `linkedButNotMentioned=${sortedExtraLinked.length} status=${validationStatus} ` +
+            `customerIdSample='${[...mentionedL2Only].slice(0, 5).join(', ')}'`
+        );
 
         rows.push({
           'Test Case ID': testCaseId,
@@ -883,6 +931,13 @@ export default class ResultDataProvider {
           'Validation Status': validationStatus,
         });
       }
+      logger.info(
+        `MEWP internal validation summary: testCases=${diagnostics.totalTestCases} ` +
+          `parsedSteps=${diagnostics.totalParsedSteps} stepsWithMentions=${diagnostics.totalStepsWithMentions} ` +
+          `totalCustomerIdsFound=${diagnostics.totalMentionedCustomerIds} ` +
+          `testCasesWithoutCustomerIds=${diagnostics.testCasesWithoutMentionedCustomerIds} ` +
+          `failingRows=${diagnostics.failingRows}`
+      );
 
       return {
         sheetName: this.buildInternalValidationSheetName(planName, testPlanId),
@@ -1036,7 +1091,21 @@ export default class ResultDataProvider {
   }
 
   private buildMewpCoverageL3L4Rows(links: MewpL3L4Link[]): MewpCoverageL3L4Cell[] {
-    const sorted = [...(links || [])].sort((a, b) => {
+    const deduped = new Map<string, MewpL3L4Link>();
+    for (const item of links || []) {
+      const level = item?.level === 'L4' ? 'L4' : 'L3';
+      const id = String(item?.id || '').trim();
+      if (!id) continue;
+      const key = `${level}:${id}`;
+      if (!deduped.has(key)) {
+        deduped.set(key, {
+          id,
+          level,
+          title: String(item?.title || '').trim(),
+        });
+      }
+    }
+    const sorted = [...deduped.values()].sort((a, b) => {
       if (a.level !== b.level) return a.level === 'L3' ? -1 : 1;
       return String(a.id || '').localeCompare(String(b.id || ''));
     });
@@ -1060,12 +1129,15 @@ export default class ResultDataProvider {
     observedTestCaseIdsByRequirement: Map<string, Set<number>>,
     linkedRequirementsByTestCase: MewpLinkedRequirementsByTestCase,
     l3l4ByBaseKey: Map<string, MewpL3L4Link[]>,
-    externalBugsByTestCase: Map<number, MewpBugLink[]>
+    externalBugsByTestCase: Map<number, MewpBugLink[]>,
+    externalJoinKeysByL2?: Map<string, Set<string>>
   ): MewpCoverageRow[] {
     const rows: MewpCoverageRow[] = [];
     const linkedByRequirement = this.invertBaseRequirementLinks(linkedRequirementsByTestCase);
+    const joinKeysByRequirement = externalJoinKeysByL2 || new Map<string, Set<string>>();
     for (const requirement of requirements) {
       const key = String(requirement?.baseKey || this.toRequirementKey(requirement.requirementId) || '').trim();
+      const externalJoinKeys = joinKeysByRequirement.get(key) || new Set<string>([key]);
       const linkedTestCaseIds = (requirement?.linkedTestCaseIds || []).filter(
         (id) => Number.isFinite(id) && Number(id) > 0
       );
@@ -1095,7 +1167,7 @@ export default class ResultDataProvider {
           const externalBugs = externalBugsByTestCase.get(testCaseId) || [];
           for (const bug of externalBugs) {
             const bugBaseKey = String(bug?.requirementBaseKey || '').trim();
-            if (bugBaseKey && bugBaseKey !== key) continue;
+            if (bugBaseKey && !externalJoinKeys.has(bugBaseKey)) continue;
             const bugId = Number(bug?.id || 0);
             if (!Number.isFinite(bugId) || bugId <= 0) continue;
             aggregatedBugs.set(bugId, {
@@ -1120,7 +1192,7 @@ export default class ResultDataProvider {
         runStatus === 'Fail'
           ? Array.from(aggregatedBugs.values()).sort((a, b) => a.id - b.id)
           : [];
-      const l3l4ForRows = [...(l3l4ByBaseKey.get(key) || [])];
+      const l3l4ForRows = [...externalJoinKeys].flatMap((joinKey) => l3l4ByBaseKey.get(joinKey) || []);
 
       const bugRows: MewpCoverageBugCell[] =
         bugsForRows.length > 0
@@ -1882,6 +1954,123 @@ export default class ResultDataProvider {
         linkedTestCaseIds: [...family.linkedTestCaseIds].sort((a, b) => a - b),
       }))
       .sort((a, b) => String(a.requirementId).localeCompare(String(b.requirementId)));
+  }
+
+  private async buildMewpL2ToLinkedL1BaseKeys(
+    requirements: MewpL2RequirementWorkItem[],
+    projectName: string,
+    testData: any[]
+  ): Promise<Map<string, Set<string>>> {
+    const out = new Map<string, Set<string>>();
+    const relatedIds = new Set<number>();
+    const linkedTestCaseIdsByL2 = new Map<string, Set<number>>();
+    const testCaseTitleMap = this.buildMewpTestCaseTitleMap(testData);
+
+    for (const requirement of requirements || []) {
+      const l2BaseKey = String(requirement?.baseKey || '').trim();
+      if (!l2BaseKey) continue;
+      if (!out.has(l2BaseKey)) out.set(l2BaseKey, new Set<string>());
+      if (!linkedTestCaseIdsByL2.has(l2BaseKey)) linkedTestCaseIdsByL2.set(l2BaseKey, new Set<number>());
+      for (const testCaseId of requirement?.linkedTestCaseIds || []) {
+        const numeric = Number(testCaseId);
+        if (Number.isFinite(numeric) && numeric > 0) {
+          linkedTestCaseIdsByL2.get(l2BaseKey)!.add(numeric);
+        }
+      }
+      for (const relatedId of requirement?.relatedWorkItemIds || []) {
+        const id = Number(relatedId);
+        if (Number.isFinite(id) && id > 0) relatedIds.add(id);
+      }
+    }
+
+    let titleDerivedCount = 0;
+    for (const [l2BaseKey, testCaseIds] of linkedTestCaseIdsByL2.entries()) {
+      const targetSet = out.get(l2BaseKey) || new Set<string>();
+      for (const testCaseId of testCaseIds) {
+        const title = String(testCaseTitleMap.get(testCaseId) || '').trim();
+        if (!title) continue;
+        const fromTitleCodes = this.extractRequirementCodesFromExpectedText(title, false);
+        if (fromTitleCodes.size > 0) {
+          for (const code of fromTitleCodes) {
+            const normalized = this.toRequirementKey(code);
+            if (normalized) targetSet.add(normalized);
+          }
+        } else {
+          const normalized = this.toRequirementKey(title);
+          if (normalized) targetSet.add(normalized);
+        }
+      }
+      if (targetSet.size > 0) {
+        titleDerivedCount += 1;
+      }
+      out.set(l2BaseKey, targetSet);
+    }
+
+    if (relatedIds.size === 0) {
+      const linkedL1Count = [...out.values()].reduce((sum, set) => sum + set.size, 0);
+      logger.info(
+        `MEWP L2->L1 mapping summary: l2Families=${out.size} ` +
+          `fromTitle=${titleDerivedCount} fallbackFromLinkedL1=0 linkedL1Keys=${linkedL1Count}`
+      );
+      return out;
+    }
+
+    const relatedWorkItems = await this.fetchWorkItemsByIds(projectName, [...relatedIds], false);
+    const l1BaseByWorkItemId = new Map<number, string>();
+    for (const workItem of relatedWorkItems || []) {
+      const workItemId = Number(workItem?.id || 0);
+      if (!Number.isFinite(workItemId) || workItemId <= 0) continue;
+      const fields = workItem?.fields || {};
+      const customerId = this.extractMewpRequirementIdentifier(fields);
+      const baseKey = this.toRequirementKey(customerId);
+      if (!baseKey) continue;
+      l1BaseByWorkItemId.set(workItemId, baseKey);
+    }
+
+    let linkedFallbackCount = 0;
+    for (const requirement of requirements || []) {
+      const l2BaseKey = String(requirement?.baseKey || '').trim();
+      if (!l2BaseKey) continue;
+      if (!out.has(l2BaseKey)) out.set(l2BaseKey, new Set<string>());
+      const targetSet = out.get(l2BaseKey)!;
+      if (targetSet.size > 0) {
+        continue;
+      }
+      for (const relatedId of requirement?.relatedWorkItemIds || []) {
+        const baseKey = l1BaseByWorkItemId.get(Number(relatedId));
+        if (baseKey) targetSet.add(baseKey);
+      }
+      if (targetSet.size > 0) {
+        linkedFallbackCount += 1;
+      }
+    }
+
+    const l2Families = out.size;
+    const withLinkedL1 = [...out.values()].filter((set) => set.size > 0).length;
+    const linkedL1Count = [...out.values()].reduce((sum, set) => sum + set.size, 0);
+    logger.info(
+      `MEWP L2->L1 mapping summary: l2Families=${l2Families} withLinkedL1=${withLinkedL1} ` +
+        `fromTitle=${titleDerivedCount} fallbackFromLinkedL1=${linkedFallbackCount} linkedL1Keys=${linkedL1Count}`
+    );
+    return out;
+  }
+
+  private buildMewpExternalJoinKeysByL2Requirement(
+    requirements: MewpL2RequirementFamily[],
+    l2ToLinkedL1BaseKeys: Map<string, Set<string>>
+  ): Map<string, Set<string>> {
+    const out = new Map<string, Set<string>>();
+    for (const requirement of requirements || []) {
+      const l2BaseKey = String(requirement?.baseKey || '').trim();
+      if (!l2BaseKey) continue;
+      const joinKeys = new Set<string>([l2BaseKey]);
+      for (const l1Key of l2ToLinkedL1BaseKeys.get(l2BaseKey) || []) {
+        const normalized = String(l1Key || '').trim();
+        if (normalized) joinKeys.add(normalized);
+      }
+      out.set(l2BaseKey, joinKeys);
+    }
+    return out;
   }
 
   private buildRequirementFamilyMap(
