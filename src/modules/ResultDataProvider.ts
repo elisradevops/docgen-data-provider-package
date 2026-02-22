@@ -999,12 +999,16 @@ export default class ResultDataProvider {
   }
 
   private createMewpCoverageRow(
-    requirement: Pick<MewpL2RequirementFamily, 'requirementId' | 'title' | 'subSystem' | 'responsibility'>,
+    requirement: Pick<
+      MewpL2RequirementFamily,
+      'workItemId' | 'requirementId' | 'title' | 'subSystem' | 'responsibility'
+    >,
     runStatus: MewpRunStatus,
     bug: MewpCoverageBugCell,
     linkedL3L4: MewpCoverageL3L4Cell
   ): MewpCoverageRow {
-    const l2ReqId = this.formatMewpCustomerId(requirement.requirementId);
+    const l2ReqIdNumeric = Number(requirement?.workItemId || 0);
+    const l2ReqId = l2ReqIdNumeric > 0 ? String(l2ReqIdNumeric) : '';
     const l2ReqTitle = this.toMewpComparableText(requirement.title);
     const l2SubSystem = this.toMewpComparableText(requirement.subSystem);
 
@@ -1048,15 +1052,6 @@ export default class ResultDataProvider {
       });
     }
     return rows;
-  }
-
-  private formatMewpCustomerId(rawValue: string): string {
-    const normalized = this.normalizeMewpRequirementCode(this.toMewpComparableText(rawValue));
-    if (normalized) return normalized;
-
-    const onlyDigits = String(rawValue || '').replace(/\D/g, '');
-    if (onlyDigits) return `SR${onlyDigits}`;
-    return '';
   }
 
   private buildMewpCoverageRows(
@@ -1790,7 +1785,7 @@ export default class ResultDataProvider {
     const workItems = await this.fetchWorkItemsByIds(projectName, requirementIds, true);
     const requirements = workItems.map((wi: any) => {
       const fields = wi?.fields || {};
-      const requirementId = this.extractMewpRequirementIdentifier(fields, Number(wi?.id || 0));
+      const requirementId = this.extractMewpRequirementIdentifier(fields);
       const areaPath = this.toMewpComparableText(fields?.['System.AreaPath']);
       return {
         workItemId: Number(wi?.id || 0),
@@ -1878,6 +1873,7 @@ export default class ResultDataProvider {
 
     return [...families.entries()]
       .map(([baseKey, family]) => ({
+        workItemId: Number(family?.representative?.workItemId || 0),
         requirementId: String(family?.representative?.requirementId || baseKey),
         baseKey,
         title: String(family?.representative?.title || ''),
@@ -2153,47 +2149,33 @@ export default class ResultDataProvider {
     return [...out].sort((a, b) => a - b);
   }
 
-  private extractMewpRequirementIdentifier(fields: Record<string, any>, fallbackWorkItemId: number): string {
+  private extractMewpRequirementIdentifier(fields: Record<string, any>): string {
     const entries = Object.entries(fields || {});
+    const normalizeFieldKey = (value: string): string =>
+      String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
 
-    // First pass: only trusted identifier-like fields.
-    const strictHints = [
+    // Strict MEWP mode: only explicit MEWP customer-id fields are accepted.
+    // API display name: "Customer ID"
+    // API reference name: "Custom.CustomerID"
+    const customerIdFieldKeys = new Set<string>([
       'customerid',
-      'customer id',
-      'customerrequirementid',
-      'requirementid',
-      'externalid',
-      'srid',
-      'sapwbsid',
-    ];
+      'customcustomerid',
+    ]);
+
     for (const [key, value] of entries) {
-      const normalizedKey = String(key || '').toLowerCase();
-      if (!strictHints.some((hint) => normalizedKey.includes(hint))) continue;
+      const normalizedKey = normalizeFieldKey(key);
+      if (!customerIdFieldKeys.has(normalizedKey)) continue;
 
       const valueAsString = this.toMewpComparableText(value);
       if (!valueAsString) continue;
-      const normalized = this.normalizeMewpRequirementCodeWithSuffix(valueAsString);
-      if (normalized) return normalized;
+
+      const normalizedRequirementId = this.normalizeMewpRequirementCodeWithSuffix(valueAsString);
+      if (normalizedRequirementId) return normalizedRequirementId;
     }
 
-    // Second pass: weaker hints, but still key-based only.
-    const looseHints = ['customer', 'requirement', 'external', 'sapwbs', 'sr'];
-    for (const [key, value] of entries) {
-      const normalizedKey = String(key || '').toLowerCase();
-      if (!looseHints.some((hint) => normalizedKey.includes(hint))) continue;
-
-      const valueAsString = this.toMewpComparableText(value);
-      if (!valueAsString) continue;
-      const normalized = this.normalizeMewpRequirementCodeWithSuffix(valueAsString);
-      if (normalized) return normalized;
-    }
-
-    // Optional fallback from title only (avoid scanning all fields and accidental SR matches).
-    const title = this.toMewpComparableText(fields?.['System.Title']);
-    const titleCode = this.normalizeMewpRequirementCodeWithSuffix(title);
-    if (titleCode) return titleCode;
-
-    return fallbackWorkItemId ? `SR${fallbackWorkItemId}` : '';
+    return '';
   }
 
   private deriveMewpResponsibility(fields: Record<string, any>): string {

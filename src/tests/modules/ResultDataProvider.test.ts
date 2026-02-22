@@ -1178,9 +1178,9 @@ describe('ResultDataProvider', () => {
         })
       );
 
-      const covered = result.rows.find((row: any) => row['L2 REQ ID'] === 'SR1001');
-      const inferredByStepText = result.rows.find((row: any) => row['L2 REQ ID'] === 'SR1002');
-      const uncovered = result.rows.find((row: any) => row['L2 REQ ID'] === 'SR1003');
+      const covered = result.rows.find((row: any) => row['L2 REQ ID'] === '5001');
+      const inferredByStepText = result.rows.find((row: any) => row['L2 REQ ID'] === '5002');
+      const uncovered = result.rows.find((row: any) => row['L2 REQ ID'] === '5003');
 
       expect(covered).toEqual(
         expect.objectContaining({
@@ -1297,7 +1297,7 @@ describe('ResultDataProvider', () => {
         [1]
       );
 
-      const row = result.rows.find((item: any) => item['L2 REQ ID'] === 'SR2001');
+      const row = result.rows.find((item: any) => item['L2 REQ ID'] === '7001');
       expect(parseSpy).not.toHaveBeenCalled();
       expect(row).toEqual(
         expect.objectContaining({
@@ -1312,11 +1312,10 @@ describe('ResultDataProvider', () => {
           'System.Description': 'random text with SR9999 that is unrelated',
           'Custom.CustomerId': 'customer id unknown',
           'System.Title': 'Requirement without explicit SR code',
-        },
-        4321
+        }
       );
 
-      expect(requirementId).toBe('SR4321');
+      expect(requirementId).toBe('');
     });
 
     it('should derive responsibility from Custom.SAPWBS when present', () => {
