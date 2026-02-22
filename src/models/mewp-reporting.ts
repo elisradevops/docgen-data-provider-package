@@ -42,6 +42,7 @@ export interface MewpL2RequirementWorkItem {
 }
 
 export interface MewpL2RequirementFamily {
+  workItemId?: number;
   requirementId: string;
   baseKey: string;
   title: string;
