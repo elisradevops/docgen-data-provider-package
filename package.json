@@ -36,6 +36,7 @@
     "p-limit": "^3.1.0",
     "winston": "^3.13.1",
     "winston-transport-browserconsole": "^1.0.5",
+    "xlsx": "^0.18.5",
     "xml2js": "^0.6.2"
   },
   "jest": {
@@ -47,6 +48,14 @@
       "src/**/*.ts",
       "!src/tests/**"
     ],
+    "coverageThreshold": {
+      "global": {
+        "branches": 25,
+        "functions": 30,
+        "lines": 30,
+        "statements": 30
+      }
+    },
     "testPathIgnorePatterns": [
       "/bin/"
     ],
