@@ -878,15 +878,36 @@ export default class ResultDataProvider {
         const missingFamilyMembers = new Set<string>();
         for (const [baseKey, mentionedCodes] of mentionedCodesByBase.entries()) {
           const familyCodes = requirementFamilies.get(baseKey);
+          const mentionedCodesList = [...mentionedCodes];
+          const hasBaseMention = mentionedCodesList.some((code) => !/-\d+$/.test(code));
+          const mentionedSpecificMembers = mentionedCodesList.filter((code) => /-\d+$/.test(code));
+
           if (familyCodes?.size) {
-            const missingInFamily = [...familyCodes].filter((code) => !linkedFullCodes.has(code));
-            if (missingInFamily.length === 0) continue;
-            const linkedInFamilyCount = familyCodes.size - missingInFamily.length;
-            if (linkedInFamilyCount === 0) {
-              missingBaseWhenFamilyUncovered.add(baseKey);
-            } else {
-              for (const code of missingInFamily) {
-                missingFamilyMembers.add(code);
+            // Base mention ("SR0054") validates against child coverage when children exist.
+            // If no child variants exist, fallback to the single standalone requirement code.
+            if (hasBaseMention) {
+              const familyCodesList = [...familyCodes];
+              const childFamilyCodes = familyCodesList.filter((code) => /-\d+$/.test(code));
+              const targetFamilyCodes = childFamilyCodes.length > 0 ? childFamilyCodes : familyCodesList;
+              const missingInTargetFamily = targetFamilyCodes.filter((code) => !linkedFullCodes.has(code));
+
+              if (missingInTargetFamily.length > 0) {
+                const hasAnyLinkedInFamily = familyCodesList.some((code) => linkedFullCodes.has(code));
+                if (!hasAnyLinkedInFamily) {
+                  missingBaseWhenFamilyUncovered.add(baseKey);
+                } else {
+                  for (const code of missingInTargetFamily) {
+                    missingFamilyMembers.add(code);
+                  }
+                }
+              }
+              continue;
+            }
+
+            // Specific mention ("SR0054-1") validates as exact-match only.
+            for (const code of mentionedSpecificMembers) {
+              if (!linkedFullCodes.has(code)) {
+                missingSpecificMentionedNoFamily.add(code);
               }
             }
             continue;
@@ -960,11 +981,11 @@ export default class ResultDataProvider {
             return String(a[0]).localeCompare(String(b[0]));
           })
           .map(([stepRef, requirementIds]) => {
-            const requirementList = [...requirementIds].sort((a, b) => a.localeCompare(b));
-            return `${stepRef}: ${requirementList.join(', ')}`;
+            const groupedRequirementList = this.formatRequirementCodesGroupedByFamily(requirementIds);
+            return `${stepRef}: ${groupedRequirementList}`;
           })
           .join('; ');
-        const linkedButNotMentioned = sortedExtraLinked.join('; ');
+        const linkedButNotMentioned = this.formatRequirementCodesGroupedByFamily(sortedExtraLinked);
         const validationStatus: 'Pass' | 'Fail' =
           mentionedButNotLinked || linkedButNotMentioned ? 'Fail' : 'Pass';
         if (validationStatus === 'Fail') diagnostics.failingRows += 1;
@@ -2733,6 +2754,28 @@ export default class ResultDataProvider {
     if (!match) return '';
     if (match[2]) return `SR${match[1]}-${match[2]}`;
     return `SR${match[1]}`;
+  }
+
+  private formatRequirementCodesGroupedByFamily(codes: Iterable<string>): string {
+    const byBaseKey = new Map<string, Set<string>>();
+    for (const rawCode of codes || []) {
+      const normalizedCode = this.normalizeMewpRequirementCodeWithSuffix(String(rawCode || ''));
+      if (!normalizedCode) continue;
+      const baseKey = this.toRequirementKey(normalizedCode) || normalizedCode;
+      if (!byBaseKey.has(baseKey)) byBaseKey.set(baseKey, new Set<string>());
+      byBaseKey.get(baseKey)!.add(normalizedCode);
+    }
+
+    if (byBaseKey.size === 0) return '';
+
+    return [...byBaseKey.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([baseKey, members]) => {
+        const sortedMembers = [...members].sort((a, b) => a.localeCompare(b));
+        if (sortedMembers.length <= 1) return sortedMembers[0];
+        return `${baseKey}: ${sortedMembers.join(', ')}`;
+      })
+      .join('; ');
   }
 
   private toMewpComparableText(value: any): string {
