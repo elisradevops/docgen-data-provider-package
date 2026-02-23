@@ -1,7 +1,7 @@
 import type {
   MewpBugLink,
   MewpExternalFileRef,
-  MewpL3L4Link,
+  MewpL3L4Pair,
 } from '../models/mewp-reporting';
 import logger from './logger';
 import MewpExternalTableUtils from './mewpExternalTableUtils';
@@ -169,7 +169,7 @@ export default class MewpExternalIngestionUtils {
   public async loadExternalL3L4ByBaseKey(
     externalL3L4File: MewpExternalFileRef | null | undefined,
     adapters: MewpExternalIngestionAdapters
-  ): Promise<Map<string, MewpL3L4Link[]>> {
+  ): Promise<Map<string, MewpL3L4Pair[]>> {
     const rows = await this.externalTableUtils.loadExternalTableRows(externalL3L4File, 'l3l4');
     const sourceName = String(
       externalL3L4File?.name || externalL3L4File?.objectName || externalL3L4File?.text || externalL3L4File?.url || ''
@@ -178,22 +178,36 @@ export default class MewpExternalIngestionUtils {
       if (sourceName) {
         logger.warn(`MEWP external L3/L4 ingestion: source '${sourceName}' loaded with 0 data rows.`);
       }
-      return new Map<string, MewpL3L4Link[]>();
+      return new Map<string, MewpL3L4Pair[]>();
     }
     logger.info(`MEWP external L3/L4 ingestion: start source='${sourceName || 'unknown'}' rows=${rows.length}`);
 
-    const linksByBaseKey = new Map<string, Map<string, MewpL3L4Link>>();
-    const addLink = (baseKey: string, level: 'L3' | 'L4', id: number, title: string) => {
-      if (!baseKey || !id) return;
-      if (!linksByBaseKey.has(baseKey)) {
-        linksByBaseKey.set(baseKey, new Map<string, MewpL3L4Link>());
+    const pairsByBaseKey = new Map<string, Map<string, MewpL3L4Pair>>();
+    const addPair = (baseKey: string, pair: MewpL3L4Pair) => {
+      const l3Id = String(pair?.l3Id || '').trim();
+      const l4Id = String(pair?.l4Id || '').trim();
+      if (!baseKey || (!l3Id && !l4Id)) return;
+      if (!pairsByBaseKey.has(baseKey)) {
+        pairsByBaseKey.set(baseKey, new Map<string, MewpL3L4Pair>());
       }
-      const idKey = String(id).trim();
-      const dedupeKey = `${level}:${idKey}`;
-      linksByBaseKey.get(baseKey)!.set(dedupeKey, {
-        id: idKey,
-        title: String(title || '').trim(),
-        level,
+      const key = `${l3Id}|${l4Id}`;
+      const byPair = pairsByBaseKey.get(baseKey)!;
+      const existing = byPair.get(key);
+      if (!existing) {
+        byPair.set(key, {
+          l3Id,
+          l3Title: String(pair?.l3Title || '').trim(),
+          l4Id,
+          l4Title: String(pair?.l4Title || '').trim(),
+        });
+        return;
+      }
+
+      byPair.set(key, {
+        l3Id: existing.l3Id || l3Id,
+        l3Title: existing.l3Title || String(pair?.l3Title || '').trim(),
+        l4Id: existing.l4Id || l4Id,
+        l4Title: existing.l4Title || String(pair?.l4Title || '').trim(),
       });
     };
 
@@ -265,28 +279,50 @@ export default class MewpExternalIngestionUtils {
       );
 
       if (area.includes('level 4')) {
+        // AREA 34 = Level 4 supports two modes:
+        // 1) Direct L2->L4: only Level-3 target column is populated; treat it as L4.
+        // 2) Paired L3+L4 in same row: Level-3 and Level-4 columns are both populated.
         const effectiveSapWbsLevel3 = targetSapWbsLevel3 || requirementSapWbsFallback;
-        if (!targetIdLevel3) {
-          parsedRows += 1;
-          continue;
-        }
-        if (!adapters.isExternalStateInScope(targetStateLevel3, 'requirement')) {
-          filteredByState += 1;
-          parsedRows += 1;
-          continue;
-        }
-        if (adapters.isExcludedL3L4BySapWbs(effectiveSapWbsLevel3)) {
-          filteredBySapWbs += 1;
-          parsedRows += 1;
-          continue;
-        }
-        if (
-          targetIdLevel3 &&
-          adapters.isExternalStateInScope(targetStateLevel3, 'requirement') &&
-          !adapters.isExcludedL3L4BySapWbs(effectiveSapWbsLevel3)
-        ) {
-          addLink(baseKey, 'L4', targetIdLevel3, targetTitleLevel3);
-          acceptedL4 += 1;
+        const effectiveSapWbsLevel4 = targetSapWbsLevel4 || requirementSapWbsFallback;
+        const allowLevel3State = adapters.isExternalStateInScope(targetStateLevel3, 'requirement');
+        const allowLevel3SapWbs = !adapters.isExcludedL3L4BySapWbs(effectiveSapWbsLevel3);
+        const allowLevel4State = adapters.isExternalStateInScope(targetStateLevel4, 'requirement');
+        const allowLevel4SapWbs = !adapters.isExcludedL3L4BySapWbs(effectiveSapWbsLevel4);
+
+        const hasLevel4Columns = !!targetIdLevel4;
+        if (hasLevel4Columns) {
+          if (!allowLevel3State) filteredByState += 1;
+          if (!allowLevel3SapWbs) filteredBySapWbs += 1;
+          if (!allowLevel4State) filteredByState += 1;
+          if (!allowLevel4SapWbs) filteredBySapWbs += 1;
+
+          const includeL3 = !!(targetIdLevel3 && allowLevel3State && allowLevel3SapWbs);
+          const includeL4 = !!(targetIdLevel4 && allowLevel4State && allowLevel4SapWbs);
+          if (includeL3 || includeL4) {
+            addPair(baseKey, {
+              l3Id: includeL3 ? String(targetIdLevel3) : '',
+              l3Title: includeL3 ? targetTitleLevel3 : '',
+              l4Id: includeL4 ? String(targetIdLevel4) : '',
+              l4Title: includeL4 ? targetTitleLevel4 : '',
+            });
+          }
+          if (includeL3) acceptedL3 += 1;
+          if (includeL4) acceptedL4 += 1;
+        } else {
+          // Direct L2->L4 mode (legacy file semantics): Level-3 target column carries L4 ID/title.
+          const allowDirectL4State = adapters.isExternalStateInScope(targetStateLevel3, 'requirement');
+          const allowDirectL4SapWbs = !adapters.isExcludedL3L4BySapWbs(effectiveSapWbsLevel3);
+          if (!allowDirectL4State) filteredByState += 1;
+          if (!allowDirectL4SapWbs) filteredBySapWbs += 1;
+          if (targetIdLevel3 && allowDirectL4State && allowDirectL4SapWbs) {
+            addPair(baseKey, {
+              l3Id: '',
+              l3Title: '',
+              l4Id: String(targetIdLevel3),
+              l4Title: targetTitleLevel3,
+            });
+            acceptedL4 += 1;
+          }
         }
         parsedRows += 1;
         continue;
@@ -297,29 +333,41 @@ export default class MewpExternalIngestionUtils {
       const allowLevel3SapWbs = !adapters.isExcludedL3L4BySapWbs(effectiveSapWbsLevel3);
       if (!allowLevel3State) filteredByState += 1;
       if (!allowLevel3SapWbs) filteredBySapWbs += 1;
-      if (targetIdLevel3 && allowLevel3State && allowLevel3SapWbs) {
-        addLink(baseKey, 'L3', targetIdLevel3, targetTitleLevel3);
-        acceptedL3 += 1;
-      }
+
       const effectiveSapWbsLevel4 = targetSapWbsLevel4 || requirementSapWbsFallback;
       const allowLevel4State = adapters.isExternalStateInScope(targetStateLevel4, 'requirement');
       const allowLevel4SapWbs = !adapters.isExcludedL3L4BySapWbs(effectiveSapWbsLevel4);
       if (!allowLevel4State) filteredByState += 1;
       if (!allowLevel4SapWbs) filteredBySapWbs += 1;
-      if (targetIdLevel4 && allowLevel4State && allowLevel4SapWbs) {
-        addLink(baseKey, 'L4', targetIdLevel4, targetTitleLevel4);
-        acceptedL4 += 1;
+
+      const includeL3 = !!(targetIdLevel3 && allowLevel3State && allowLevel3SapWbs);
+      const includeL4 = !!(targetIdLevel4 && allowLevel4State && allowLevel4SapWbs);
+      if (includeL3 || includeL4) {
+        addPair(baseKey, {
+          l3Id: includeL3 ? String(targetIdLevel3) : '',
+          l3Title: includeL3 ? targetTitleLevel3 : '',
+          l4Id: includeL4 ? String(targetIdLevel4) : '',
+          l4Title: includeL4 ? targetTitleLevel4 : '',
+        });
       }
+      if (includeL3) acceptedL3 += 1;
+      if (includeL4) acceptedL4 += 1;
       parsedRows += 1;
     }
 
-    const out = new Map<string, MewpL3L4Link[]>();
-    for (const [baseKey, linksById] of linksByBaseKey.entries()) {
+    const out = new Map<string, MewpL3L4Pair[]>();
+    for (const [baseKey, byPair] of pairsByBaseKey.entries()) {
       out.set(
         baseKey,
-        [...linksById.values()].sort((a, b) => {
-          if (a.level !== b.level) return a.level === 'L3' ? -1 : 1;
-          return a.id.localeCompare(b.id);
+        [...byPair.values()].sort((a, b) => {
+          const aL3 = String(a?.l3Id || '');
+          const bL3 = String(b?.l3Id || '');
+          const l3Compare = aL3.localeCompare(bL3);
+          if (l3Compare !== 0) return l3Compare;
+
+          const aL4 = String(a?.l4Id || '');
+          const bL4 = String(b?.l4Id || '');
+          return aL4.localeCompare(bL4);
         })
       );
     }

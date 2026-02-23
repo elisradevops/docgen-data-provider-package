@@ -73,18 +73,20 @@ export interface MewpL3L4Link {
   level: 'L3' | 'L4';
 }
 
+export interface MewpL3L4Pair {
+  l3Id: string;
+  l3Title: string;
+  l4Id: string;
+  l4Title: string;
+}
+
 export interface MewpCoverageBugCell {
   id: number | '';
   title: string;
   responsibility: string;
 }
 
-export interface MewpCoverageL3L4Cell {
-  l3Id: string;
-  l3Title: string;
-  l4Id: string;
-  l4Title: string;
-}
+export type MewpCoverageL3L4Cell = MewpL3L4Pair;
 
 export interface MewpCoverageRow {
   'L2 REQ ID': string;

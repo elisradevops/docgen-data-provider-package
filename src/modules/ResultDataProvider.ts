@@ -17,7 +17,7 @@ import type {
   MewpInternalValidationRow,
   MewpL2RequirementFamily,
   MewpL2RequirementWorkItem,
-  MewpL3L4Link,
+  MewpL3L4Pair,
   MewpLinkedRequirementsByTestCase,
   MewpRequirementIndex,
   MewpRunStatus,
@@ -1090,37 +1090,35 @@ export default class ResultDataProvider {
     return { l3Id: '', l3Title: '', l4Id: '', l4Title: '' };
   }
 
-  private buildMewpCoverageL3L4Rows(links: MewpL3L4Link[]): MewpCoverageL3L4Cell[] {
-    const deduped = new Map<string, MewpL3L4Link>();
-    for (const item of links || []) {
-      const level = item?.level === 'L4' ? 'L4' : 'L3';
-      const id = String(item?.id || '').trim();
-      if (!id) continue;
-      const key = `${level}:${id}`;
-      if (!deduped.has(key)) {
-        deduped.set(key, {
-          id,
-          level,
-          title: String(item?.title || '').trim(),
-        });
-      }
-    }
-    const sorted = [...deduped.values()].sort((a, b) => {
-      if (a.level !== b.level) return a.level === 'L3' ? -1 : 1;
-      return String(a.id || '').localeCompare(String(b.id || ''));
-    });
+  private buildMewpCoverageL3L4Rows(pairs: MewpL3L4Pair[]): MewpCoverageL3L4Cell[] {
+    const deduped = new Map<string, MewpCoverageL3L4Cell>();
+    for (const pair of pairs || []) {
+      const l3Id = String(pair?.l3Id || '').trim();
+      const l3Title = String(pair?.l3Title || '').trim();
+      const l4Id = String(pair?.l4Id || '').trim();
+      const l4Title = String(pair?.l4Title || '').trim();
+      if (!l3Id && !l4Id) continue;
 
-    const rows: MewpCoverageL3L4Cell[] = [];
-    for (const item of sorted) {
-      const isL3 = item.level === 'L3';
-      rows.push({
-        l3Id: isL3 ? String(item?.id || '').trim() : '',
-        l3Title: isL3 ? String(item?.title || '').trim() : '',
-        l4Id: isL3 ? '' : String(item?.id || '').trim(),
-        l4Title: isL3 ? '' : String(item?.title || '').trim(),
+      const key = `${l3Id}|${l4Id}`;
+      const existing = deduped.get(key);
+      if (!existing) {
+        deduped.set(key, { l3Id, l3Title, l4Id, l4Title });
+        continue;
+      }
+
+      deduped.set(key, {
+        l3Id: existing.l3Id || l3Id,
+        l3Title: existing.l3Title || l3Title,
+        l4Id: existing.l4Id || l4Id,
+        l4Title: existing.l4Title || l4Title,
       });
     }
-    return rows;
+
+    return [...deduped.values()].sort((a, b) => {
+      const l3Compare = String(a?.l3Id || '').localeCompare(String(b?.l3Id || ''));
+      if (l3Compare !== 0) return l3Compare;
+      return String(a?.l4Id || '').localeCompare(String(b?.l4Id || ''));
+    });
   }
 
   private buildMewpCoverageRows(
@@ -1128,7 +1126,7 @@ export default class ResultDataProvider {
     requirementIndex: MewpRequirementIndex,
     observedTestCaseIdsByRequirement: Map<string, Set<number>>,
     linkedRequirementsByTestCase: MewpLinkedRequirementsByTestCase,
-    l3l4ByBaseKey: Map<string, MewpL3L4Link[]>,
+    l3l4ByBaseKey: Map<string, MewpL3L4Pair[]>,
     externalBugsByTestCase: Map<number, MewpBugLink[]>,
     externalJoinKeysByL2?: Map<string, Set<string>>
   ): MewpCoverageRow[] {
@@ -1194,42 +1192,20 @@ export default class ResultDataProvider {
           : [];
       const l3l4ForRows = [...externalJoinKeys].flatMap((joinKey) => l3l4ByBaseKey.get(joinKey) || []);
 
-      const bugRows: MewpCoverageBugCell[] =
-        bugsForRows.length > 0
-          ? bugsForRows
-          : [];
+      const bugRows: MewpCoverageBugCell[] = bugsForRows.map((bug) => ({
+        id: Number.isFinite(Number(bug?.id)) && Number(bug?.id) > 0 ? Number(bug?.id) : '',
+        title: String(bug?.title || '').trim(),
+        responsibility: String(bug?.responsibility || '').trim(),
+      }));
       const l3l4Rows: MewpCoverageL3L4Cell[] = this.buildMewpCoverageL3L4Rows(l3l4ForRows);
-
-      if (bugRows.length === 0 && l3l4Rows.length === 0) {
+      const rowCount = Math.max(bugRows.length, l3l4Rows.length, 1);
+      for (let index = 0; index < rowCount; index += 1) {
         rows.push(
           this.createMewpCoverageRow(
             requirement,
             runStatus,
-            this.createEmptyMewpCoverageBugCell(),
-            this.createEmptyMewpCoverageL3L4Cell()
-          )
-        );
-        continue;
-      }
-
-      for (const bug of bugRows) {
-        rows.push(
-          this.createMewpCoverageRow(
-            requirement,
-            runStatus,
-            bug,
-            this.createEmptyMewpCoverageL3L4Cell()
-          )
-        );
-      }
-
-      for (const linkedL3L4 of l3l4Rows) {
-        rows.push(
-          this.createMewpCoverageRow(
-            requirement,
-            runStatus,
-            this.createEmptyMewpCoverageBugCell(),
-            linkedL3L4
+            bugRows[index] || this.createEmptyMewpCoverageBugCell(),
+            l3l4Rows[index] || this.createEmptyMewpCoverageL3L4Cell()
           )
         );
       }
@@ -1420,7 +1396,7 @@ export default class ResultDataProvider {
   private async loadExternalL3L4ByBaseKey(
     externalL3L4File: MewpExternalFileRef | null | undefined,
     requirementSapWbsByBaseKey: Map<string, string> = new Map<string, string>()
-  ): Promise<Map<string, MewpL3L4Link[]>> {
+  ): Promise<Map<string, MewpL3L4Pair[]>> {
     return this.mewpExternalIngestionUtils.loadExternalL3L4ByBaseKey(externalL3L4File, {
       toComparableText: (value) => this.toMewpComparableText(value),
       toRequirementKey: (value) => this.toRequirementKey(value),
