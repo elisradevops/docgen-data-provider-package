@@ -808,6 +808,34 @@ export default class ResultDataProvider {
 
       for (const testCaseId of [...allTestCaseIds].sort((a, b) => a - b)) {
         diagnostics.totalTestCases += 1;
+        const logList = (items: Iterable<string>, max = 12): string => {
+          const values = [...items].map((item) => String(item || '').trim()).filter((item) => !!item);
+          const shown = values.slice(0, max);
+          const suffix = values.length > max ? ` ...(+${values.length - max} more)` : '';
+          return shown.join(', ') + suffix;
+        };
+        const logByFamily = (items: Iterable<string>, maxFamilies = 8, maxMembers = 10): string => {
+          const map = new Map<string, Set<string>>();
+          for (const item of items || []) {
+            const normalized = this.normalizeMewpRequirementCodeWithSuffix(String(item || ''));
+            if (!normalized) continue;
+            const base = this.toRequirementKey(normalized) || normalized;
+            if (!map.has(base)) map.set(base, new Set<string>());
+            map.get(base)!.add(normalized);
+          }
+          const entries = [...map.entries()]
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .slice(0, maxFamilies)
+            .map(([base, members]) => {
+              const sortedMembers = [...members].sort((a, b) => a.localeCompare(b));
+              const shownMembers = sortedMembers.slice(0, maxMembers);
+              const membersSuffix =
+                sortedMembers.length > maxMembers ? ` ...(+${sortedMembers.length - maxMembers} more)` : '';
+              return `${base}=[${shownMembers.join(', ')}${membersSuffix}]`;
+            });
+          const suffix = map.size > maxFamilies ? ` ...(+${map.size - maxFamilies} families)` : '';
+          return entries.join(' | ') + suffix;
+        };
         const stepsXml = stepsXmlByTestCase.get(testCaseId) || '';
         const parsedSteps =
           stepsXml && String(stepsXml).trim() !== ''
@@ -860,6 +888,15 @@ export default class ResultDataProvider {
         const linkedBaseKeys = new Set<string>(
           [...linkedFullCodes].map((code) => this.toRequirementKey(code)).filter((code) => !!code)
         );
+        const mentionStepSample = mentionEntries
+          .slice(0, 8)
+          .map((entry) => `${entry.stepRef}=[${logList(entry.codes, 6)}]`)
+          .join(' | ');
+        logger.debug(
+          `MEWP internal validation trace: testCaseId=${testCaseId} ` +
+            `mentionSteps=${mentionEntries.length} mentionStepSample='${mentionStepSample}' ` +
+            `mentionedL2ByFamily='${logByFamily(mentionedL2Only)}' linkedByFamily='${logByFamily(linkedFullCodes)}'`
+        );
 
         const mentionedCodesByBase = new Map<string, Set<string>>();
         for (const code of mentionedL2Only) {
@@ -881,47 +918,89 @@ export default class ResultDataProvider {
           const mentionedCodesList = [...mentionedCodes];
           const hasBaseMention = mentionedCodesList.some((code) => !/-\d+$/.test(code));
           const mentionedSpecificMembers = mentionedCodesList.filter((code) => /-\d+$/.test(code));
+          let familyDecision = 'no-action';
+          let familyTargetCodes: string[] = [];
+          let familyMissingCodes: string[] = [];
+          let familyLinkedCodes: string[] = [];
+          let familyAllCodes: string[] = [];
 
           if (familyCodes?.size) {
+            familyAllCodes = [...familyCodes].sort((a, b) => a.localeCompare(b));
+            familyLinkedCodes = familyAllCodes.filter((code) => linkedFullCodes.has(code));
             // Base mention ("SR0054") validates against child coverage when children exist.
             // If no child variants exist, fallback to the single standalone requirement code.
             if (hasBaseMention) {
               const familyCodesList = [...familyCodes];
               const childFamilyCodes = familyCodesList.filter((code) => /-\d+$/.test(code));
               const targetFamilyCodes = childFamilyCodes.length > 0 ? childFamilyCodes : familyCodesList;
+              familyTargetCodes = [...targetFamilyCodes].sort((a, b) => a.localeCompare(b));
               const missingInTargetFamily = targetFamilyCodes.filter((code) => !linkedFullCodes.has(code));
+              familyMissingCodes = [...missingInTargetFamily].sort((a, b) => a.localeCompare(b));
 
               if (missingInTargetFamily.length > 0) {
                 const hasAnyLinkedInFamily = familyCodesList.some((code) => linkedFullCodes.has(code));
                 if (!hasAnyLinkedInFamily) {
                   missingBaseWhenFamilyUncovered.add(baseKey);
+                  familyDecision = 'base-mentioned-family-uncovered';
                 } else {
                   for (const code of missingInTargetFamily) {
                     missingFamilyMembers.add(code);
                   }
+                  familyDecision = 'base-mentioned-family-partial-missing-children';
                 }
+              } else {
+                familyDecision = 'base-mentioned-family-fully-covered';
               }
+              logger.debug(
+                `MEWP internal validation family decision: testCaseId=${testCaseId} base=${baseKey} ` +
+                  `mode=baseMention mentioned='${logList(mentionedCodesList)}' familyAll='${logList(familyAllCodes)}' ` +
+                  `target='${logList(familyTargetCodes)}' linked='${logList(familyLinkedCodes)}' ` +
+                  `missing='${logList(familyMissingCodes)}' decision=${familyDecision}`
+              );
               continue;
             }
 
             // Specific mention ("SR0054-1") validates as exact-match only.
+            const missingSpecificMembers: string[] = [];
             for (const code of mentionedSpecificMembers) {
               if (!linkedFullCodes.has(code)) {
                 missingSpecificMentionedNoFamily.add(code);
+                missingSpecificMembers.push(code);
               }
             }
+            familyDecision =
+              missingSpecificMembers.length > 0
+                ? 'specific-mentioned-exact-missing'
+                : 'specific-mentioned-exact-covered';
+            logger.debug(
+              `MEWP internal validation family decision: testCaseId=${testCaseId} base=${baseKey} ` +
+                `mode=specificMention mentioned='${logList(mentionedCodesList)}' familyAll='${logList(familyAllCodes)}' ` +
+                `linked='${logList(familyLinkedCodes)}' missingSpecific='${logList(missingSpecificMembers)}' ` +
+                `decision=${familyDecision}`
+            );
             continue;
           }
 
           // Fallback path when family data is unavailable for this base key.
+          const fallbackMissingSpecific: string[] = [];
+          let fallbackBaseMissing = false;
           for (const code of mentionedCodes) {
             const hasSpecificSuffix = /-\d+$/.test(code);
             if (hasSpecificSuffix) {
-              if (!linkedFullCodes.has(code)) missingSpecificMentionedNoFamily.add(code);
+              if (!linkedFullCodes.has(code)) {
+                missingSpecificMentionedNoFamily.add(code);
+                fallbackMissingSpecific.push(code);
+              }
             } else if (!linkedBaseKeys.has(baseKey)) {
               missingBaseWhenFamilyUncovered.add(baseKey);
+              fallbackBaseMissing = true;
             }
           }
+          logger.debug(
+            `MEWP internal validation family decision: testCaseId=${testCaseId} base=${baseKey} ` +
+              `mode=noFamilyData mentioned='${logList(mentionedCodesList)}' linkedBasePresent=${linkedBaseKeys.has(baseKey)} ` +
+              `missingSpecific='${logList(fallbackMissingSpecific)}' missingBase=${fallbackBaseMissing}`
+          );
         }
 
         // Direction B is family-based: if any member of a family is mentioned in Expected Result,
@@ -986,6 +1065,14 @@ export default class ResultDataProvider {
           })
           .join('; ');
         const linkedButNotMentioned = this.formatRequirementCodesGroupedByFamily(sortedExtraLinked);
+        const rawMentionedByStepForLog = [...mentionedButNotLinkedByStep.entries()]
+          .map(([stepRef, requirementIds]) => `${stepRef}=[${logList(requirementIds, 8)}]`)
+          .join(' | ');
+        logger.debug(
+          `MEWP internal validation grouped diagnostics: testCaseId=${testCaseId} ` +
+            `rawMentionedByStep='${rawMentionedByStepForLog}' groupedMentioned='${mentionedButNotLinked}' ` +
+            `rawLinkedOnlyByFamily='${logByFamily(sortedExtraLinked)}' groupedLinkedOnly='${linkedButNotMentioned}'`
+        );
         const validationStatus: 'Pass' | 'Fail' =
           mentionedButNotLinked || linkedButNotMentioned ? 'Fail' : 'Pass';
         if (validationStatus === 'Fail') diagnostics.failingRows += 1;
