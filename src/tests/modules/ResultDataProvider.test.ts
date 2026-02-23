@@ -1986,6 +1986,158 @@ describe('ResultDataProvider', () => {
       );
     });
 
+    it('should pass when a base SR mention is fully covered by its only linked child', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 402, testCaseName: 'TC 402 - Single child covered' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 402,
+                workItemFields: [{ key: 'Steps', value: '<steps id=\"mock-steps-tc-402\"></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 9101,
+          requirementId: 'SR0054',
+          baseKey: 'SR0054',
+          title: 'SR0054 parent',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 9102,
+          requirementId: 'SR0054-1',
+          baseKey: 'SR0054',
+          title: 'SR0054 child 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([
+          [
+            402,
+            {
+              baseKeys: new Set(['SR0054']),
+              fullCodes: new Set(['SR0054-1']),
+            },
+          ],
+        ])
+      );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '3',
+          stepPosition: '3',
+          action: 'Validate family root',
+          expected: 'SR0054',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 402,
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Pass',
+        })
+      );
+    });
+
+    it('should group linked-but-not-mentioned requirements by SR family', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 403, testCaseName: 'TC 403 - Linked only' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 403,
+                workItemFields: [{ key: 'Steps', value: '<steps id=\"mock-steps-tc-403\"></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 9201,
+          requirementId: 'SR0054-1',
+          baseKey: 'SR0054',
+          title: 'SR0054 child 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 9202,
+          requirementId: 'SR0054-2',
+          baseKey: 'SR0054',
+          title: 'SR0054 child 2',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 9203,
+          requirementId: 'SR0100-1',
+          baseKey: 'SR0100',
+          title: 'SR0100 child 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([
+          [
+            403,
+            {
+              baseKeys: new Set(['SR0054', 'SR0100']),
+              fullCodes: new Set(['SR0054-1', 'SR0054-2', 'SR0100-1']),
+            },
+          ],
+        ])
+      );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: 'Action only',
+          expected: '',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(String(result.rows[0]['Mentioned but Not Linked'] || '')).toBe('');
+      expect(String(result.rows[0]['Linked but Not Mentioned'] || '')).toContain('SR0054: SR0054-1, SR0054-2');
+      expect(String(result.rows[0]['Linked but Not Mentioned'] || '')).toContain('SR0100-1');
+    });
+
     it('should report only base SR when an entire mentioned family is uncovered', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
@@ -2393,7 +2545,7 @@ describe('ResultDataProvider', () => {
       expect(byTestCase.get(201)).toEqual(
         expect.objectContaining({
           'Test Case Title': 'TC 201 - Mixed discrepancies',
-          'Mentioned but Not Linked': 'Step 1: SR0095-3, SR0511-1, SR0511-2',
+          'Mentioned but Not Linked': 'Step 1: SR0095-3; SR0511: SR0511-1, SR0511-2',
           'Linked but Not Mentioned': 'SR8888',
           'Validation Status': 'Fail',
         })
