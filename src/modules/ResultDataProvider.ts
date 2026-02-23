@@ -864,7 +864,13 @@ export default class ResultDataProvider {
           return !linkedBaseKeys.has(baseKey);
         });
         const missingFamily = [...expectedFamilyCodes].filter((code) => !linkedFullCodes.has(code));
-        const extraLinked = [...linkedFullCodes].filter((code) => !expectedFamilyCodes.has(code));
+        // Direction B is family-based: if any member of a family is mentioned in Expected Result,
+        // linked members of that same family are not considered "linked but not mentioned".
+        const extraLinked = [...linkedFullCodes].filter((code) => {
+          const baseKey = this.toRequirementKey(code);
+          if (!baseKey) return false;
+          return !mentionedBaseKeys.has(baseKey);
+        });
         const mentionedButNotLinkedByStep = new Map<string, Set<string>>();
         const appendMentionedButNotLinked = (requirementId: string, stepRef: string) => {
           const normalizedRequirementId = this.normalizeMewpRequirementCodeWithSuffix(requirementId);

@@ -1903,6 +1903,69 @@ describe('ResultDataProvider', () => {
       );
     });
 
+    it('should not flag linked child as Direction B when parent family is mentioned in Expected Result', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 301, testCaseName: 'TC 301' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 301,
+                workItemFields: [{ key: 'Steps', value: '<steps></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 7001,
+          requirementId: 'SR0054',
+          baseKey: 'SR0054',
+          title: 'Parent 0054',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([
+          [
+            301,
+            {
+              baseKeys: new Set(['SR0054']),
+              fullCodes: new Set(['SR0054-1']),
+            },
+          ],
+        ])
+      );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: '',
+          expected: 'SR0054',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 301,
+          'Linked but Not Mentioned': '',
+        })
+      );
+    });
+
     it('should produce one detailed row per test case with correct bidirectional discrepancies', async () => {
       const mockDetailedStepsByTestCase = new Map<number, any[]>([
         [
