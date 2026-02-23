@@ -1341,7 +1341,7 @@ describe('ResultDataProvider', () => {
       expect(il).toBe('IL');
     });
 
-    it('should emit additive rows for bugs and L3/L4 links without bug duplication', () => {
+    it('should zip bug rows with L3/L4 pairs and avoid cross-product duplication', () => {
       const requirements = [
         {
           requirementId: 'SR5303',
@@ -1398,8 +1398,7 @@ describe('ResultDataProvider', () => {
         [
           'SR5303',
           [
-            { id: '9003', title: 'L3 9003', level: 'L3' as const },
-            { id: '9103', title: 'L4 9103', level: 'L4' as const },
+            { l3Id: '9003', l3Title: 'L3 9003', l4Id: '9103', l4Title: 'L4 9103' },
           ],
         ],
       ]);
@@ -1413,18 +1412,18 @@ describe('ResultDataProvider', () => {
         externalBugsByTestCase
       );
 
-      expect(rows).toHaveLength(4);
-      expect(rows.map((row: any) => row['Bug ID'])).toEqual([10003, 20003, '', '']);
-      expect(rows[2]).toEqual(
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row: any) => row['Bug ID'])).toEqual([10003, 20003]);
+      expect(rows[0]).toEqual(
         expect.objectContaining({
           'L3 REQ ID': '9003',
-          'L4 REQ ID': '',
+          'L4 REQ ID': '9103',
         })
       );
-      expect(rows[3]).toEqual(
+      expect(rows[1]).toEqual(
         expect.objectContaining({
           'L3 REQ ID': '',
-          'L4 REQ ID': '9103',
+          'L4 REQ ID': '',
         })
       );
     });
@@ -2561,8 +2560,29 @@ describe('ResultDataProvider', () => {
 
       const map = await (resultDataProvider as any).loadExternalL3L4ByBaseKey(validL3L4Source);
       expect(map.get('SR0001')).toEqual([
-        { id: '7002', title: 'L3 Requirement', level: 'L3' },
-        { id: '7001', title: 'L4 From Level3 Column', level: 'L4' },
+        { l3Id: '', l3Title: '', l4Id: '7001', l4Title: 'L4 From Level3 Column' },
+        { l3Id: '7002', l3Title: 'L3 Requirement', l4Id: '', l4Title: '' },
+      ]);
+    });
+
+    it('should emit paired L3+L4 when AREA 34 is Level 4 and both level columns are present', async () => {
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce([
+        {
+          SR: 'SR0001',
+          'AREA 34': 'Level 4',
+          'TargetWorkItemId Level 3': '7401',
+          TargetTitleLevel3: 'L3 In Level4 Row',
+          'TargetStateLevel 3': 'Active',
+          'TargetWorkItemIdLevel 4': '8401',
+          TargetTitleLevel4: 'L4 In Level4 Row',
+          'TargetStateLevel 4': 'Active',
+        },
+      ]);
+
+      const map = await (resultDataProvider as any).loadExternalL3L4ByBaseKey(validL3L4Source);
+      expect(map.get('SR0001')).toEqual([
+        { l3Id: '7401', l3Title: 'L3 In Level4 Row', l4Id: '8401', l4Title: 'L4 In Level4 Row' },
       ]);
     });
 
@@ -2593,8 +2613,8 @@ describe('ResultDataProvider', () => {
 
       const map = await (resultDataProvider as any).loadExternalL3L4ByBaseKey(validL3L4Source);
       expect(map.get('SR0001')).toEqual([
-        { id: '7102', title: 'L3 IL', level: 'L3' },
-        { id: '7201', title: 'L4 IL', level: 'L4' },
+        { l3Id: '', l3Title: '', l4Id: '7201', l4Title: 'L4 IL' },
+        { l3Id: '7102', l3Title: 'L3 IL', l4Id: '', l4Title: '' },
       ]);
     });
 
@@ -2628,7 +2648,9 @@ describe('ResultDataProvider', () => {
       );
 
       expect(map.has('SR0001')).toBe(false);
-      expect(map.get('SR0002')).toEqual([{ id: '7302', title: 'L3 From IL Requirement', level: 'L3' }]);
+      expect(map.get('SR0002')).toEqual([
+        { l3Id: '7302', l3Title: 'L3 From IL Requirement', l4Id: '', l4Title: '' },
+      ]);
     });
 
     it('should resolve bug responsibility from AreaPath when SAPWBS is empty', () => {
