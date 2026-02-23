@@ -1341,6 +1341,81 @@ describe('ResultDataProvider', () => {
       expect(il).toBe('IL');
     });
 
+    it('should derive responsibility from Area Path alias when System.AreaPath is missing', () => {
+      const esuk = (resultDataProvider as any).deriveMewpResponsibility({
+        'Custom.SAPWBS': '',
+        'Area Path': 'MEWP\\Customer Requirements\\Level 2\\ATP\\ESUK',
+      });
+      const il = (resultDataProvider as any).deriveMewpResponsibility({
+        'Custom.SAPWBS': '',
+        'Area Path': 'MEWP\\Customer Requirements\\Level 2\\ATP',
+      });
+
+      expect(esuk).toBe('ESUK');
+      expect(il).toBe('IL');
+    });
+
+    it('should derive test-case responsibility from testCasesItems area-path fields', async () => {
+      const fetchByIdsSpy = jest
+        .spyOn(resultDataProvider as any, 'fetchWorkItemsByIds')
+        .mockResolvedValue([]);
+
+      const map = await (resultDataProvider as any).buildMewpTestCaseResponsibilityMap(
+        [
+          {
+            testCasesItems: [
+              {
+                workItem: {
+                  id: 101,
+                  workItemFields: [{ name: 'Area Path', value: 'MEWP\\Customer Requirements\\Level 2\\ATP' }],
+                },
+              },
+              {
+                workItem: {
+                  id: 102,
+                  workItemFields: [
+                    { referenceName: 'System.AreaPath', value: 'MEWP\\Customer Requirements\\Level 2\\ATP\\ESUK' },
+                  ],
+                },
+              },
+            ],
+            testPointsItems: [],
+          },
+        ],
+        mockProjectName
+      );
+
+      expect(map.get(101)).toBe('IL');
+      expect(map.get(102)).toBe('ESUK');
+      expect(fetchByIdsSpy).not.toHaveBeenCalled();
+    });
+
+    it('should derive test-case responsibility from AreaPath even when SAPWBS exists on test-case payload', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchWorkItemsByIds').mockResolvedValue([]);
+
+      const map = await (resultDataProvider as any).buildMewpTestCaseResponsibilityMap(
+        [
+          {
+            testCasesItems: [
+              {
+                workItem: {
+                  id: 201,
+                  workItemFields: [
+                    { referenceName: 'Custom.SAPWBS', value: 'ESUK' },
+                    { referenceName: 'System.AreaPath', value: 'MEWP\\Customer Requirements\\Level 2\\ATP' },
+                  ],
+                },
+              },
+            ],
+            testPointsItems: [],
+          },
+        ],
+        mockProjectName
+      );
+
+      expect(map.get(201)).toBe('IL');
+    });
+
     it('should zip bug rows with L3/L4 pairs and avoid cross-product duplication', () => {
       const requirements = [
         {
@@ -1626,6 +1701,78 @@ describe('ResultDataProvider', () => {
 
       expect(rows).toHaveLength(1);
       expect(rows[0]['Bug ID']).toBe(99001);
+      expect(rows[0]['Bug Responsibility']).toBe('Elisra');
+    });
+
+    it('should fallback bug responsibility from test case mapping when external bug row is unknown', () => {
+      const requirements = [
+        {
+          requirementId: 'SR5310',
+          baseKey: 'SR5310',
+          title: 'Req 5310',
+          subSystem: 'Power',
+          responsibility: '',
+          linkedTestCaseIds: [101],
+        },
+      ];
+
+      const requirementIndex = new Map([
+        [
+          'SR5310',
+          new Map([
+            [
+              101,
+              {
+                passed: 0,
+                failed: 1,
+                notRun: 0,
+              },
+            ],
+          ]),
+        ],
+      ]);
+
+      const observedTestCaseIdsByRequirement = new Map<string, Set<number>>([
+        ['SR5310', new Set([101])],
+      ]);
+
+      const linkedRequirementsByTestCase = new Map([
+        [
+          101,
+          {
+            baseKeys: new Set(['SR5310']),
+            fullCodes: new Set(['SR5310']),
+            bugIds: new Set([10003]),
+          },
+        ],
+      ]);
+
+      const externalBugsByTestCase = new Map([
+        [
+          101,
+          [
+            {
+              id: 10003,
+              title: 'Bug 10003',
+              responsibility: 'Unknown',
+              requirementBaseKey: 'SR5310',
+            },
+          ],
+        ],
+      ]);
+
+      const rows = (resultDataProvider as any).buildMewpCoverageRows(
+        requirements,
+        requirementIndex,
+        observedTestCaseIdsByRequirement,
+        linkedRequirementsByTestCase,
+        new Map(),
+        externalBugsByTestCase,
+        new Map(),
+        new Map([[101, 'IL']])
+      );
+
+      expect(rows).toHaveLength(1);
       expect(rows[0]['Bug Responsibility']).toBe('Elisra');
     });
   });

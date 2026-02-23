@@ -478,6 +478,10 @@ export default class ResultDataProvider {
         testData
       );
       const requirementSapWbsByBaseKey = this.buildRequirementSapWbsByBaseKey(allRequirements);
+      const testCaseResponsibilityById = await this.buildMewpTestCaseResponsibilityMap(
+        testData,
+        projectName
+      );
       const externalBugsByTestCase = await this.loadExternalBugsByTestCase(options?.externalBugsFile);
       const externalL3L4ByBaseKey = await this.loadExternalL3L4ByBaseKey(
         options?.externalL3L4File,
@@ -690,7 +694,8 @@ export default class ResultDataProvider {
         linkedRequirementsByTestCase,
         externalL3L4ByBaseKey,
         externalBugsByTestCase,
-        externalJoinKeysByL2
+        externalJoinKeysByL2,
+        testCaseResponsibilityById
       );
       const coverageRowStats = rows.reduce(
         (acc, row) => {
@@ -1158,7 +1163,8 @@ export default class ResultDataProvider {
     linkedRequirementsByTestCase: MewpLinkedRequirementsByTestCase,
     l3l4ByBaseKey: Map<string, MewpL3L4Pair[]>,
     externalBugsByTestCase: Map<number, MewpBugLink[]>,
-    externalJoinKeysByL2?: Map<string, Set<string>>
+    externalJoinKeysByL2?: Map<string, Set<string>>,
+    testCaseResponsibilityById?: Map<number, string>
   ): MewpCoverageRow[] {
     const rows: MewpCoverageRow[] = [];
     const linkedByRequirement = this.invertBaseRequirementLinks(linkedRequirementsByTestCase);
@@ -1202,7 +1208,8 @@ export default class ResultDataProvider {
               ...bug,
               responsibility: this.resolveCoverageBugResponsibility(
                 String(bug?.responsibility || ''),
-                requirement
+                requirement,
+                String(testCaseResponsibilityById?.get(testCaseId) || '')
               ),
             });
           }
@@ -1246,18 +1253,127 @@ export default class ResultDataProvider {
 
   private resolveCoverageBugResponsibility(
     rawResponsibility: string,
-    requirement: Pick<MewpL2RequirementFamily, 'responsibility'>
+    requirement: Pick<MewpL2RequirementFamily, 'responsibility'>,
+    testCaseResponsibility: string = ''
   ): string {
-    const direct = String(rawResponsibility || '').trim();
+    const normalizeDisplay = (value: string): string => {
+      const direct = String(value || '').trim();
+      if (!direct) return '';
+      const resolved = this.resolveMewpResponsibility(this.toMewpComparableText(direct));
+      if (resolved === 'ESUK') return 'ESUK';
+      if (resolved === 'IL') return 'Elisra';
+      return direct;
+    };
+
+    const direct = normalizeDisplay(rawResponsibility);
     if (direct && direct.toLowerCase() !== 'unknown') return direct;
 
-    const requirementResponsibility = String(requirement?.responsibility || '')
-      .trim()
-      .toUpperCase();
-    if (requirementResponsibility === 'ESUK') return 'ESUK';
-    if (requirementResponsibility === 'IL' || requirementResponsibility === 'ELISRA') return 'Elisra';
+    const fromTestCase = normalizeDisplay(testCaseResponsibility);
+    if (fromTestCase && fromTestCase.toLowerCase() !== 'unknown') return fromTestCase;
 
-    return direct || 'Unknown';
+    const fromRequirement = normalizeDisplay(String(requirement?.responsibility || ''));
+    if (fromRequirement && fromRequirement.toLowerCase() !== 'unknown') return fromRequirement;
+
+    return direct || fromTestCase || fromRequirement || 'Unknown';
+  }
+
+  private async buildMewpTestCaseResponsibilityMap(
+    testData: any[],
+    projectName: string
+  ): Promise<Map<number, string>> {
+    const out = new Map<number, string>();
+    const unresolved = new Set<number>();
+
+    const extractFromWorkItemFields = (workItemFields: any): Record<string, any> => {
+      const fields: Record<string, any> = {};
+      if (!Array.isArray(workItemFields)) return fields;
+      for (const field of workItemFields) {
+        const keyCandidates = [field?.key, field?.name, field?.referenceName]
+          .map((item) => String(item || '').trim())
+          .filter((item) => !!item);
+        for (const key of keyCandidates) {
+          fields[key] = field?.value;
+        }
+      }
+      return fields;
+    };
+
+    for (const suite of testData || []) {
+      const testCasesItems = Array.isArray(suite?.testCasesItems) ? suite.testCasesItems : [];
+      for (const testCase of testCasesItems) {
+        const testCaseId = Number(testCase?.workItem?.id || testCase?.testCaseId || testCase?.id || 0);
+        if (!Number.isFinite(testCaseId) || testCaseId <= 0 || out.has(testCaseId)) continue;
+
+        const workItemFieldsMap = testCase?.workItem?.fields || {};
+        const workItemFieldsList = extractFromWorkItemFields(testCase?.workItem?.workItemFields);
+        const directFieldAliases = Object.fromEntries(
+          Object.entries({
+            'System.AreaPath':
+              testCase?.workItem?.areaPath ||
+              testCase?.workItem?.AreaPath ||
+              testCase?.areaPath ||
+              testCase?.AreaPath ||
+              testCase?.testCase?.areaPath ||
+              testCase?.testCase?.AreaPath,
+            'Area Path':
+              testCase?.workItem?.['Area Path'] ||
+              testCase?.['Area Path'] ||
+              testCase?.testCase?.['Area Path'],
+            AreaPath:
+              testCase?.workItem?.AreaPath ||
+              testCase?.AreaPath ||
+              testCase?.testCase?.AreaPath,
+          }).filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== '')
+        );
+        const fromWorkItem = this.deriveMewpTestCaseResponsibility({
+          ...directFieldAliases,
+          ...workItemFieldsList,
+          ...workItemFieldsMap,
+        });
+
+        if (fromWorkItem) {
+          out.set(testCaseId, fromWorkItem);
+        } else {
+          unresolved.add(testCaseId);
+        }
+      }
+
+      const testPointsItems = Array.isArray(suite?.testPointsItems) ? suite.testPointsItems : [];
+      for (const testPoint of testPointsItems) {
+        const testCaseId = Number(testPoint?.testCaseId || testPoint?.testCase?.id || 0);
+        if (!Number.isFinite(testCaseId) || testCaseId <= 0 || out.has(testCaseId)) continue;
+        const fromPoint = this.deriveMewpTestCaseResponsibility({
+          'System.AreaPath': testPoint?.areaPath || testPoint?.AreaPath,
+          'Area Path': testPoint?.['Area Path'],
+          AreaPath: testPoint?.AreaPath,
+        });
+        if (fromPoint) {
+          out.set(testCaseId, fromPoint);
+          unresolved.delete(testCaseId);
+        } else {
+          unresolved.add(testCaseId);
+        }
+      }
+    }
+
+    if (unresolved.size > 0) {
+      try {
+        const workItems = await this.fetchWorkItemsByIds(projectName, [...unresolved], false);
+        for (const workItem of workItems || []) {
+          const testCaseId = Number(workItem?.id || 0);
+          if (!Number.isFinite(testCaseId) || testCaseId <= 0 || out.has(testCaseId)) continue;
+          const resolved = this.deriveMewpTestCaseResponsibility(workItem?.fields || {});
+          if (!resolved) continue;
+          out.set(testCaseId, resolved);
+        }
+      } catch (error: any) {
+        logger.warn(
+          `MEWP coverage: failed to enrich test-case responsibility fallback: ${error?.message || error}`
+        );
+      }
+    }
+
+    return out;
   }
 
   private resolveMewpL2RunStatus(input: {
@@ -2457,11 +2573,42 @@ export default class ResultDataProvider {
     if (fromExplicitLabel) return fromExplicitLabel;
     if (explicitSapWbsByLabel) return explicitSapWbsByLabel;
 
-    const areaPath = this.toMewpComparableText(fields?.['System.AreaPath']);
-    const fromAreaPath = this.resolveMewpResponsibility(areaPath);
-    if (fromAreaPath) return fromAreaPath;
+    const areaPathCandidates = [
+      fields?.['System.AreaPath'],
+      fields?.['Area Path'],
+      fields?.['AreaPath'],
+    ];
+    for (const candidate of areaPathCandidates) {
+      const normalized = this.toMewpComparableText(candidate);
+      const resolved = this.resolveMewpResponsibility(normalized);
+      if (resolved) return resolved;
+    }
 
-    const keyHints = ['sapwbs', 'responsibility', 'owner'];
+    const keyHints = ['sapwbs', 'responsibility', 'owner', 'areapath', 'area path'];
+    for (const [key, value] of Object.entries(fields || {})) {
+      const normalizedKey = String(key || '').toLowerCase();
+      if (!keyHints.some((hint) => normalizedKey.includes(hint))) continue;
+      const resolved = this.resolveMewpResponsibility(this.toMewpComparableText(value));
+      if (resolved) return resolved;
+    }
+
+    return '';
+  }
+
+  // Test-case responsibility must come from test-case path context (not SAPWBS).
+  private deriveMewpTestCaseResponsibility(fields: Record<string, any>): string {
+    const areaPathCandidates = [
+      fields?.['System.AreaPath'],
+      fields?.['Area Path'],
+      fields?.['AreaPath'],
+    ];
+    for (const candidate of areaPathCandidates) {
+      const normalized = this.toMewpComparableText(candidate);
+      const resolved = this.resolveMewpResponsibility(normalized);
+      if (resolved) return resolved;
+    }
+
+    const keyHints = ['areapath', 'area path', 'responsibility', 'owner'];
     for (const [key, value] of Object.entries(fields || {})) {
       const normalizedKey = String(key || '').toLowerCase();
       if (!keyHints.some((hint) => normalizedKey.includes(hint))) continue;
@@ -2905,7 +3052,6 @@ export default class ResultDataProvider {
           logger.warn(`Invalid run result ${runId} or result ${resultId}`);
           return null;
         }
-        logger.warn(`Current Test point for Test case ${point.testCaseId} is in Active state`);
         const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${point.testCaseId}?$expand=all`;
         const testCaseData = await TFSServices.getItemContent(url, this.token);
         const newResultData: PlainTestResult = {
