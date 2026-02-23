@@ -1428,6 +1428,84 @@ describe('ResultDataProvider', () => {
       );
     });
 
+    it('should drop standalone L3 row when same L3 has one or more L4 links', () => {
+      const requirements = [
+        {
+          requirementId: 'SR5310',
+          baseKey: 'SR5310',
+          title: 'Req 5310',
+          subSystem: 'Power',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [111],
+        },
+      ];
+
+      const requirementIndex = new Map([
+        [
+          'SR5310',
+          new Map([
+            [
+              111,
+              {
+                passed: 1,
+                failed: 0,
+                notRun: 0,
+              },
+            ],
+          ]),
+        ],
+      ]);
+
+      const observedTestCaseIdsByRequirement = new Map<string, Set<number>>([
+        ['SR5310', new Set([111])],
+      ]);
+
+      const linkedRequirementsByTestCase = new Map([
+        [
+          111,
+          {
+            baseKeys: new Set(['SR5310']),
+            fullCodes: new Set(['SR5310']),
+            bugIds: new Set(),
+          },
+        ],
+      ]);
+
+      const l3l4ByBaseKey = new Map([
+        [
+          'SR5310',
+          [
+            { l3Id: '9003', l3Title: 'L3 9003', l4Id: '', l4Title: '' },
+            { l3Id: '9003', l3Title: 'L3 9003', l4Id: '9103', l4Title: 'L4 9103' },
+            { l3Id: '9003', l3Title: 'L3 9003', l4Id: '9104', l4Title: 'L4 9104' },
+          ],
+        ],
+      ]);
+
+      const rows = (resultDataProvider as any).buildMewpCoverageRows(
+        requirements,
+        requirementIndex,
+        observedTestCaseIdsByRequirement,
+        linkedRequirementsByTestCase,
+        l3l4ByBaseKey,
+        new Map()
+      );
+
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toEqual(
+        expect.objectContaining({
+          'L3 REQ ID': '9003',
+          'L4 REQ ID': '9103',
+        })
+      );
+      expect(rows[1]).toEqual(
+        expect.objectContaining({
+          'L3 REQ ID': '9003',
+          'L4 REQ ID': '9104',
+        })
+      );
+    });
+
     it('should not emit bug rows from ADO-linked bug ids when external bugs source is empty', () => {
       const requirements = [
         {

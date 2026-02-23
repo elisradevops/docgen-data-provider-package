@@ -1113,8 +1113,20 @@ export default class ResultDataProvider {
         l4Title: existing.l4Title || l4Title,
       });
     }
+    const normalizedPairs = [...deduped.values()];
+    const l3KeysWithAnyL4 = new Set(
+      normalizedPairs
+        .filter((item) => !!String(item?.l3Id || '').trim() && !!String(item?.l4Id || '').trim())
+        .map((item) => String(item?.l3Id || '').trim().toLowerCase())
+    );
+    const filtered = normalizedPairs.filter((item) => {
+      const l3Id = String(item?.l3Id || '').trim();
+      const l4Id = String(item?.l4Id || '').trim();
+      if (!l3Id || !!l4Id) return true;
+      return !l3KeysWithAnyL4.has(l3Id.toLowerCase());
+    });
 
-    return [...deduped.values()].sort((a, b) => {
+    return filtered.sort((a, b) => {
       const l3Compare = String(a?.l3Id || '').localeCompare(String(b?.l3Id || ''));
       if (l3Compare !== 0) return l3Compare;
       return String(a?.l4Id || '').localeCompare(String(b?.l4Id || ''));
