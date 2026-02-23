@@ -1986,6 +1986,74 @@ describe('ResultDataProvider', () => {
       );
     });
 
+    it('should report only base SR when an entire mentioned family is uncovered', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 401, testCaseName: 'TC 401 - Family uncovered' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 401,
+                workItemFields: [{ key: 'Steps', value: '<steps id=\"mock-steps-tc-401\"></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 9001,
+          requirementId: 'SR0054-1',
+          baseKey: 'SR0054',
+          title: 'SR0054 child 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 9002,
+          requirementId: 'SR0054-2',
+          baseKey: 'SR0054',
+          title: 'SR0054 child 2',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([[401, { baseKeys: new Set<string>(), fullCodes: new Set<string>() }]])
+      );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '3',
+          stepPosition: '3',
+          action: 'Validate family root',
+          expected: 'SR0054',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 401,
+          'Mentioned but Not Linked': 'Step 3: SR0054',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Fail',
+        })
+      );
+      expect(String(result.rows[0]['Mentioned but Not Linked'] || '')).not.toContain('SR0054-1');
+      expect(String(result.rows[0]['Mentioned but Not Linked'] || '')).not.toContain('SR0054-2');
+    });
+
     it('should not duplicate Direction A discrepancy when same requirement is repeated in multiple steps', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
@@ -2659,6 +2727,115 @@ describe('ResultDataProvider', () => {
           'Validation Status': 'Pass',
         })
       );
+    });
+  });
+
+  describe('buildLinkedRequirementsByTestCase', () => {
+    it('should map linked requirements only for supported test-case requirement relation types', async () => {
+      const requirements = [
+        {
+          workItemId: 7001,
+          requirementId: 'SR0054-1',
+          baseKey: 'SR0054',
+          linkedTestCaseIds: [],
+        },
+      ];
+      const testData = [
+        {
+          testCasesItems: [{ workItem: { id: 1001 } }],
+          testPointsItems: [],
+        },
+      ];
+
+      const fetchByIdsSpy = jest
+        .spyOn(resultDataProvider as any, 'fetchWorkItemsByIds')
+        .mockImplementation(async (...args: any[]) => {
+          const ids = Array.isArray(args?.[1]) ? args[1] : [];
+          const includeRelations = !!args?.[2];
+          if (includeRelations) {
+            return [
+              {
+                id: 1001,
+                relations: [
+                  {
+                    rel: 'Microsoft.VSTS.Common.TestedBy-Reverse',
+                    url: 'https://dev.azure.com/org/project/_apis/wit/workItems/7001',
+                  },
+                  {
+                    rel: 'System.LinkTypes.Related',
+                    url: 'https://dev.azure.com/org/project/_apis/wit/workItems/7001',
+                  },
+                ],
+              },
+            ];
+          }
+          return ids.map((id) => ({
+            id,
+            fields: {
+              'System.WorkItemType': id === 7001 ? 'Requirement' : 'Test Case',
+            },
+          }));
+        });
+
+      const linked = await (resultDataProvider as any).buildLinkedRequirementsByTestCase(
+        requirements,
+        testData,
+        mockProjectName
+      );
+
+      expect(fetchByIdsSpy).toHaveBeenCalled();
+      expect(linked.get(1001)?.baseKeys?.has('SR0054')).toBe(true);
+      expect(linked.get(1001)?.fullCodes?.has('SR0054-1')).toBe(true);
+    });
+
+    it('should ignore unsupported relation types when linking test case to requirements', async () => {
+      const requirements = [
+        {
+          workItemId: 7002,
+          requirementId: 'SR0099-1',
+          baseKey: 'SR0099',
+          linkedTestCaseIds: [],
+        },
+      ];
+      const testData = [
+        {
+          testCasesItems: [{ workItem: { id: 1002 } }],
+          testPointsItems: [],
+        },
+      ];
+
+      jest.spyOn(resultDataProvider as any, 'fetchWorkItemsByIds').mockImplementation(async (...args: any[]) => {
+        const ids = Array.isArray(args?.[1]) ? args[1] : [];
+        const includeRelations = !!args?.[2];
+        if (includeRelations) {
+          return [
+            {
+              id: 1002,
+              relations: [
+                {
+                  rel: 'System.LinkTypes.Related',
+                  url: 'https://dev.azure.com/org/project/_apis/wit/workItems/7002',
+                },
+              ],
+            },
+          ];
+        }
+        return ids.map((id) => ({
+          id,
+          fields: {
+            'System.WorkItemType': id === 7002 ? 'Requirement' : 'Test Case',
+          },
+        }));
+      });
+
+      const linked = await (resultDataProvider as any).buildLinkedRequirementsByTestCase(
+        requirements,
+        testData,
+        mockProjectName
+      );
+
+      expect(linked.get(1002)?.baseKeys?.has('SR0099')).toBe(false);
+      expect(linked.get(1002)?.fullCodes?.has('SR0099-1')).toBe(false);
     });
   });
 

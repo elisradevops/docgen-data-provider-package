@@ -848,18 +848,6 @@ export default class ResultDataProvider {
           [...mentionedL2Only].map((code) => this.toRequirementKey(code)).filter((code) => !!code)
         );
 
-        const expectedFamilyCodes = new Set<string>();
-        for (const baseKey of mentionedBaseKeys) {
-          const familyCodes = requirementFamilies.get(baseKey);
-          if (familyCodes?.size) {
-            familyCodes.forEach((code) => expectedFamilyCodes.add(code));
-          } else {
-            for (const code of mentionedL2Only) {
-              if (this.toRequirementKey(code) === baseKey) expectedFamilyCodes.add(code);
-            }
-          }
-        }
-
         const linkedFullCodesRaw = linkedRequirementsByTestCase.get(testCaseId)?.fullCodes || new Set<string>();
         const linkedFullCodes =
           scopedRequirementKeys?.size && linkedFullCodesRaw.size > 0
@@ -873,14 +861,48 @@ export default class ResultDataProvider {
           [...linkedFullCodes].map((code) => this.toRequirementKey(code)).filter((code) => !!code)
         );
 
-        const missingMentioned = [...mentionedL2Only].filter((code) => {
+        const mentionedCodesByBase = new Map<string, Set<string>>();
+        for (const code of mentionedL2Only) {
           const baseKey = this.toRequirementKey(code);
-          if (!baseKey) return false;
-          const hasSpecificSuffix = /-\d+$/.test(code);
-          if (hasSpecificSuffix) return !linkedFullCodes.has(code);
-          return !linkedBaseKeys.has(baseKey);
-        });
-        const missingFamily = [...expectedFamilyCodes].filter((code) => !linkedFullCodes.has(code));
+          if (!baseKey) continue;
+          if (!mentionedCodesByBase.has(baseKey)) mentionedCodesByBase.set(baseKey, new Set<string>());
+          mentionedCodesByBase.get(baseKey)!.add(code);
+        }
+
+        // Context-based direction A logic:
+        // 1) If no member of family is linked -> report only base SR (Step X: SR0054).
+        // 2) If family is partially linked -> report only specific missing members.
+        // 3) If family fully linked -> report nothing for that family.
+        const missingBaseWhenFamilyUncovered = new Set<string>();
+        const missingSpecificMentionedNoFamily = new Set<string>();
+        const missingFamilyMembers = new Set<string>();
+        for (const [baseKey, mentionedCodes] of mentionedCodesByBase.entries()) {
+          const familyCodes = requirementFamilies.get(baseKey);
+          if (familyCodes?.size) {
+            const missingInFamily = [...familyCodes].filter((code) => !linkedFullCodes.has(code));
+            if (missingInFamily.length === 0) continue;
+            const linkedInFamilyCount = familyCodes.size - missingInFamily.length;
+            if (linkedInFamilyCount === 0) {
+              missingBaseWhenFamilyUncovered.add(baseKey);
+            } else {
+              for (const code of missingInFamily) {
+                missingFamilyMembers.add(code);
+              }
+            }
+            continue;
+          }
+
+          // Fallback path when family data is unavailable for this base key.
+          for (const code of mentionedCodes) {
+            const hasSpecificSuffix = /-\d+$/.test(code);
+            if (hasSpecificSuffix) {
+              if (!linkedFullCodes.has(code)) missingSpecificMentionedNoFamily.add(code);
+            } else if (!linkedBaseKeys.has(baseKey)) {
+              missingBaseWhenFamilyUncovered.add(baseKey);
+            }
+          }
+        }
+
         // Direction B is family-based: if any member of a family is mentioned in Expected Result,
         // linked members of that same family are not considered "linked but not mentioned".
         const extraLinked = [...linkedFullCodes].filter((code) => {
@@ -899,13 +921,22 @@ export default class ResultDataProvider {
           mentionedButNotLinkedByStep.get(normalizedStepRef)!.add(normalizedRequirementId);
         };
 
-        const sortedMissingMentioned = [...new Set(missingMentioned)].sort((a, b) => a.localeCompare(b));
-        const sortedMissingFamily = [...new Set(missingFamily)].sort((a, b) => a.localeCompare(b));
-        for (const code of sortedMissingMentioned) {
+        const sortedMissingSpecificMentionedNoFamily = [...missingSpecificMentionedNoFamily].sort((a, b) =>
+          a.localeCompare(b)
+        );
+        const sortedMissingBaseWhenFamilyUncovered = [...missingBaseWhenFamilyUncovered].sort((a, b) =>
+          a.localeCompare(b)
+        );
+        const sortedMissingFamilyMembers = [...missingFamilyMembers].sort((a, b) => a.localeCompare(b));
+        for (const code of sortedMissingSpecificMentionedNoFamily) {
           const stepRef = mentionedCodeFirstStep.get(code) || 'Step ?';
           appendMentionedButNotLinked(code, stepRef);
         }
-        for (const code of sortedMissingFamily) {
+        for (const baseKey of sortedMissingBaseWhenFamilyUncovered) {
+          const stepRef = mentionedBaseFirstStep.get(baseKey) || 'Step ?';
+          appendMentionedButNotLinked(baseKey, stepRef);
+        }
+        for (const code of sortedMissingFamilyMembers) {
           const baseKey = this.toRequirementKey(code);
           const stepRef = mentionedBaseFirstStep.get(baseKey) || 'Step ?';
           appendMentionedButNotLinked(code, stepRef);
@@ -941,7 +972,11 @@ export default class ResultDataProvider {
           `MEWP internal validation parse diagnostics: ` +
             `testCaseId=${testCaseId} parsedSteps=${executableSteps.length} ` +
             `stepsWithMentions=${mentionEntries.length} customerIdsFound=${mentionedL2Only.size} ` +
-            `linkedRequirements=${linkedFullCodes.size} mentionedButNotLinked=${sortedMissingMentioned.length + sortedMissingFamily.length} ` +
+            `linkedRequirements=${linkedFullCodes.size} mentionedButNotLinked=${
+              sortedMissingSpecificMentionedNoFamily.length +
+              sortedMissingBaseWhenFamilyUncovered.length +
+              sortedMissingFamilyMembers.length
+            } ` +
             `linkedButNotMentioned=${sortedExtraLinked.length} status=${validationStatus} ` +
             `customerIdSample='${[...mentionedL2Only].slice(0, 5).join(', ')}'`
         );
