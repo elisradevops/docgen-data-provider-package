@@ -16,7 +16,6 @@ export interface MewpCoverageRequestOptions {
   useRelFallback?: boolean;
   externalBugsFile?: MewpExternalFileRef | null;
   externalL3L4File?: MewpExternalFileRef | null;
-  mergeDuplicateL2Cells?: boolean;
 }
 
 export interface MewpInternalValidationRequestOptions {
