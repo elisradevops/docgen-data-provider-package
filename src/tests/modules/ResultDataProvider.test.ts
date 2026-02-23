@@ -2439,6 +2439,80 @@ describe('ResultDataProvider', () => {
       expect(String(result.rows[0]['Mentioned but Not Linked'] || '')).not.toContain('VVRM');
       expect(String(result.rows[0]['Linked but Not Mentioned'] || '')).not.toContain('VVRM');
     });
+
+    it('should fallback to work-item fields for steps XML when suite payload has no workItemFields', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchMewpScopedTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 501, testCaseName: 'TC 501' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 501,
+                workItemFields: [],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 9001,
+          requirementId: 'SR0501',
+          baseKey: 'SR0501',
+          title: 'Req 501',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [501],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([
+          [
+            501,
+            {
+              baseKeys: new Set(['SR0501']),
+              fullCodes: new Set(['SR0501']),
+            },
+          ],
+        ])
+      );
+      jest.spyOn(resultDataProvider as any, 'fetchWorkItemsByIds').mockResolvedValueOnce([
+        {
+          id: 501,
+          fields: {
+            'Microsoft.VSTS.TCM.Steps':
+              '<steps><step id="2" type="ActionStep"><parameterizedString isformatted="true">Action</parameterizedString><parameterizedString isformatted="true">SR0501</parameterizedString></step></steps>',
+          },
+        },
+      ]);
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: 'Action',
+          expected: 'SR0501',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect((resultDataProvider as any).fetchWorkItemsByIds).toHaveBeenCalled();
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 501,
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Pass',
+        })
+      );
+    });
   });
 
   describe('MEWP rel fallback scoping', () => {
@@ -2659,6 +2733,39 @@ describe('ResultDataProvider', () => {
           responsibility: 'ESUK',
         })
       );
+    });
+
+    it('should resolve external bug responsibility from AreaPath columns when SAPWBS is empty', async () => {
+      const mewpExternalTableUtils = (resultDataProvider as any).mewpExternalTableUtils;
+      jest.spyOn(mewpExternalTableUtils, 'loadExternalTableRows').mockResolvedValueOnce([
+        {
+          Elisra_SortIndex: '101',
+          SR: 'SR0001',
+          TargetWorkItemId: '9011',
+          Title: 'Bug from ATP\\ESUK path',
+          TargetState: 'Active',
+          SAPWBS: '',
+          AreaPath: 'MEWP\\Customer Requirements\\Level 2\\ATP\\ESUK',
+        },
+        {
+          Elisra_SortIndex: '102',
+          SR: 'SR0002',
+          TargetWorkItemId: '9012',
+          Title: 'Bug from ATP path',
+          TargetState: 'Active',
+          SAPWBS: '',
+          'System.AreaPath': 'MEWP\\Customer Requirements\\Level 2\\ATP',
+        },
+      ]);
+
+      const map = await (resultDataProvider as any).loadExternalBugsByTestCase(validBugsSource);
+      const bugs101 = map.get(101) || [];
+      const bugs102 = map.get(102) || [];
+
+      expect(bugs101).toHaveLength(1);
+      expect(bugs102).toHaveLength(1);
+      expect(bugs101[0].responsibility).toBe('ESUK');
+      expect(bugs102[0].responsibility).toBe('Elisra');
     });
 
     it('should require Elisra_SortIndex and ignore rows that only provide WorkItemId', async () => {

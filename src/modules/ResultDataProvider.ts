@@ -779,6 +779,18 @@ export default class ResultDataProvider {
         }
       }
 
+      const preloadedStepXmlCount = stepsXmlByTestCase.size;
+      const fallbackStepLoadStats = await this.enrichMewpStepsXmlMapFromWorkItems(
+        projectName,
+        [...allTestCaseIds],
+        stepsXmlByTestCase
+      );
+      logger.info(
+        `MEWP internal validation steps source summary: testCases=${allTestCaseIds.size} ` +
+          `fromSuitePayload=${preloadedStepXmlCount} fromWorkItemFallback=${fallbackStepLoadStats.loadedFromFallback} ` +
+          `stepsXmlAvailable=${stepsXmlByTestCase.size} unresolved=${fallbackStepLoadStats.unresolvedCount}`
+      );
+
       const validL2BaseKeys = new Set<string>([...requirementFamilies.keys()]);
       const diagnostics = {
         totalTestCases: 0,
@@ -1545,17 +1557,53 @@ export default class ResultDataProvider {
     for (const suite of testData || []) {
       const testCasesItems = Array.isArray(suite?.testCasesItems) ? suite.testCasesItems : [];
       for (const testCase of testCasesItems) {
-        const id = Number(testCase?.workItem?.id);
+        const id = Number(testCase?.workItem?.id || testCase?.testCaseId || testCase?.id || 0);
         if (!Number.isFinite(id)) continue;
         if (map.has(id)) continue;
-        const fields = testCase?.workItem?.workItemFields;
-        const stepsXml = this.extractStepsXmlFromWorkItemFields(fields);
+        const stepsXml = this.extractStepsXmlFromTestCaseItem(testCase);
         if (stepsXml) {
           map.set(id, stepsXml);
         }
       }
     }
     return map;
+  }
+
+  private extractStepsXmlFromTestCaseItem(testCase: any): string {
+    const fieldsList = testCase?.workItem?.workItemFields;
+    const fromFieldList = this.extractStepsXmlFromWorkItemFields(fieldsList);
+    if (fromFieldList) return fromFieldList;
+
+    const workItemFields = testCase?.workItem?.fields || {};
+    const fromFieldsMap = this.extractStepsXmlFromFieldsMap(workItemFields);
+    if (fromFieldsMap) return fromFieldsMap;
+
+    const directCandidates = [
+      testCase?.stepsResultXml,
+      testCase?.workItem?.stepsResultXml,
+      testCase?.workItem?.['Microsoft.VSTS.TCM.Steps'],
+      testCase?.workItem?.steps,
+    ];
+    for (const candidate of directCandidates) {
+      const value = String(candidate || '').trim();
+      if (value) return value;
+    }
+
+    return '';
+  }
+
+  private extractStepsXmlFromFieldsMap(fields: Record<string, any>): string {
+    const directCandidates = [
+      fields?.['Microsoft.VSTS.TCM.Steps'],
+      fields?.['microsoft.vsts.tcm.steps'],
+      fields?.['Steps'],
+      fields?.['steps'],
+    ];
+    for (const candidate of directCandidates) {
+      const value = String(candidate || '').trim();
+      if (value) return value;
+    }
+    return '';
   }
 
   private extractStepsXmlFromWorkItemFields(workItemFields: any): string {
@@ -1574,6 +1622,43 @@ export default class ResultDataProvider {
     }
 
     return '';
+  }
+
+  private async enrichMewpStepsXmlMapFromWorkItems(
+    projectName: string,
+    testCaseIds: number[],
+    stepsXmlByTestCase: Map<number, string>
+  ): Promise<{ loadedFromFallback: number; unresolvedCount: number }> {
+    const missingIds = [...new Set(testCaseIds)]
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+      .filter((id) => !stepsXmlByTestCase.has(id));
+
+    if (missingIds.length === 0) {
+      return { loadedFromFallback: 0, unresolvedCount: 0 };
+    }
+
+    let loadedFromFallback = 0;
+    try {
+      const workItems = await this.fetchWorkItemsByIds(projectName, missingIds, false);
+      for (const workItem of workItems || []) {
+        const id = Number(workItem?.id || 0);
+        if (!Number.isFinite(id) || id <= 0 || stepsXmlByTestCase.has(id)) continue;
+        const stepsXml = this.extractStepsXmlFromFieldsMap(workItem?.fields || {});
+        if (!stepsXml) continue;
+        stepsXmlByTestCase.set(id, stepsXml);
+        loadedFromFallback += 1;
+      }
+    } catch (error: any) {
+      logger.warn(
+        `MEWP internal validation: failed loading missing steps via work-item fallback: ${error?.message || error}`
+      );
+    }
+
+    return {
+      loadedFromFallback,
+      unresolvedCount: Math.max(0, missingIds.length - loadedFromFallback),
+    };
   }
 
   private classifyRequirementStepOutcome(outcome: any): 'passed' | 'failed' | 'notRun' {

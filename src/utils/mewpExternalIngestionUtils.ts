@@ -99,12 +99,23 @@ export default class MewpExternalIngestionUtils {
           'TargetSapWbs',
         ])
       );
+      const bugAreaPathRaw = adapters.toComparableText(
+        this.externalTableUtils.readExternalCell(row, [
+          'System.AreaPath',
+          'AreaPath',
+          'Area Path',
+          'TargetAreaPath',
+          'Target Area Path',
+          'Links.TargetWorkItem.AreaPath',
+        ])
+      );
 
       const bug: MewpBugLink = {
         id: bugId,
         title: bugTitle,
         responsibility: adapters.resolveBugResponsibility({
           'Custom.SAPWBS': bugResponsibilityRaw,
+          'System.AreaPath': bugAreaPathRaw,
         }),
         requirementBaseKey,
       };
