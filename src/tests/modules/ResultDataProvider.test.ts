@@ -1937,7 +1937,7 @@ describe('ResultDataProvider', () => {
       );
     });
 
-    it('should emit Direction A rows with step context for missing sibling links', async () => {
+    it('should emit Direction A rows only for specifically mentioned child requirements', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
       jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
@@ -1981,7 +1981,7 @@ describe('ResultDataProvider', () => {
           stepId: '2',
           stepPosition: '2',
           action: '',
-          expected: 'SR0001; SR0002',
+          expected: 'SR0001-1',
           isSharedStepTitle: false,
         },
       ]);
@@ -2070,6 +2070,115 @@ describe('ResultDataProvider', () => {
       expect(result.rows[0]).toEqual(
         expect.objectContaining({
           'Test Case ID': 402,
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Pass',
+        })
+      );
+    });
+
+    it('should support cross-test-case family coverage when siblings are linked on different test cases', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [
+            { testCaseId: 501, testCaseName: 'TC 501 - sibling 1' },
+            { testCaseId: 502, testCaseName: 'TC 502 - sibling 2' },
+          ],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 501,
+                workItemFields: [{ key: 'Steps', value: '<steps id=\"mock-steps-tc-501\"></steps>' }],
+              },
+            },
+            {
+              workItem: {
+                id: 502,
+                workItemFields: [{ key: 'Steps', value: '<steps id=\"mock-steps-tc-502\"></steps>' }],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 9301,
+          requirementId: 'SR0054-1',
+          baseKey: 'SR0054',
+          title: 'SR0054 child 1',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 9302,
+          requirementId: 'SR0054-2',
+          baseKey: 'SR0054',
+          title: 'SR0054 child 2',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([
+          [
+            501,
+            {
+              baseKeys: new Set(['SR0054']),
+              fullCodes: new Set(['SR0054-1']),
+            },
+          ],
+          [
+            502,
+            {
+              baseKeys: new Set(['SR0054']),
+              fullCodes: new Set(['SR0054-2']),
+            },
+          ],
+        ])
+      );
+      jest
+        .spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps')
+        .mockResolvedValueOnce([
+          {
+            stepId: '1',
+            stepPosition: '1',
+            action: 'Parent mention on first test case',
+            expected: 'SR0054',
+            isSharedStepTitle: false,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            stepId: '1',
+            stepPosition: '1',
+            action: 'Parent mention on second test case',
+            expected: 'SR0054',
+            isSharedStepTitle: false,
+          },
+        ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      const byTestCase = new Map<number, any>(
+        result.rows.map((row: any) => [Number(row['Test Case ID']), row])
+      );
+      expect(byTestCase.get(501)).toEqual(
+        expect.objectContaining({
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Pass',
+        })
+      );
+      expect(byTestCase.get(502)).toEqual(
+        expect.objectContaining({
           'Mentioned but Not Linked': '',
           'Linked but Not Mentioned': '',
           'Validation Status': 'Pass',
@@ -2562,7 +2671,7 @@ describe('ResultDataProvider', () => {
       expect(byTestCase.get(201)).toEqual(
         expect.objectContaining({
           'Test Case Title': 'TC 201 - Mixed discrepancies',
-          'Mentioned but Not Linked': 'Step 1: SR0095-3\nSR0511: SR0511-1, SR0511-2',
+          'Mentioned but Not Linked': 'Step 1: SR0095-3',
           'Linked but Not Mentioned': 'SR8888',
           'Validation Status': 'Fail',
         })
