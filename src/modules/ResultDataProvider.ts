@@ -446,8 +446,7 @@ export default class ResultDataProvider {
       const testData = await this.fetchMewpScopedTestData(
         testPlanId,
         projectName,
-        selectedSuiteIds,
-        !!options?.useRelFallback
+        selectedSuiteIds
       );
 
       const allRequirements = await this.fetchMewpL2Requirements(projectName);
@@ -549,6 +548,9 @@ export default class ResultDataProvider {
       const parsedDefinitionStepsByTestCase = new Map<number, TestSteps[]>();
       const testCaseStepsXmlMap = this.buildTestCaseStepsXmlMap(testData);
       const runResults = await this.fetchAllResultDataTestReporter(testData, projectName, [], false, false);
+      if (options?.debugMode) {
+        this.logMewpRunScenarioDebugMatrix(runResults, `coverage plan=${testPlanId}`);
+      }
       for (const runResult of runResults) {
         const testCaseId = this.extractMewpTestCaseId(runResult);
         const rawActionResults = Array.isArray(runResult?.iteration?.actionResults)
@@ -748,8 +750,7 @@ export default class ResultDataProvider {
       const testData = await this.fetchMewpScopedTestData(
         testPlanId,
         projectName,
-        selectedSuiteIds,
-        !!options?.useRelFallback
+        selectedSuiteIds
       );
       const allRequirements = await this.fetchMewpL2Requirements(projectName);
       const linkedRequirementsByTestCase = await this.buildLinkedRequirementsByTestCase(
@@ -795,6 +796,16 @@ export default class ResultDataProvider {
           `fromSuitePayload=${preloadedStepXmlCount} fromWorkItemFallback=${fallbackStepLoadStats.loadedFromFallback} ` +
           `stepsXmlAvailable=${stepsXmlByTestCase.size} unresolved=${fallbackStepLoadStats.unresolvedCount}`
       );
+      if (options?.debugMode) {
+        const debugRunResults = await this.fetchAllResultDataTestReporter(
+          testData,
+          projectName,
+          [],
+          false,
+          false
+        );
+        this.logMewpRunScenarioDebugMatrix(debugRunResults, `internal-validation plan=${testPlanId}`);
+      }
 
       const validL2BaseKeys = new Set<string>([...requirementFamilies.keys()]);
       const diagnostics = {
@@ -808,34 +819,6 @@ export default class ResultDataProvider {
 
       for (const testCaseId of [...allTestCaseIds].sort((a, b) => a - b)) {
         diagnostics.totalTestCases += 1;
-        const logList = (items: Iterable<string>, max = 12): string => {
-          const values = [...items].map((item) => String(item || '').trim()).filter((item) => !!item);
-          const shown = values.slice(0, max);
-          const suffix = values.length > max ? ` ...(+${values.length - max} more)` : '';
-          return shown.join(', ') + suffix;
-        };
-        const logByFamily = (items: Iterable<string>, maxFamilies = 8, maxMembers = 10): string => {
-          const map = new Map<string, Set<string>>();
-          for (const item of items || []) {
-            const normalized = this.normalizeMewpRequirementCodeWithSuffix(String(item || ''));
-            if (!normalized) continue;
-            const base = this.toRequirementKey(normalized) || normalized;
-            if (!map.has(base)) map.set(base, new Set<string>());
-            map.get(base)!.add(normalized);
-          }
-          const entries = [...map.entries()]
-            .sort((a, b) => a[0].localeCompare(b[0]))
-            .slice(0, maxFamilies)
-            .map(([base, members]) => {
-              const sortedMembers = [...members].sort((a, b) => a.localeCompare(b));
-              const shownMembers = sortedMembers.slice(0, maxMembers);
-              const membersSuffix =
-                sortedMembers.length > maxMembers ? ` ...(+${sortedMembers.length - maxMembers} more)` : '';
-              return `${base}=[${shownMembers.join(', ')}${membersSuffix}]`;
-            });
-          const suffix = map.size > maxFamilies ? ` ...(+${map.size - maxFamilies} families)` : '';
-          return entries.join(' | ') + suffix;
-        };
         const stepsXml = stepsXmlByTestCase.get(testCaseId) || '';
         const parsedSteps =
           stepsXml && String(stepsXml).trim() !== ''
@@ -888,15 +871,6 @@ export default class ResultDataProvider {
         const linkedBaseKeys = new Set<string>(
           [...linkedFullCodes].map((code) => this.toRequirementKey(code)).filter((code) => !!code)
         );
-        const mentionStepSample = mentionEntries
-          .slice(0, 8)
-          .map((entry) => `${entry.stepRef}=[${logList(entry.codes, 6)}]`)
-          .join(' | ');
-        logger.debug(
-          `MEWP internal validation trace: testCaseId=${testCaseId} ` +
-            `mentionSteps=${mentionEntries.length} mentionStepSample='${mentionStepSample}' ` +
-            `mentionedL2ByFamily='${logByFamily(mentionedL2Only)}' linkedByFamily='${logByFamily(linkedFullCodes)}'`
-        );
 
         const mentionedCodesByBase = new Map<string, Set<string>>();
         for (const code of mentionedL2Only) {
@@ -918,89 +892,49 @@ export default class ResultDataProvider {
           const mentionedCodesList = [...mentionedCodes];
           const hasBaseMention = mentionedCodesList.some((code) => !/-\d+$/.test(code));
           const mentionedSpecificMembers = mentionedCodesList.filter((code) => /-\d+$/.test(code));
-          let familyDecision = 'no-action';
-          let familyTargetCodes: string[] = [];
-          let familyMissingCodes: string[] = [];
-          let familyLinkedCodes: string[] = [];
-          let familyAllCodes: string[] = [];
 
           if (familyCodes?.size) {
-            familyAllCodes = [...familyCodes].sort((a, b) => a.localeCompare(b));
-            familyLinkedCodes = familyAllCodes.filter((code) => linkedFullCodes.has(code));
             // Base mention ("SR0054") validates against child coverage when children exist.
             // If no child variants exist, fallback to the single standalone requirement code.
             if (hasBaseMention) {
               const familyCodesList = [...familyCodes];
               const childFamilyCodes = familyCodesList.filter((code) => /-\d+$/.test(code));
               const targetFamilyCodes = childFamilyCodes.length > 0 ? childFamilyCodes : familyCodesList;
-              familyTargetCodes = [...targetFamilyCodes].sort((a, b) => a.localeCompare(b));
               const missingInTargetFamily = targetFamilyCodes.filter((code) => !linkedFullCodes.has(code));
-              familyMissingCodes = [...missingInTargetFamily].sort((a, b) => a.localeCompare(b));
 
               if (missingInTargetFamily.length > 0) {
                 const hasAnyLinkedInFamily = familyCodesList.some((code) => linkedFullCodes.has(code));
                 if (!hasAnyLinkedInFamily) {
                   missingBaseWhenFamilyUncovered.add(baseKey);
-                  familyDecision = 'base-mentioned-family-uncovered';
                 } else {
                   for (const code of missingInTargetFamily) {
                     missingFamilyMembers.add(code);
                   }
-                  familyDecision = 'base-mentioned-family-partial-missing-children';
                 }
-              } else {
-                familyDecision = 'base-mentioned-family-fully-covered';
               }
-              logger.debug(
-                `MEWP internal validation family decision: testCaseId=${testCaseId} base=${baseKey} ` +
-                  `mode=baseMention mentioned='${logList(mentionedCodesList)}' familyAll='${logList(familyAllCodes)}' ` +
-                  `target='${logList(familyTargetCodes)}' linked='${logList(familyLinkedCodes)}' ` +
-                  `missing='${logList(familyMissingCodes)}' decision=${familyDecision}`
-              );
               continue;
             }
 
             // Specific mention ("SR0054-1") validates as exact-match only.
-            const missingSpecificMembers: string[] = [];
             for (const code of mentionedSpecificMembers) {
               if (!linkedFullCodes.has(code)) {
                 missingSpecificMentionedNoFamily.add(code);
-                missingSpecificMembers.push(code);
               }
             }
-            familyDecision =
-              missingSpecificMembers.length > 0
-                ? 'specific-mentioned-exact-missing'
-                : 'specific-mentioned-exact-covered';
-            logger.debug(
-              `MEWP internal validation family decision: testCaseId=${testCaseId} base=${baseKey} ` +
-                `mode=specificMention mentioned='${logList(mentionedCodesList)}' familyAll='${logList(familyAllCodes)}' ` +
-                `linked='${logList(familyLinkedCodes)}' missingSpecific='${logList(missingSpecificMembers)}' ` +
-                `decision=${familyDecision}`
-            );
             continue;
           }
 
           // Fallback path when family data is unavailable for this base key.
-          const fallbackMissingSpecific: string[] = [];
-          let fallbackBaseMissing = false;
           for (const code of mentionedCodes) {
             const hasSpecificSuffix = /-\d+$/.test(code);
             if (hasSpecificSuffix) {
               if (!linkedFullCodes.has(code)) {
                 missingSpecificMentionedNoFamily.add(code);
-                fallbackMissingSpecific.push(code);
               }
             } else if (!linkedBaseKeys.has(baseKey)) {
               missingBaseWhenFamilyUncovered.add(baseKey);
-              fallbackBaseMissing = true;
             }
           }
-          logger.debug(
-            `MEWP internal validation family decision: testCaseId=${testCaseId} base=${baseKey} ` +
-              `mode=noFamilyData mentioned='${logList(mentionedCodesList)}' linkedBasePresent=${linkedBaseKeys.has(baseKey)} ` +
-              `missingSpecific='${logList(fallbackMissingSpecific)}' missingBase=${fallbackBaseMissing}`
-          );
         }
 
         // Direction B is family-based: if any member of a family is mentioned in Expected Result,
@@ -1063,16 +997,8 @@ export default class ResultDataProvider {
             const groupedRequirementList = this.formatRequirementCodesGroupedByFamily(requirementIds);
             return `${stepRef}: ${groupedRequirementList}`;
           })
-          .join('; ');
+          .join('\n');
         const linkedButNotMentioned = this.formatRequirementCodesGroupedByFamily(sortedExtraLinked);
-        const rawMentionedByStepForLog = [...mentionedButNotLinkedByStep.entries()]
-          .map(([stepRef, requirementIds]) => `${stepRef}=[${logList(requirementIds, 8)}]`)
-          .join(' | ');
-        logger.debug(
-          `MEWP internal validation grouped diagnostics: testCaseId=${testCaseId} ` +
-            `rawMentionedByStep='${rawMentionedByStepForLog}' groupedMentioned='${mentionedButNotLinked}' ` +
-            `rawLinkedOnlyByFamily='${logByFamily(sortedExtraLinked)}' groupedLinkedOnly='${linkedButNotMentioned}'`
-        );
         const validationStatus: 'Pass' | 'Fail' =
           mentionedButNotLinked || linkedButNotMentioned ? 'Fail' : 'Pass';
         if (validationStatus === 'Fail') diagnostics.failingRows += 1;
@@ -1534,139 +1460,10 @@ export default class ResultDataProvider {
   private async fetchMewpScopedTestData(
     testPlanId: string,
     projectName: string,
-    selectedSuiteIds: number[] | undefined,
-    useRelFallback: boolean
+    selectedSuiteIds: number[] | undefined
   ): Promise<any[]> {
-    if (!useRelFallback) {
-      const suites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
-      return this.fetchTestData(suites, projectName, testPlanId, false);
-    }
-
-    const selectedSuites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
-    const selectedRel = this.resolveMaxRelNumberFromSuites(selectedSuites);
-    if (selectedRel <= 0) {
-      return this.fetchTestData(selectedSuites, projectName, testPlanId, false);
-    }
-
-    const allSuites = await this.fetchTestSuites(testPlanId, projectName, undefined, true);
-    const relScopedSuites = allSuites.filter((suite) => {
-      const rel = this.extractRelNumberFromSuite(suite);
-      return rel > 0 && rel <= selectedRel;
-    });
-    const suitesForFetch = relScopedSuites.length > 0 ? relScopedSuites : selectedSuites;
-    const rawTestData = await this.fetchTestData(suitesForFetch, projectName, testPlanId, false);
-    return this.reduceToLatestRelRunPerTestCase(rawTestData);
-  }
-
-  private extractRelNumberFromSuite(suite: any): number {
-    const candidates = [
-      suite?.suiteName,
-      suite?.parentSuiteName,
-      suite?.suitePath,
-      suite?.testGroupName,
-    ];
-    const pattern = /(?:^|[^a-z0-9])rel\s*([0-9]+)/i;
-    for (const item of candidates) {
-      const match = pattern.exec(String(item || ''));
-      if (!match) continue;
-      const parsed = Number(match[1]);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed;
-      }
-    }
-    return 0;
-  }
-
-  private resolveMaxRelNumberFromSuites(suites: any[]): number {
-    let maxRel = 0;
-    for (const suite of suites || []) {
-      const rel = this.extractRelNumberFromSuite(suite);
-      if (rel > maxRel) maxRel = rel;
-    }
-    return maxRel;
-  }
-
-  private reduceToLatestRelRunPerTestCase(testData: any[]): any[] {
-    type Candidate = {
-      point: any;
-      rel: number;
-      runId: number;
-      resultId: number;
-      hasRun: boolean;
-    };
-
-    const candidatesByTestCase = new Map<number, Candidate[]>();
-    const testCaseDefinitionById = new Map<number, any>();
-
-    for (const suite of testData || []) {
-      const rel = this.extractRelNumberFromSuite(suite);
-      const testPointsItems = Array.isArray(suite?.testPointsItems) ? suite.testPointsItems : [];
-      const testCasesItems = Array.isArray(suite?.testCasesItems) ? suite.testCasesItems : [];
-
-      for (const testCase of testCasesItems) {
-        const testCaseId = Number(testCase?.workItem?.id || testCase?.testCaseId || testCase?.id || 0);
-        if (!Number.isFinite(testCaseId) || testCaseId <= 0) continue;
-        if (!testCaseDefinitionById.has(testCaseId)) {
-          testCaseDefinitionById.set(testCaseId, testCase);
-        }
-      }
-
-      for (const point of testPointsItems) {
-        const testCaseId = Number(point?.testCaseId || point?.testCase?.id || 0);
-        if (!Number.isFinite(testCaseId) || testCaseId <= 0) continue;
-
-        const runId = Number(point?.lastRunId || 0);
-        const resultId = Number(point?.lastResultId || 0);
-        const hasRun = runId > 0 && resultId > 0;
-        if (!candidatesByTestCase.has(testCaseId)) {
-          candidatesByTestCase.set(testCaseId, []);
-        }
-        candidatesByTestCase.get(testCaseId)!.push({
-          point,
-          rel,
-          runId,
-          resultId,
-          hasRun,
-        });
-      }
-    }
-
-    const selectedPoints: any[] = [];
-    const selectedTestCaseIds = new Set<number>();
-    for (const [testCaseId, candidates] of candidatesByTestCase.entries()) {
-      const sorted = [...candidates].sort((a, b) => {
-        if (a.hasRun !== b.hasRun) return a.hasRun ? -1 : 1;
-        if (a.rel !== b.rel) return b.rel - a.rel;
-        if (a.runId !== b.runId) return b.runId - a.runId;
-        return b.resultId - a.resultId;
-      });
-      const chosen = sorted[0];
-      if (!chosen?.point) continue;
-      selectedPoints.push(chosen.point);
-      selectedTestCaseIds.add(testCaseId);
-    }
-
-    const selectedTestCases: any[] = [];
-    for (const testCaseId of selectedTestCaseIds) {
-      const definition = testCaseDefinitionById.get(testCaseId);
-      if (definition) {
-        selectedTestCases.push(definition);
-      }
-    }
-
-    return [
-      {
-        testSuiteId: 'MEWP_REL_SCOPED',
-        suiteId: 'MEWP_REL_SCOPED',
-        suiteName: 'MEWP Rel Scoped',
-        parentSuiteId: '',
-        parentSuiteName: '',
-        suitePath: 'MEWP Rel Scoped',
-        testGroupName: 'MEWP Rel Scoped',
-        testPointsItems: selectedPoints,
-        testCasesItems: selectedTestCases,
-      },
-    ];
+    const suites = await this.fetchTestSuites(testPlanId, projectName, selectedSuiteIds, true);
+    return this.fetchTestData(suites, projectName, testPlanId, false);
   }
 
   private async loadExternalBugsByTestCase(
@@ -2006,16 +1803,6 @@ export default class ResultDataProvider {
         stepRef: this.resolveValidationStepReference(step, index),
         codes,
       });
-    }
-    return out;
-  }
-
-  private extractRequirementCodesFromExpectedSteps(steps: TestSteps[], includeSuffix: boolean): Set<string> {
-    const out = new Set<string>();
-    for (const step of Array.isArray(steps) ? steps : []) {
-      if (step?.isSharedStepTitle) continue;
-      const codes = this.extractRequirementCodesFromExpectedText(step?.expected || '', includeSuffix);
-      codes.forEach((code) => out.add(code));
     }
     return out;
   }
@@ -2862,7 +2649,7 @@ export default class ResultDataProvider {
         if (sortedMembers.length <= 1) return sortedMembers[0];
         return `${baseKey}: ${sortedMembers.join(', ')}`;
       })
-      .join('; ');
+      .join('\n');
   }
 
   private toMewpComparableText(value: any): string {
@@ -3183,6 +2970,140 @@ export default class ResultDataProvider {
     return testCases;
   }
 
+  private attachSuiteTestCaseContextToPoints(testCasesItems: any[], testPointsItems: any[]): any[] {
+    const points = Array.isArray(testPointsItems) ? testPointsItems : [];
+    const testCases = Array.isArray(testCasesItems) ? testCasesItems : [];
+    if (points.length === 0 || testCases.length === 0) return points;
+
+    const byTestCaseId = new Map<number, any>();
+    for (const testCaseItem of testCases) {
+      const testCaseId = Number(
+        testCaseItem?.workItem?.id || testCaseItem?.testCaseId || testCaseItem?.id || 0
+      );
+      if (!Number.isFinite(testCaseId) || testCaseId <= 0 || byTestCaseId.has(testCaseId)) continue;
+      byTestCaseId.set(testCaseId, testCaseItem);
+    }
+
+    return points.map((point: any) => {
+      const testCaseId = Number(point?.testCaseId || point?.testCase?.id || 0);
+      if (!Number.isFinite(testCaseId) || testCaseId <= 0) return point;
+      const suiteTestCase = byTestCaseId.get(testCaseId);
+      if (!suiteTestCase) return point;
+      return { ...point, suiteTestCase };
+    });
+  }
+
+  private extractWorkItemFieldsMap(workItemFields: any): Record<string, any> {
+    const fields: Record<string, any> = {};
+    if (!Array.isArray(workItemFields)) return fields;
+    for (const field of workItemFields) {
+      const keyCandidates = [field?.key, field?.name, field?.referenceName]
+        .map((item) => String(item || '').trim())
+        .filter((item) => !!item);
+      for (const key of keyCandidates) {
+        fields[key] = field?.value;
+      }
+    }
+    return fields;
+  }
+
+  private resolveSuiteTestCaseRevision(testCaseItem: any): number {
+    const revisionCandidates = [
+      testCaseItem?.workItem?.rev,
+      testCaseItem?.workItem?.revision,
+      testCaseItem?.workItem?.version,
+      testCaseItem?.workItem?.workItemRevision,
+      testCaseItem?.workItem?.workItemVersion,
+      testCaseItem?.revision,
+      testCaseItem?.workItemRevision,
+      testCaseItem?.workItemVersion,
+    ];
+    for (const candidate of revisionCandidates) {
+      const parsed = Number(candidate || 0);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return 0;
+  }
+
+  private buildWorkItemSnapshotFromSuiteTestCase(
+    testCaseItem: any,
+    fallbackTestCaseId: number,
+    fallbackTestCaseName: string = ''
+  ): any | null {
+    if (!testCaseItem) return null;
+
+    const testCaseId = Number(
+      testCaseItem?.workItem?.id || testCaseItem?.testCaseId || testCaseItem?.id || fallbackTestCaseId || 0
+    );
+    if (!Number.isFinite(testCaseId) || testCaseId <= 0) return null;
+
+    const workItem = testCaseItem?.workItem || {};
+    const stepsXml = this.extractStepsXmlFromTestCaseItem(testCaseItem);
+    const fieldsFromList = this.extractWorkItemFieldsMap(workItem?.workItemFields);
+    const fieldsFromMap = workItem?.fields || {};
+    const fields = {
+      ...fieldsFromList,
+      ...fieldsFromMap,
+    };
+
+    if (!fields['System.Title']) {
+      const title = String(
+        testCaseItem?.testCaseName || workItem?.name || testCaseItem?.name || fallbackTestCaseName || ''
+      ).trim();
+      if (title) {
+        fields['System.Title'] = title;
+      }
+    }
+    if (stepsXml && !fields['Microsoft.VSTS.TCM.Steps']) {
+      fields['Microsoft.VSTS.TCM.Steps'] = stepsXml;
+    }
+
+    return {
+      id: testCaseId,
+      rev: this.resolveSuiteTestCaseRevision(testCaseItem) || 1,
+      fields,
+      relations: Array.isArray(workItem?.relations) ? workItem.relations : [],
+    };
+  }
+
+  private async fetchWorkItemByRevision(
+    projectName: string,
+    workItemId: number,
+    revision: number,
+    expandAll: boolean = false
+  ): Promise<any | null> {
+    const id = Number(workItemId || 0);
+    const rev = Number(revision || 0);
+    if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(rev) || rev <= 0) return null;
+
+    const expandParam = expandAll ? '?$expand=all' : '';
+    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${id}/revisions/${rev}${expandParam}`;
+    try {
+      return await TFSServices.getItemContent(url, this.token);
+    } catch (error: any) {
+      logger.warn(`Failed to fetch work item ${id} by revision ${rev}: ${error?.message || error}`);
+      return null;
+    }
+  }
+
+  private async fetchWorkItemLatest(
+    projectName: string,
+    workItemId: number,
+    expandAll: boolean = false
+  ): Promise<any | null> {
+    const id = Number(workItemId || 0);
+    if (!Number.isFinite(id) || id <= 0) return null;
+
+    const expandParam = expandAll ? '?$expand=all' : '';
+    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${id}${expandParam}`;
+    try {
+      return await TFSServices.getItemContent(url, this.token);
+    } catch (error: any) {
+      logger.warn(`Failed to fetch latest work item ${id}: ${error?.message || error}`);
+      return null;
+    }
+  }
+
   /**
    * Fetches result data based on the Work Item Test Reporter.
    *
@@ -3217,13 +3138,37 @@ export default class ResultDataProvider {
           logger.warn(`Invalid run result ${runId} or result ${resultId}`);
           return null;
         }
-        const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${point.testCaseId}?$expand=all`;
-        const testCaseData = await TFSServices.getItemContent(url, this.token);
+        const suiteTestCaseItem = point?.suiteTestCase;
+        const testCaseId = Number(
+          point?.testCaseId || suiteTestCaseItem?.workItem?.id || suiteTestCaseItem?.testCaseId || 0
+        );
+        const suiteTestCaseRevision = this.resolveSuiteTestCaseRevision(suiteTestCaseItem);
+        const fallbackSnapshot = this.buildWorkItemSnapshotFromSuiteTestCase(
+          suiteTestCaseItem,
+          testCaseId,
+          String(point?.testCaseName || '')
+        );
+        let testCaseData = await this.fetchWorkItemByRevision(
+          projectName,
+          testCaseId,
+          suiteTestCaseRevision,
+          isTestReporter
+        );
+        if (!testCaseData) {
+          testCaseData = fallbackSnapshot;
+        }
+        if (!testCaseData) {
+          testCaseData = await this.fetchWorkItemLatest(projectName, testCaseId, isTestReporter);
+        }
+        if (!testCaseData) {
+          logger.warn(`Could not resolve test case ${point.testCaseId} for runless point fallback.`);
+          return null;
+        }
         const newResultData: PlainTestResult = {
           id: 0,
           outcome: point.outcome,
-          revision: testCaseData?.rev || 1,
-          testCase: { id: point.testCaseId, name: point.testCaseName },
+          revision: Number(testCaseData?.rev || suiteTestCaseRevision || 1),
+          testCase: { id: String(testCaseId), name: point.testCaseName },
           state: testCaseData?.fields?.['System.State'] || 'Active',
           priority: testCaseData?.fields?.['Microsoft.VSTS.TCM.Priority'] || 0,
           createdDate: testCaseData?.fields?.['System.CreatedDate'] || '0001-01-01T00:00:00',
@@ -3271,8 +3216,8 @@ export default class ResultDataProvider {
         selectedFieldSet.clear();
         return {
           ...newResultData,
-          stepsResultXml: testCaseData.fields['Microsoft.VSTS.TCM.Steps'] || undefined,
-          testCaseRevision: testCaseData.rev,
+          stepsResultXml: testCaseData?.fields?.['Microsoft.VSTS.TCM.Steps'] || undefined,
+          testCaseRevision: Number(testCaseData?.rev || suiteTestCaseRevision || 1),
           filteredFields,
           relatedRequirements,
           relatedBugs,
@@ -3439,13 +3384,6 @@ export default class ResultDataProvider {
     return (
       String(process?.env?.DOCGEN_VERBOSE_HISTORY_DEBUG ?? '').toLowerCase() === 'true' ||
       String(process?.env?.DOCGEN_VERBOSE_HISTORY_DEBUG ?? '') === '1'
-    );
-  }
-
-  private isRunResultDebugEnabled(): boolean {
-    return (
-      String(process?.env?.DOCGEN_DEBUG_RUNRESULT ?? '').toLowerCase() === 'true' ||
-      String(process?.env?.DOCGEN_DEBUG_RUNRESULT ?? '') === '1'
     );
   }
 
@@ -3935,6 +3873,79 @@ export default class ResultDataProvider {
     return this.fetchResultDataBasedOnWiBase(projectName, runId, resultId);
   }
 
+  private logMewpRunScenarioDebugMatrix(runResults: any[], contextLabel: string): void {
+    const results = Array.isArray(runResults) ? runResults : [];
+    const matrix = {
+      total: results.length,
+      passOrFailWithActionResults: 0,
+      runWithNoActionResults: 0,
+      notApplicable: 0,
+      noRunHistoryActive: 0,
+      other: 0,
+    };
+    const samples = {
+      passOrFailWithActionResults: [] as number[],
+      runWithNoActionResults: [] as number[],
+      notApplicable: [] as number[],
+      noRunHistoryActive: [] as number[],
+      other: [] as number[],
+    };
+
+    const pushSample = (bucket: keyof typeof samples, id: number) => {
+      if (!Number.isFinite(id) || id <= 0) return;
+      if (samples[bucket].length >= 5) return;
+      samples[bucket].push(id);
+    };
+
+    for (const item of results) {
+      const testCaseId = Number(item?.testCaseId || item?.testCase?.id || 0);
+      const hasRun = Number(item?.lastRunId || 0) > 0 && Number(item?.lastResultId || 0) > 0;
+      const rawOutcome = String(item?._debugTestOutcome || '').trim().toLowerCase();
+      const rawState = String(item?._debugTestCaseState || '').trim().toLowerCase();
+      const originalActionResultsCount = Number(item?._debugOriginalActionResultsCount ?? -1);
+
+      if (rawOutcome === 'notapplicable' || rawOutcome === 'not applicable') {
+        matrix.notApplicable += 1;
+        pushSample('notApplicable', testCaseId);
+        continue;
+      }
+
+      if (hasRun && (rawOutcome === 'passed' || rawOutcome === 'failed') && originalActionResultsCount > 0) {
+        matrix.passOrFailWithActionResults += 1;
+        pushSample('passOrFailWithActionResults', testCaseId);
+        continue;
+      }
+
+      if (hasRun && originalActionResultsCount === 0) {
+        matrix.runWithNoActionResults += 1;
+        pushSample('runWithNoActionResults', testCaseId);
+        continue;
+      }
+
+      if (!hasRun && rawState === 'active') {
+        matrix.noRunHistoryActive += 1;
+        pushSample('noRunHistoryActive', testCaseId);
+        continue;
+      }
+
+      matrix.other += 1;
+      pushSample('other', testCaseId);
+    }
+
+    logger.info(
+      `MEWP run debug matrix (${contextLabel}): total=${matrix.total}; ` +
+        `passOrFailWithActionResults=${matrix.passOrFailWithActionResults}; ` +
+        `runWithNoActionResults=${matrix.runWithNoActionResults}; ` +
+        `notApplicable=${matrix.notApplicable}; ` +
+        `noRunHistoryActive=${matrix.noRunHistoryActive}; other=${matrix.other}; ` +
+        `samplePassFail=${samples.passOrFailWithActionResults.join(',') || '-'}; ` +
+        `sampleNoAction=${samples.runWithNoActionResults.join(',') || '-'}; ` +
+        `sampleNA=${samples.notApplicable.join(',') || '-'}; ` +
+        `sampleNoRunActive=${samples.noRunHistoryActive.join(',') || '-'}; ` +
+        `sampleOther=${samples.other.join(',') || '-'}`
+    );
+  }
+
   /**
    * Converts a run status string into a human-readable format.
    *
@@ -4210,9 +4221,17 @@ export default class ResultDataProvider {
               suite.testSuiteId
             );
             const testCaseIds = testCasesItems.map((testCase: any) => testCase.workItem.id);
-            const testPointsItems = !fetchCrossPlans
-              ? await this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId)
+            const rawTestPointsItems = !fetchCrossPlans
+              ? await this.fetchTestPoints(
+                  projectName,
+                  testPlanId,
+                  suite.testSuiteId
+                )
               : await this.fetchCrossTestPoints(projectName, testCaseIds);
+            const testPointsItems = this.attachSuiteTestCaseContextToPoints(
+              testCasesItems,
+              rawTestPointsItems
+            );
 
             return { ...suite, testPointsItems, testCasesItems };
           } catch (error: any) {
@@ -4361,6 +4380,11 @@ export default class ResultDataProvider {
         }
         resultData.iterationDetails.push(iteration);
       }
+
+      const originalActionResultsCount = Array.isArray(iteration?.actionResults)
+        ? iteration.actionResults.length
+        : 0;
+      resultData._debugOriginalActionResultsCount = originalActionResultsCount;
 
       if (resultData.stepsResultXml && iteration) {
         const actionResults = Array.isArray(iteration.actionResults) ? iteration.actionResults : [];
@@ -5074,6 +5098,7 @@ export default class ResultDataProvider {
             resultData.iterationDetails?.length > 0
               ? resultData.iterationDetails[resultData.iterationDetails?.length - 1]
               : undefined;
+          const debugOutcome = this.getTestOutcome(resultData);
 
           if (!resultData?.testCase || !resultData?.testSuite) {
             logger.debug(
@@ -5107,6 +5132,9 @@ export default class ResultDataProvider {
             relatedCRs: resultData.relatedCRs || undefined,
             lastRunResult: undefined as any,
             customFields: {}, // Create an object to store custom fields
+            _debugTestOutcome: debugOutcome,
+            _debugTestCaseState: String(resultData?.state || ''),
+            _debugOriginalActionResultsCount: Number(resultData?._debugOriginalActionResultsCount ?? -1),
           };
 
           // Process all custom fields from resultData.filteredFields
@@ -5126,15 +5154,14 @@ export default class ResultDataProvider {
                   resultDataResponse.priority = resultData.priority;
                   break;
                 case 'testCaseResult':
-                  const outcome = this.getTestOutcome(resultData);
                   if (lastRunId === undefined || lastResultId === undefined) {
                     resultDataResponse.testCaseResult = {
-                      resultMessage: `${this.convertRunStatus(outcome)}`,
+                      resultMessage: `${this.convertRunStatus(debugOutcome)}`,
                       url: '',
                     };
                   } else {
                     resultDataResponse.testCaseResult = {
-                      resultMessage: `${this.convertRunStatus(outcome)} in Run ${lastRunId}`,
+                      resultMessage: `${this.convertRunStatus(debugOutcome)} in Run ${lastRunId}`,
                       url: `${this.orgUrl}${projectName}/_testManagement/runs?runId=${lastRunId}&_a=resultSummary&resultId=${lastResultId}`,
                     };
                   }
