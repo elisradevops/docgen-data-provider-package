@@ -886,8 +886,10 @@ export default class ResultDataProvider {
         }
 
         // Direction A logic:
-        // 1) Base mention ("SR0054") is parent-level only and considered covered
-        //    if any member of that family is linked across scoped test cases.
+        // 1) Base mention ("SR0054") is parent-level and considered covered only when
+        //    the whole family is covered across scoped test cases:
+        //    - if family has children, all children must be linked;
+        //    - if family has no children, the base item itself must be linked.
         // 2) Child mention ("SR0054-1") is exact-match and checked across scoped test cases.
         const missingBaseWhenFamilyUncovered = new Set<string>();
         const missingSpecificMentionedNoFamily = new Set<string>();
@@ -900,9 +902,18 @@ export default class ResultDataProvider {
           if (familyCodes?.size) {
             const familyLinkedCodes = linkedFamilyCodesAcrossTestCases.get(baseKey) || new Set<string>();
 
-            // Base mention ("SR0054") is satisfied by any linked member in the same family.
+            // Base mention ("SR0054") requires full family coverage across selected test cases.
             if (hasBaseMention) {
-              if (familyLinkedCodes.size === 0) {
+              const normalizedFamilyMembers = [...familyCodes]
+                .map((code) => this.normalizeMewpRequirementCodeWithSuffix(code))
+                .filter((code) => !!code);
+              const specificFamilyMembers = normalizedFamilyMembers.filter((code) => /-\d+$/.test(code));
+              const requiredFamilyMembers =
+                specificFamilyMembers.length > 0 ? specificFamilyMembers : normalizedFamilyMembers;
+              const isWholeFamilyCovered = requiredFamilyMembers.every((memberCode) =>
+                familyLinkedCodes.has(memberCode)
+              );
+              if (!isWholeFamilyCovered) {
                 missingBaseWhenFamilyUncovered.add(baseKey);
               }
             }
@@ -936,15 +947,26 @@ export default class ResultDataProvider {
           if (!baseKey) return false;
           return !mentionedBaseKeys.has(baseKey);
         });
-        const mentionedButNotLinkedByStep = new Map<string, Set<string>>();
+        const mentionedButNotLinkedByStep = new Map<
+          string,
+          { baseIds: Set<string>; specificIds: Set<string> }
+        >();
         const appendMentionedButNotLinked = (requirementId: string, stepRef: string) => {
           const normalizedRequirementId = this.normalizeMewpRequirementCodeWithSuffix(requirementId);
           if (!normalizedRequirementId) return;
           const normalizedStepRef = String(stepRef || 'Step ?').trim() || 'Step ?';
           if (!mentionedButNotLinkedByStep.has(normalizedStepRef)) {
-            mentionedButNotLinkedByStep.set(normalizedStepRef, new Set<string>());
+            mentionedButNotLinkedByStep.set(normalizedStepRef, {
+              baseIds: new Set<string>(),
+              specificIds: new Set<string>(),
+            });
           }
-          mentionedButNotLinkedByStep.get(normalizedStepRef)!.add(normalizedRequirementId);
+          const entry = mentionedButNotLinkedByStep.get(normalizedStepRef)!;
+          if (/-\d+$/.test(normalizedRequirementId)) {
+            entry.specificIds.add(normalizedRequirementId);
+          } else {
+            entry.baseIds.add(normalizedRequirementId);
+          }
         };
 
         const sortedMissingSpecificMentionedNoFamily = [...missingSpecificMentionedNoFamily].sort((a, b) =>
@@ -979,8 +1001,19 @@ export default class ResultDataProvider {
             if (stepOrderA !== stepOrderB) return stepOrderA - stepOrderB;
             return String(a[0]).localeCompare(String(b[0]));
           })
-          .map(([stepRef, requirementIds]) => {
-            return this.formatStepScopedRequirementGroups(stepRef, requirementIds);
+          .map(([stepRef, requirementIdsByType]) => {
+            const specificCodes = [...requirementIdsByType.specificIds].sort((a, b) =>
+              this.compareMewpRequirementCodes(a, b)
+            );
+            const specificFamilies = new Set<string>(
+              specificCodes.map((code) => this.toRequirementKey(code)).filter((code) => !!code)
+            );
+            const baseCodes = [...requirementIdsByType.baseIds]
+              .filter((baseCode) => !specificFamilies.has(baseCode))
+              .sort((a, b) => this.compareMewpRequirementCodes(a, b));
+            const displayCodes = [...specificCodes, ...baseCodes];
+            if (displayCodes.length === 0) return `${stepRef}:`;
+            return `${stepRef}: ${displayCodes.join('; ')}`.trim();
           })
           .join('\n')
           .trim();
@@ -2645,19 +2678,6 @@ export default class ResultDataProvider {
     return left.raw.localeCompare(right.raw);
   }
 
-  private formatStepScopedRequirementGroups(stepRef: string, requirementIds: Iterable<string>): string {
-    const groupedRequirementList = this.formatRequirementCodesGroupedByFamily(requirementIds);
-    if (!groupedRequirementList) return `${stepRef}:`;
-
-    const groupedLines = groupedRequirementList
-      .split('\n')
-      .map((line) => String(line || '').trim())
-      .filter((line) => line.length > 0);
-
-    if (groupedLines.length <= 1) return `${stepRef}: ${groupedLines[0] || ''}`.trim();
-    return `${stepRef}:\n${groupedLines.map((line) => `- ${line}`).join('\n')}`.trim();
-  }
-
   private formatRequirementCodesGroupedByFamily(codes: Iterable<string>): string {
     const byBaseKey = new Map<string, Set<string>>();
     for (const rawCode of codes || []) {
@@ -2675,12 +2695,7 @@ export default class ResultDataProvider {
       .map(([baseKey, members]) => {
         const sortedMembers = [...members].sort((a, b) => this.compareMewpRequirementCodes(a, b));
         if (sortedMembers.length <= 1) return sortedMembers[0];
-
-        const nonBaseMembers = sortedMembers.filter((member) => member !== baseKey);
-        if (nonBaseMembers.length > 0) {
-          return `${baseKey}: ${nonBaseMembers.join(', ')}`;
-        }
-
+        // Direction B display is family-level when multiple members exist.
         return baseKey;
       })
       .join('\n');
