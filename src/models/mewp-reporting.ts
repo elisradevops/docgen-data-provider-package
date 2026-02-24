@@ -13,13 +13,13 @@ export interface MewpExternalFileRef {
 }
 
 export interface MewpCoverageRequestOptions {
-  useRelFallback?: boolean;
   externalBugsFile?: MewpExternalFileRef | null;
   externalL3L4File?: MewpExternalFileRef | null;
+  debugMode?: boolean;
 }
 
 export interface MewpInternalValidationRequestOptions {
-  useRelFallback?: boolean;
+  debugMode?: boolean;
 }
 
 export interface MewpRequirementStepSummary {

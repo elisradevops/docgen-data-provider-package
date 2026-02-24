@@ -1083,6 +1083,23 @@ describe('ResultDataProvider', () => {
   });
 
   describe('getMewpL2CoverageFlatResults', () => {
+    it('should fetch MEWP scoped test data from selected suites', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      const scopedSpy = jest
+        .spyOn(resultDataProvider as any, 'fetchMewpScopedTestData')
+        .mockResolvedValueOnce([]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([]);
+
+      await (resultDataProvider as any).getMewpL2CoverageFlatResults(
+        '123',
+        mockProjectName,
+        [1],
+        undefined
+      );
+
+      expect(scopedSpy).toHaveBeenCalledWith('123', mockProjectName, [1]);
+    });
+
     it('should map SR ids from steps and output requirement-test-case coverage rows', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
@@ -2545,7 +2562,7 @@ describe('ResultDataProvider', () => {
       expect(byTestCase.get(201)).toEqual(
         expect.objectContaining({
           'Test Case Title': 'TC 201 - Mixed discrepancies',
-          'Mentioned but Not Linked': 'Step 1: SR0095-3; SR0511: SR0511-1, SR0511-2',
+          'Mentioned but Not Linked': 'Step 1: SR0095-3\nSR0511: SR0511-1, SR0511-2',
           'Linked but Not Mentioned': 'SR8888',
           'Validation Status': 'Fail',
         })
@@ -2799,7 +2816,7 @@ describe('ResultDataProvider', () => {
           'Test Case ID': 42,
           'Test Case Title': 'TC-0042',
           'Mentioned but Not Linked': 'Step 3: SR0027',
-          'Linked but Not Mentioned': 'SR0817; SR0818; SR0859',
+          'Linked but Not Mentioned': 'SR0817\nSR0818\nSR0859',
           'Validation Status': 'Fail',
         })
       );
@@ -2991,13 +3008,9 @@ describe('ResultDataProvider', () => {
     });
   });
 
-  describe('MEWP rel fallback scoping', () => {
-    it('should fallback to previous Rel run when latest selected Rel has no run for a test case', async () => {
+  describe('MEWP release snapshot scoping', () => {
+    it('should scope only to selected suites and avoid cross-Rel fallback selection', async () => {
       const suites = [
-        { testSuiteId: 10, suiteName: 'Rel10 / Validation' },
-        { testSuiteId: 11, suiteName: 'Rel11 / Validation' },
-      ];
-      const allSuites = [
         { testSuiteId: 10, suiteName: 'Rel10 / Validation' },
         { testSuiteId: 11, suiteName: 'Rel11 / Validation' },
       ];
@@ -3022,8 +3035,7 @@ describe('ResultDataProvider', () => {
 
       const fetchSuitesSpy = jest
         .spyOn(resultDataProvider as any, 'fetchTestSuites')
-        .mockResolvedValueOnce(suites)
-        .mockResolvedValueOnce(allSuites);
+        .mockResolvedValueOnce(suites);
       const fetchDataSpy = jest
         .spyOn(resultDataProvider as any, 'fetchTestData')
         .mockResolvedValueOnce(rawTestData);
@@ -3031,18 +3043,13 @@ describe('ResultDataProvider', () => {
       const scoped = await (resultDataProvider as any).fetchMewpScopedTestData(
         '123',
         mockProjectName,
-        [11],
-        true
+        [11]
       );
 
-      expect(fetchSuitesSpy).toHaveBeenCalledTimes(2);
+      expect(fetchSuitesSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSuitesSpy).toHaveBeenCalledWith('123', mockProjectName, [11], true);
       expect(fetchDataSpy).toHaveBeenCalledTimes(1);
-      expect(scoped).toHaveLength(1);
-      const selectedPoints = scoped[0].testPointsItems;
-      const tc501 = selectedPoints.find((item: any) => item.testCaseId === 501);
-      const tc502 = selectedPoints.find((item: any) => item.testCaseId === 502);
-      expect(tc501).toEqual(expect.objectContaining({ lastRunId: 100, lastResultId: 200 }));
-      expect(tc502).toEqual(expect.objectContaining({ lastRunId: 500, lastResultId: 600 }));
+      expect(scoped).toEqual(rawTestData);
     });
   });
 
@@ -3641,6 +3648,53 @@ describe('ResultDataProvider', () => {
           filteredFields: { 'System.Title': 'Title 123' },
         })
       );
+    });
+
+    it('should fetch no-run test case by suite test-case revision when provided', async () => {
+      const point = {
+        testCaseId: '123',
+        testCaseName: 'TC 123',
+        outcome: 'passed',
+        suiteTestCase: {
+          workItem: {
+            id: 123,
+            rev: 9,
+            workItemFields: [{ key: 'Microsoft.VSTS.TCM.Steps', value: '<steps></steps>' }],
+          },
+        },
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        id: 123,
+        rev: 9,
+        fields: {
+          'System.State': 'Active',
+          'System.CreatedDate': '2024-01-01T00:00:00',
+          'Microsoft.VSTS.TCM.Priority': 1,
+          'System.Title': 'Title 123',
+          'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+        },
+        relations: null,
+      });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '0',
+        '0',
+        true,
+        [],
+        false,
+        point
+      );
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        expect.stringContaining('/_apis/wit/workItems/123/revisions/9?$expand=all'),
+        mockToken
+      );
+      const calledUrls = (TFSServices.getItemContent as jest.Mock).mock.calls.map((args: any[]) => String(args[0]));
+      expect(calledUrls.some((url: string) => url.includes('?asOf='))).toBe(false);
+      expect(res).toEqual(expect.objectContaining({ testCaseRevision: 9 }));
     });
 
     it('should append linked relations and filter testCaseWorkItemField when isTestReporter=true and isQueryMode=false', async () => {
