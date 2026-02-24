@@ -15,11 +15,6 @@ export interface MewpExternalFileRef {
 export interface MewpCoverageRequestOptions {
   externalBugsFile?: MewpExternalFileRef | null;
   externalL3L4File?: MewpExternalFileRef | null;
-  debugMode?: boolean;
-}
-
-export interface MewpInternalValidationRequestOptions {
-  debugMode?: boolean;
 }
 
 export interface MewpRequirementStepSummary {
