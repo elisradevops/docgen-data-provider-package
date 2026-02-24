@@ -13,7 +13,6 @@ import type {
   MewpExternalTableValidationResult,
   MewpCoverageRow,
   MewpInternalValidationFlatPayload,
-  MewpInternalValidationRequestOptions,
   MewpInternalValidationRow,
   MewpL2RequirementFamily,
   MewpL2RequirementWorkItem,
@@ -548,9 +547,6 @@ export default class ResultDataProvider {
       const parsedDefinitionStepsByTestCase = new Map<number, TestSteps[]>();
       const testCaseStepsXmlMap = this.buildTestCaseStepsXmlMap(testData);
       const runResults = await this.fetchAllResultDataTestReporter(testData, projectName, [], false, false);
-      if (options?.debugMode) {
-        this.logMewpRunScenarioDebugMatrix(runResults, `coverage plan=${testPlanId}`);
-      }
       for (const runResult of runResults) {
         const testCaseId = this.extractMewpTestCaseId(runResult);
         const rawActionResults = Array.isArray(runResult?.iteration?.actionResults)
@@ -736,8 +732,7 @@ export default class ResultDataProvider {
     testPlanId: string,
     projectName: string,
     selectedSuiteIds: number[] | undefined,
-    linkedQueryRequest?: any,
-    options?: MewpInternalValidationRequestOptions
+    linkedQueryRequest?: any
   ): Promise<MewpInternalValidationFlatPayload> {
     const defaultPayload: MewpInternalValidationFlatPayload = {
       sheetName: `MEWP Internal Validation - Plan ${testPlanId}`,
@@ -796,16 +791,6 @@ export default class ResultDataProvider {
           `fromSuitePayload=${preloadedStepXmlCount} fromWorkItemFallback=${fallbackStepLoadStats.loadedFromFallback} ` +
           `stepsXmlAvailable=${stepsXmlByTestCase.size} unresolved=${fallbackStepLoadStats.unresolvedCount}`
       );
-      if (options?.debugMode) {
-        const debugRunResults = await this.fetchAllResultDataTestReporter(
-          testData,
-          projectName,
-          [],
-          false,
-          false
-        );
-        this.logMewpRunScenarioDebugMatrix(debugRunResults, `internal-validation plan=${testPlanId}`);
-      }
 
       const validL2BaseKeys = new Set<string>([...requirementFamilies.keys()]);
       const diagnostics = {
@@ -3873,79 +3858,6 @@ export default class ResultDataProvider {
     return this.fetchResultDataBasedOnWiBase(projectName, runId, resultId);
   }
 
-  private logMewpRunScenarioDebugMatrix(runResults: any[], contextLabel: string): void {
-    const results = Array.isArray(runResults) ? runResults : [];
-    const matrix = {
-      total: results.length,
-      passOrFailWithActionResults: 0,
-      runWithNoActionResults: 0,
-      notApplicable: 0,
-      noRunHistoryActive: 0,
-      other: 0,
-    };
-    const samples = {
-      passOrFailWithActionResults: [] as number[],
-      runWithNoActionResults: [] as number[],
-      notApplicable: [] as number[],
-      noRunHistoryActive: [] as number[],
-      other: [] as number[],
-    };
-
-    const pushSample = (bucket: keyof typeof samples, id: number) => {
-      if (!Number.isFinite(id) || id <= 0) return;
-      if (samples[bucket].length >= 5) return;
-      samples[bucket].push(id);
-    };
-
-    for (const item of results) {
-      const testCaseId = Number(item?.testCaseId || item?.testCase?.id || 0);
-      const hasRun = Number(item?.lastRunId || 0) > 0 && Number(item?.lastResultId || 0) > 0;
-      const rawOutcome = String(item?._debugTestOutcome || '').trim().toLowerCase();
-      const rawState = String(item?._debugTestCaseState || '').trim().toLowerCase();
-      const originalActionResultsCount = Number(item?._debugOriginalActionResultsCount ?? -1);
-
-      if (rawOutcome === 'notapplicable' || rawOutcome === 'not applicable') {
-        matrix.notApplicable += 1;
-        pushSample('notApplicable', testCaseId);
-        continue;
-      }
-
-      if (hasRun && (rawOutcome === 'passed' || rawOutcome === 'failed') && originalActionResultsCount > 0) {
-        matrix.passOrFailWithActionResults += 1;
-        pushSample('passOrFailWithActionResults', testCaseId);
-        continue;
-      }
-
-      if (hasRun && originalActionResultsCount === 0) {
-        matrix.runWithNoActionResults += 1;
-        pushSample('runWithNoActionResults', testCaseId);
-        continue;
-      }
-
-      if (!hasRun && rawState === 'active') {
-        matrix.noRunHistoryActive += 1;
-        pushSample('noRunHistoryActive', testCaseId);
-        continue;
-      }
-
-      matrix.other += 1;
-      pushSample('other', testCaseId);
-    }
-
-    logger.info(
-      `MEWP run debug matrix (${contextLabel}): total=${matrix.total}; ` +
-        `passOrFailWithActionResults=${matrix.passOrFailWithActionResults}; ` +
-        `runWithNoActionResults=${matrix.runWithNoActionResults}; ` +
-        `notApplicable=${matrix.notApplicable}; ` +
-        `noRunHistoryActive=${matrix.noRunHistoryActive}; other=${matrix.other}; ` +
-        `samplePassFail=${samples.passOrFailWithActionResults.join(',') || '-'}; ` +
-        `sampleNoAction=${samples.runWithNoActionResults.join(',') || '-'}; ` +
-        `sampleNA=${samples.notApplicable.join(',') || '-'}; ` +
-        `sampleNoRunActive=${samples.noRunHistoryActive.join(',') || '-'}; ` +
-        `sampleOther=${samples.other.join(',') || '-'}`
-    );
-  }
-
   /**
    * Converts a run status string into a human-readable format.
    *
@@ -4380,11 +4292,6 @@ export default class ResultDataProvider {
         }
         resultData.iterationDetails.push(iteration);
       }
-
-      const originalActionResultsCount = Array.isArray(iteration?.actionResults)
-        ? iteration.actionResults.length
-        : 0;
-      resultData._debugOriginalActionResultsCount = originalActionResultsCount;
 
       if (resultData.stepsResultXml && iteration) {
         const actionResults = Array.isArray(iteration.actionResults) ? iteration.actionResults : [];
@@ -5098,7 +5005,7 @@ export default class ResultDataProvider {
             resultData.iterationDetails?.length > 0
               ? resultData.iterationDetails[resultData.iterationDetails?.length - 1]
               : undefined;
-          const debugOutcome = this.getTestOutcome(resultData);
+          const testOutcome = this.getTestOutcome(resultData);
 
           if (!resultData?.testCase || !resultData?.testSuite) {
             logger.debug(
@@ -5132,9 +5039,6 @@ export default class ResultDataProvider {
             relatedCRs: resultData.relatedCRs || undefined,
             lastRunResult: undefined as any,
             customFields: {}, // Create an object to store custom fields
-            _debugTestOutcome: debugOutcome,
-            _debugTestCaseState: String(resultData?.state || ''),
-            _debugOriginalActionResultsCount: Number(resultData?._debugOriginalActionResultsCount ?? -1),
           };
 
           // Process all custom fields from resultData.filteredFields
@@ -5156,12 +5060,12 @@ export default class ResultDataProvider {
                 case 'testCaseResult':
                   if (lastRunId === undefined || lastResultId === undefined) {
                     resultDataResponse.testCaseResult = {
-                      resultMessage: `${this.convertRunStatus(debugOutcome)}`,
+                      resultMessage: `${this.convertRunStatus(testOutcome)}`,
                       url: '',
                     };
                   } else {
                     resultDataResponse.testCaseResult = {
-                      resultMessage: `${this.convertRunStatus(debugOutcome)} in Run ${lastRunId}`,
+                      resultMessage: `${this.convertRunStatus(testOutcome)} in Run ${lastRunId}`,
                       url: `${this.orgUrl}${projectName}/_testManagement/runs?runId=${lastRunId}&_a=resultSummary&resultId=${lastResultId}`,
                     };
                   }
