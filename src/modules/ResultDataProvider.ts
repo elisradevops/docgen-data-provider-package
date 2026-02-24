@@ -762,6 +762,37 @@ export default class ResultDataProvider {
         allRequirements,
         scopedRequirementKeys?.size ? scopedRequirementKeys : undefined
       );
+      const linkedFullCodesByTestCase = new Map<number, Set<string>>();
+      const linkedFamilyCodesAcrossTestCases = new Map<string, Set<string>>();
+      const linkedFullCodesAcrossTestCases = new Set<string>();
+      const linkedBaseKeysAcrossTestCases = new Set<string>();
+
+      for (const [linkedTestCaseId, links] of linkedRequirementsByTestCase.entries()) {
+        const rawFullCodes = links?.fullCodes || new Set<string>();
+        const filteredFullCodes =
+          scopedRequirementKeys?.size && rawFullCodes.size > 0
+            ? new Set<string>(
+                [...rawFullCodes].filter((code) =>
+                  scopedRequirementKeys.has(this.toRequirementKey(code))
+                )
+              )
+            : rawFullCodes;
+        linkedFullCodesByTestCase.set(linkedTestCaseId, filteredFullCodes);
+
+        for (const code of filteredFullCodes) {
+          const normalizedCode = this.normalizeMewpRequirementCodeWithSuffix(code);
+          if (!normalizedCode) continue;
+          linkedFullCodesAcrossTestCases.add(normalizedCode);
+
+          const baseKey = this.toRequirementKey(normalizedCode);
+          if (!baseKey) continue;
+          linkedBaseKeysAcrossTestCases.add(baseKey);
+          if (!linkedFamilyCodesAcrossTestCases.has(baseKey)) {
+            linkedFamilyCodesAcrossTestCases.set(baseKey, new Set<string>());
+          }
+          linkedFamilyCodesAcrossTestCases.get(baseKey)!.add(normalizedCode);
+        }
+      }
 
       const rows: MewpInternalValidationRow[] = [];
       const stepsXmlByTestCase = this.buildTestCaseStepsXmlMap(testData);
@@ -844,18 +875,7 @@ export default class ResultDataProvider {
           [...mentionedL2Only].map((code) => this.toRequirementKey(code)).filter((code) => !!code)
         );
 
-        const linkedFullCodesRaw = linkedRequirementsByTestCase.get(testCaseId)?.fullCodes || new Set<string>();
-        const linkedFullCodes =
-          scopedRequirementKeys?.size && linkedFullCodesRaw.size > 0
-            ? new Set<string>(
-                [...linkedFullCodesRaw].filter((code) =>
-                  scopedRequirementKeys.has(this.toRequirementKey(code))
-                )
-              )
-            : linkedFullCodesRaw;
-        const linkedBaseKeys = new Set<string>(
-          [...linkedFullCodes].map((code) => this.toRequirementKey(code)).filter((code) => !!code)
-        );
+        const linkedFullCodes = linkedFullCodesByTestCase.get(testCaseId) || new Set<string>();
 
         const mentionedCodesByBase = new Map<string, Set<string>>();
         for (const code of mentionedL2Only) {
@@ -865,13 +885,12 @@ export default class ResultDataProvider {
           mentionedCodesByBase.get(baseKey)!.add(code);
         }
 
-        // Context-based direction A logic:
-        // 1) If no member of family is linked -> report only base SR (Step X: SR0054).
-        // 2) If family is partially linked -> report only specific missing members.
-        // 3) If family fully linked -> report nothing for that family.
+        // Direction A logic:
+        // 1) Base mention ("SR0054") is parent-level only and considered covered
+        //    if any member of that family is linked across scoped test cases.
+        // 2) Child mention ("SR0054-1") is exact-match and checked across scoped test cases.
         const missingBaseWhenFamilyUncovered = new Set<string>();
         const missingSpecificMentionedNoFamily = new Set<string>();
-        const missingFamilyMembers = new Set<string>();
         for (const [baseKey, mentionedCodes] of mentionedCodesByBase.entries()) {
           const familyCodes = requirementFamilies.get(baseKey);
           const mentionedCodesList = [...mentionedCodes];
@@ -879,30 +898,18 @@ export default class ResultDataProvider {
           const mentionedSpecificMembers = mentionedCodesList.filter((code) => /-\d+$/.test(code));
 
           if (familyCodes?.size) {
-            // Base mention ("SR0054") validates against child coverage when children exist.
-            // If no child variants exist, fallback to the single standalone requirement code.
-            if (hasBaseMention) {
-              const familyCodesList = [...familyCodes];
-              const childFamilyCodes = familyCodesList.filter((code) => /-\d+$/.test(code));
-              const targetFamilyCodes = childFamilyCodes.length > 0 ? childFamilyCodes : familyCodesList;
-              const missingInTargetFamily = targetFamilyCodes.filter((code) => !linkedFullCodes.has(code));
+            const familyLinkedCodes = linkedFamilyCodesAcrossTestCases.get(baseKey) || new Set<string>();
 
-              if (missingInTargetFamily.length > 0) {
-                const hasAnyLinkedInFamily = familyCodesList.some((code) => linkedFullCodes.has(code));
-                if (!hasAnyLinkedInFamily) {
-                  missingBaseWhenFamilyUncovered.add(baseKey);
-                } else {
-                  for (const code of missingInTargetFamily) {
-                    missingFamilyMembers.add(code);
-                  }
-                }
+            // Base mention ("SR0054") is satisfied by any linked member in the same family.
+            if (hasBaseMention) {
+              if (familyLinkedCodes.size === 0) {
+                missingBaseWhenFamilyUncovered.add(baseKey);
               }
-              continue;
             }
 
-            // Specific mention ("SR0054-1") validates as exact-match only.
+            // Specific mention ("SR0054-1") validates as exact-match only across scoped test cases.
             for (const code of mentionedSpecificMembers) {
-              if (!linkedFullCodes.has(code)) {
+              if (!familyLinkedCodes.has(code)) {
                 missingSpecificMentionedNoFamily.add(code);
               }
             }
@@ -913,10 +920,10 @@ export default class ResultDataProvider {
           for (const code of mentionedCodes) {
             const hasSpecificSuffix = /-\d+$/.test(code);
             if (hasSpecificSuffix) {
-              if (!linkedFullCodes.has(code)) {
+              if (!linkedFullCodesAcrossTestCases.has(code)) {
                 missingSpecificMentionedNoFamily.add(code);
               }
-            } else if (!linkedBaseKeys.has(baseKey)) {
+            } else if (!linkedBaseKeysAcrossTestCases.has(baseKey)) {
               missingBaseWhenFamilyUncovered.add(baseKey);
             }
           }
@@ -946,7 +953,6 @@ export default class ResultDataProvider {
         const sortedMissingBaseWhenFamilyUncovered = [...missingBaseWhenFamilyUncovered].sort((a, b) =>
           a.localeCompare(b)
         );
-        const sortedMissingFamilyMembers = [...missingFamilyMembers].sort((a, b) => a.localeCompare(b));
         for (const code of sortedMissingSpecificMentionedNoFamily) {
           const stepRef = mentionedCodeFirstStep.get(code) || 'Step ?';
           appendMentionedButNotLinked(code, stepRef);
@@ -954,11 +960,6 @@ export default class ResultDataProvider {
         for (const baseKey of sortedMissingBaseWhenFamilyUncovered) {
           const stepRef = mentionedBaseFirstStep.get(baseKey) || 'Step ?';
           appendMentionedButNotLinked(baseKey, stepRef);
-        }
-        for (const code of sortedMissingFamilyMembers) {
-          const baseKey = this.toRequirementKey(code);
-          const stepRef = mentionedBaseFirstStep.get(baseKey) || 'Step ?';
-          appendMentionedButNotLinked(code, stepRef);
         }
 
         const sortedExtraLinked = [...new Set(extraLinked)]
@@ -979,11 +980,11 @@ export default class ResultDataProvider {
             return String(a[0]).localeCompare(String(b[0]));
           })
           .map(([stepRef, requirementIds]) => {
-            const groupedRequirementList = this.formatRequirementCodesGroupedByFamily(requirementIds);
-            return `${stepRef}: ${groupedRequirementList}`;
+            return this.formatStepScopedRequirementGroups(stepRef, requirementIds);
           })
-          .join('\n');
-        const linkedButNotMentioned = this.formatRequirementCodesGroupedByFamily(sortedExtraLinked);
+          .join('\n')
+          .trim();
+        const linkedButNotMentioned = this.formatRequirementCodesGroupedByFamily(sortedExtraLinked).trim();
         const validationStatus: 'Pass' | 'Fail' =
           mentionedButNotLinked || linkedButNotMentioned ? 'Fail' : 'Pass';
         if (validationStatus === 'Fail') diagnostics.failingRows += 1;
@@ -993,8 +994,7 @@ export default class ResultDataProvider {
             `stepsWithMentions=${mentionEntries.length} customerIdsFound=${mentionedL2Only.size} ` +
             `linkedRequirements=${linkedFullCodes.size} mentionedButNotLinked=${
               sortedMissingSpecificMentionedNoFamily.length +
-              sortedMissingBaseWhenFamilyUncovered.length +
-              sortedMissingFamilyMembers.length
+              sortedMissingBaseWhenFamilyUncovered.length
             } ` +
             `linkedButNotMentioned=${sortedExtraLinked.length} status=${validationStatus} ` +
             `customerIdSample='${[...mentionedL2Only].slice(0, 5).join(', ')}'`
@@ -2615,6 +2615,49 @@ export default class ResultDataProvider {
     return `SR${match[1]}`;
   }
 
+  private compareMewpRequirementCodes(a: string, b: string): number {
+    const normalizeComparableCode = (value: string): { base: number; hasSuffix: number; suffix: number; raw: string } => {
+      const normalizedCode = this.normalizeMewpRequirementCodeWithSuffix(value);
+      const match = /^SR(\d+)(?:-(\d+))?$/i.exec(normalizedCode);
+      if (!match) {
+        return {
+          base: Number.POSITIVE_INFINITY,
+          hasSuffix: 1,
+          suffix: Number.POSITIVE_INFINITY,
+          raw: String(value || ''),
+        };
+      }
+
+      return {
+        base: Number(match[1]),
+        hasSuffix: match[2] ? 1 : 0,
+        suffix: match[2] ? Number(match[2]) : -1,
+        raw: normalizedCode,
+      };
+    };
+
+    const left = normalizeComparableCode(a);
+    const right = normalizeComparableCode(b);
+
+    if (left.base !== right.base) return left.base - right.base;
+    if (left.hasSuffix !== right.hasSuffix) return left.hasSuffix - right.hasSuffix;
+    if (left.suffix !== right.suffix) return left.suffix - right.suffix;
+    return left.raw.localeCompare(right.raw);
+  }
+
+  private formatStepScopedRequirementGroups(stepRef: string, requirementIds: Iterable<string>): string {
+    const groupedRequirementList = this.formatRequirementCodesGroupedByFamily(requirementIds);
+    if (!groupedRequirementList) return `${stepRef}:`;
+
+    const groupedLines = groupedRequirementList
+      .split('\n')
+      .map((line) => String(line || '').trim())
+      .filter((line) => line.length > 0);
+
+    if (groupedLines.length <= 1) return `${stepRef}: ${groupedLines[0] || ''}`.trim();
+    return `${stepRef}:\n${groupedLines.map((line) => `- ${line}`).join('\n')}`.trim();
+  }
+
   private formatRequirementCodesGroupedByFamily(codes: Iterable<string>): string {
     const byBaseKey = new Map<string, Set<string>>();
     for (const rawCode of codes || []) {
@@ -2628,11 +2671,17 @@ export default class ResultDataProvider {
     if (byBaseKey.size === 0) return '';
 
     return [...byBaseKey.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
+      .sort((a, b) => this.compareMewpRequirementCodes(a[0], b[0]))
       .map(([baseKey, members]) => {
-        const sortedMembers = [...members].sort((a, b) => a.localeCompare(b));
+        const sortedMembers = [...members].sort((a, b) => this.compareMewpRequirementCodes(a, b));
         if (sortedMembers.length <= 1) return sortedMembers[0];
-        return `${baseKey}: ${sortedMembers.join(', ')}`;
+
+        const nonBaseMembers = sortedMembers.filter((member) => member !== baseKey);
+        if (nonBaseMembers.length > 0) {
+          return `${baseKey}: ${nonBaseMembers.join(', ')}`;
+        }
+
+        return baseKey;
       })
       .join('\n');
   }
