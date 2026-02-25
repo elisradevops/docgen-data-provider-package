@@ -3362,6 +3362,11 @@ export default class ResultDataProvider {
     const parsedAsOf = new Date(String(asOfTimestamp || '').trim());
     if (!Number.isFinite(id) || id <= 0 || Number.isNaN(parsedAsOf.getTime())) return null;
 
+    logger.debug(
+      `[RunlessResolver] Fetching work item ${id} by asOf (raw="${String(
+        asOfTimestamp || ''
+      )}", normalized="${parsedAsOf.toISOString()}", expandAll=${String(expandAll)})`
+    );
     const query: string[] = [`asOf=${encodeURIComponent(parsedAsOf.toISOString())}`];
     if (expandAll) {
       query.push(`$expand=all`);
@@ -3396,6 +3401,29 @@ export default class ResultDataProvider {
   }
 
   /**
+   * Returns true when the snapshot includes a non-empty test steps XML payload.
+   */
+  private hasStepsInWorkItemSnapshot(workItemData: any): boolean {
+    const stepsXml = this.extractStepsXmlFromFieldsMap(workItemData?.fields || {});
+    return String(stepsXml || '').trim() !== '';
+  }
+
+  private logRunlessSnapshotDecision(testCaseId: number, source: string, snapshot: any | null): void {
+    if (!snapshot) {
+      logger.debug(`[RunlessResolver] TC ${testCaseId}: source=${source}, snapshot=none`);
+      return;
+    }
+
+    const stepsXml = this.extractStepsXmlFromFieldsMap(snapshot?.fields || {});
+    const stepsLength = String(stepsXml || '').trim().length;
+    logger.debug(
+      `[RunlessResolver] TC ${testCaseId}: source=${source}, rev=${String(
+        snapshot?.rev ?? ''
+      )}, hasSteps=${String(stepsLength > 0)}, stepsLength=${String(stepsLength)}`
+    );
+  }
+
+  /**
    * Resolves runless test case data using ordered fallbacks:
    * 1) point-based `asOf` snapshot, 2) explicit revision, 3) suite payload snapshot, 4) latest WI.
    */
@@ -3407,6 +3435,8 @@ export default class ResultDataProvider {
     fallbackSnapshot: any,
     expandAll: boolean
   ): Promise<any | null> {
+    let bestSnapshotWithoutSteps: any | null = null;
+
     if (pointAsOfTimestamp) {
       const asOfSnapshot = await this.fetchWorkItemByAsOf(
         projectName,
@@ -3414,7 +3444,13 @@ export default class ResultDataProvider {
         pointAsOfTimestamp,
         expandAll
       );
-      if (asOfSnapshot) return asOfSnapshot;
+      this.logRunlessSnapshotDecision(testCaseId, 'asOf', asOfSnapshot);
+      if (asOfSnapshot) {
+        if (this.hasStepsInWorkItemSnapshot(asOfSnapshot)) return asOfSnapshot;
+        bestSnapshotWithoutSteps = asOfSnapshot;
+      }
+    } else {
+      logger.debug(`[RunlessResolver] TC ${testCaseId}: asOf timestamp is empty, skipping asOf fetch`);
     }
 
     const revisionSnapshot = await this.fetchWorkItemByRevision(
@@ -3423,11 +3459,26 @@ export default class ResultDataProvider {
       suiteTestCaseRevision,
       expandAll
     );
-    if (revisionSnapshot) return revisionSnapshot;
+    this.logRunlessSnapshotDecision(testCaseId, `revision:${String(suiteTestCaseRevision)}`, revisionSnapshot);
+    if (revisionSnapshot) {
+      if (this.hasStepsInWorkItemSnapshot(revisionSnapshot)) return revisionSnapshot;
+      bestSnapshotWithoutSteps = bestSnapshotWithoutSteps || revisionSnapshot;
+    }
 
-    if (fallbackSnapshot) return fallbackSnapshot;
+    this.logRunlessSnapshotDecision(testCaseId, 'suiteSnapshot', fallbackSnapshot);
+    if (fallbackSnapshot) {
+      if (this.hasStepsInWorkItemSnapshot(fallbackSnapshot)) return fallbackSnapshot;
+      bestSnapshotWithoutSteps = bestSnapshotWithoutSteps || fallbackSnapshot;
+    }
 
-    return this.fetchWorkItemLatest(projectName, testCaseId, expandAll);
+    const latestSnapshot = await this.fetchWorkItemLatest(projectName, testCaseId, expandAll);
+    this.logRunlessSnapshotDecision(testCaseId, 'latest', latestSnapshot);
+    if (latestSnapshot) {
+      if (this.hasStepsInWorkItemSnapshot(latestSnapshot)) return latestSnapshot;
+      bestSnapshotWithoutSteps = bestSnapshotWithoutSteps || latestSnapshot;
+    }
+
+    return bestSnapshotWithoutSteps;
   }
 
   /**
@@ -3473,6 +3524,13 @@ export default class ResultDataProvider {
         const pointAsOfTimestamp = useRunlessAsOf
           ? String(point?.pointAsOfTimestamp || '').trim()
           : '';
+        logger.debug(
+          `[RunlessResolver] Start TC ${String(testCaseId)}: useRunlessAsOf=${String(
+            useRunlessAsOf
+          )}, pointAsOfTimestamp="${pointAsOfTimestamp}", suiteRevision=${String(
+            suiteTestCaseRevision
+          )}, pointOutcome="${String(point?.outcome || '')}"`
+        );
         const fallbackSnapshot = this.buildWorkItemSnapshotFromSuiteTestCase(
           suiteTestCaseItem,
           testCaseId,

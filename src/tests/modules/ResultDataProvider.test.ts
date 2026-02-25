@@ -4012,6 +4012,70 @@ describe('ResultDataProvider', () => {
       expect(res).toEqual(expect.objectContaining({ testCaseRevision: 6 }));
     });
 
+    it('should fallback from asOf snapshot without steps to revision snapshot with steps', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+      const point = {
+        testCaseId: '777',
+        testCaseName: 'TC 777',
+        outcome: 'Not Run',
+        pointAsOfTimestamp: '2025-03-01T00:00:00Z',
+        suiteTestCase: {
+          workItem: {
+            id: 777,
+            workItemFields: [{ key: 'System.Rev', value: '21' }],
+          },
+        },
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({
+          id: 777,
+          rev: 18,
+          fields: {
+            'System.State': 'Design',
+            'System.CreatedDate': '2024-01-01T00:00:00',
+            'Microsoft.VSTS.TCM.Priority': 1,
+            'System.Title': 'TC 777',
+          },
+          relations: [],
+        })
+        .mockResolvedValueOnce({
+          id: 777,
+          rev: 21,
+          fields: {
+            'System.State': 'Design',
+            'System.CreatedDate': '2024-01-01T00:00:00',
+            'Microsoft.VSTS.TCM.Priority': 1,
+            'System.Title': 'TC 777',
+            'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+          },
+          relations: [],
+        });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '0',
+        '0',
+        true,
+        [],
+        false,
+        point,
+        false,
+        true
+      );
+
+      const calledUrls = (TFSServices.getItemContent as jest.Mock).mock.calls.map((args: any[]) => String(args[0]));
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/777?asOf='))).toBe(true);
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/777/revisions/21'))).toBe(true);
+      expect(res).toEqual(
+        expect.objectContaining({
+          testCaseRevision: 21,
+          stepsResultXml: '<steps></steps>',
+        })
+      );
+    });
+
     it('should fallback to suite revision when asOf fetch fails', async () => {
       (TFSServices.getItemContent as jest.Mock).mockReset();
       const point = {
