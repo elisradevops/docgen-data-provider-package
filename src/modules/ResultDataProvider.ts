@@ -52,6 +52,11 @@ const pLimit = require('p-limit');
  * Instantiate the class with the organization URL and token, and use the provided methods to fetch and process test data.
  */
 export default class ResultDataProvider {
+  private static readonly MEWP_INTERNAL_VALIDATION_TRACE_TAG = '[MEWP][InternalValidation][Trace]';
+  private static readonly MEWP_INTERNAL_VALIDATION_DIAGNOSTICS_TAG =
+    '[MEWP][InternalValidation][Diagnostics]';
+  private static readonly MEWP_INTERNAL_VALIDATION_SUMMARY_TAG = '[MEWP][InternalValidation][Summary]';
+
   private static readonly MEWP_L2_COVERAGE_COLUMNS = [
     'L2 REQ ID',
     'L2 REQ Title',
@@ -732,7 +737,10 @@ export default class ResultDataProvider {
     testPlanId: string,
     projectName: string,
     selectedSuiteIds: number[] | undefined,
-    linkedQueryRequest?: any
+    linkedQueryRequest?: any,
+    options?: {
+      debugMode?: boolean;
+    }
   ): Promise<MewpInternalValidationFlatPayload> {
     const defaultPayload: MewpInternalValidationFlatPayload = {
       sheetName: `MEWP Internal Validation - Plan ${testPlanId}`,
@@ -832,9 +840,19 @@ export default class ResultDataProvider {
         testCasesWithoutMentionedCustomerIds: 0,
         failingRows: 0,
       };
+      const traceInternalValidation = options?.debugMode === true;
+      if (traceInternalValidation) {
+        logger.info(
+          this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
+            mode: 'enabled',
+            source: 'ui-debug-mode',
+          })
+        );
+      }
 
       for (const testCaseId of [...allTestCaseIds].sort((a, b) => a - b)) {
         diagnostics.totalTestCases += 1;
+        const traceCurrentTestCase = traceInternalValidation;
         const stepsXml = stepsXmlByTestCase.get(testCaseId) || '';
         const parsedSteps =
           stepsXml && String(stepsXml).trim() !== ''
@@ -884,6 +902,23 @@ export default class ResultDataProvider {
           if (!mentionedCodesByBase.has(baseKey)) mentionedCodesByBase.set(baseKey, new Set<string>());
           mentionedCodesByBase.get(baseKey)!.add(code);
         }
+        if (traceCurrentTestCase) {
+          logger.debug(
+            this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
+              event: 'test-case-start',
+              tc: testCaseId,
+              parsedSteps: executableSteps.length,
+              stepsWithMentions: mentionEntries.length,
+              mentionedCodes:
+                [...mentionedL2Only].sort((a, b) => this.compareMewpRequirementCodes(a, b)).join('; ') ||
+                '<none>',
+              linkedCodesInTestCase:
+                [...linkedFullCodes]
+                  .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                  .join('; ') || '<none>',
+            })
+          );
+        }
 
         // Direction A logic:
         // 1) Base mention ("SR0054") is parent-level and considered covered only when
@@ -901,42 +936,109 @@ export default class ResultDataProvider {
 
           if (familyCodes?.size) {
             const familyLinkedCodes = linkedFamilyCodesAcrossTestCases.get(baseKey) || new Set<string>();
+            const normalizedFamilyMembers = [...familyCodes]
+              .map((code) => this.normalizeMewpRequirementCodeWithSuffix(code))
+              .filter((code) => !!code);
+            const specificFamilyMembers = normalizedFamilyMembers.filter((code) => /-\d+$/.test(code));
+            const requiredFamilyMembers =
+              specificFamilyMembers.length > 0 ? specificFamilyMembers : normalizedFamilyMembers;
 
             // Base mention ("SR0054") requires full family coverage across selected test cases.
             if (hasBaseMention) {
-              const normalizedFamilyMembers = [...familyCodes]
-                .map((code) => this.normalizeMewpRequirementCodeWithSuffix(code))
-                .filter((code) => !!code);
-              const specificFamilyMembers = normalizedFamilyMembers.filter((code) => /-\d+$/.test(code));
-              const requiredFamilyMembers =
-                specificFamilyMembers.length > 0 ? specificFamilyMembers : normalizedFamilyMembers;
+              const missingRequiredFamilyMembers = requiredFamilyMembers.filter(
+                (memberCode) => !familyLinkedCodes.has(memberCode)
+              );
               const isWholeFamilyCovered = requiredFamilyMembers.every((memberCode) =>
                 familyLinkedCodes.has(memberCode)
               );
               if (!isWholeFamilyCovered) {
                 missingBaseWhenFamilyUncovered.add(baseKey);
               }
+              if (traceCurrentTestCase) {
+                logger.debug(
+                  this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
+                    event: 'base-family-coverage',
+                    tc: testCaseId,
+                    base: baseKey,
+                    baseMention: true,
+                    requiredFamily:
+                      requiredFamilyMembers
+                        .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                        .join('; ') || '<none>',
+                    linkedAcrossScope:
+                      [...familyLinkedCodes]
+                        .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                        .join('; ') || '<none>',
+                    missingRequired:
+                      missingRequiredFamilyMembers
+                        .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                        .join('; ') || '<none>',
+                    covered: isWholeFamilyCovered,
+                  })
+                );
+              }
             }
 
             // Specific mention ("SR0054-1") validates as exact-match only across scoped test cases.
-            for (const code of mentionedSpecificMembers) {
-              if (!familyLinkedCodes.has(code)) {
-                missingSpecificMentionedNoFamily.add(code);
-              }
+            const missingSpecificMembers = mentionedSpecificMembers.filter(
+              (code) => !familyLinkedCodes.has(code)
+            );
+            for (const code of missingSpecificMembers) {
+              missingSpecificMentionedNoFamily.add(code);
+            }
+            if (traceCurrentTestCase && mentionedSpecificMembers.length > 0) {
+              logger.debug(
+                this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
+                  event: 'specific-members-check',
+                  tc: testCaseId,
+                  base: baseKey,
+                  specificMentioned:
+                    mentionedSpecificMembers
+                      .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                      .join('; ') || '<none>',
+                  specificMissing:
+                    missingSpecificMembers
+                      .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                      .join('; ') || '<none>',
+                })
+              );
             }
             continue;
           }
 
           // Fallback path when family data is unavailable for this base key.
+          const fallbackMissingSpecific: string[] = [];
+          let fallbackMissingBase = false;
           for (const code of mentionedCodes) {
             const hasSpecificSuffix = /-\d+$/.test(code);
             if (hasSpecificSuffix) {
               if (!linkedFullCodesAcrossTestCases.has(code)) {
                 missingSpecificMentionedNoFamily.add(code);
+                fallbackMissingSpecific.push(code);
               }
             } else if (!linkedBaseKeysAcrossTestCases.has(baseKey)) {
               missingBaseWhenFamilyUncovered.add(baseKey);
+              fallbackMissingBase = true;
             }
+          }
+          if (traceCurrentTestCase) {
+            logger.debug(
+              this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
+                event: 'fallback-path',
+                tc: testCaseId,
+                base: baseKey,
+                fallbackUsed: true,
+                mentioned:
+                  mentionedCodesList
+                    .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                    .join('; ') || '<none>',
+                missingSpecific:
+                  fallbackMissingSpecific
+                    .sort((a, b) => this.compareMewpRequirementCodes(a, b))
+                    .join('; ') || '<none>',
+                missingBase: fallbackMissingBase,
+              })
+            );
           }
         }
 
@@ -983,6 +1085,16 @@ export default class ResultDataProvider {
           const stepRef = mentionedBaseFirstStep.get(baseKey) || 'Step ?';
           appendMentionedButNotLinked(baseKey, stepRef);
         }
+        if (traceCurrentTestCase) {
+          logger.debug(
+            this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
+              event: 'direction-a-summary',
+              tc: testCaseId,
+              missingSpecific: sortedMissingSpecificMentionedNoFamily.join('; ') || '<none>',
+              missingBase: sortedMissingBaseWhenFamilyUncovered.join('; ') || '<none>',
+            })
+          );
+        }
 
         const sortedExtraLinked = [...new Set(extraLinked)]
           .map((code) => this.normalizeMewpRequirementCodeWithSuffix(code))
@@ -1022,15 +1134,19 @@ export default class ResultDataProvider {
           mentionedButNotLinked || linkedButNotMentioned ? 'Fail' : 'Pass';
         if (validationStatus === 'Fail') diagnostics.failingRows += 1;
         logger.debug(
-          `MEWP internal validation parse diagnostics: ` +
-            `testCaseId=${testCaseId} parsedSteps=${executableSteps.length} ` +
-            `stepsWithMentions=${mentionEntries.length} customerIdsFound=${mentionedL2Only.size} ` +
-            `linkedRequirements=${linkedFullCodes.size} mentionedButNotLinked=${
+          this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_DIAGNOSTICS_TAG, {
+            testCaseId,
+            parsedSteps: executableSteps.length,
+            stepsWithMentions: mentionEntries.length,
+            customerIdsFound: mentionedL2Only.size,
+            linkedRequirements: linkedFullCodes.size,
+            mentionedButNotLinked:
               sortedMissingSpecificMentionedNoFamily.length +
-              sortedMissingBaseWhenFamilyUncovered.length
-            } ` +
-            `linkedButNotMentioned=${sortedExtraLinked.length} status=${validationStatus} ` +
-            `customerIdSample='${[...mentionedL2Only].slice(0, 5).join(', ')}'`
+              sortedMissingBaseWhenFamilyUncovered.length,
+            linkedButNotMentioned: sortedExtraLinked.length,
+            status: validationStatus,
+            customerIdSample: [...mentionedL2Only].slice(0, 5).join(', '),
+          })
         );
 
         rows.push({
@@ -1042,11 +1158,14 @@ export default class ResultDataProvider {
         });
       }
       logger.info(
-        `MEWP internal validation summary: testCases=${diagnostics.totalTestCases} ` +
-          `parsedSteps=${diagnostics.totalParsedSteps} stepsWithMentions=${diagnostics.totalStepsWithMentions} ` +
-          `totalCustomerIdsFound=${diagnostics.totalMentionedCustomerIds} ` +
-          `testCasesWithoutCustomerIds=${diagnostics.testCasesWithoutMentionedCustomerIds} ` +
-          `failingRows=${diagnostics.failingRows}`
+        this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_SUMMARY_TAG, {
+          testCases: diagnostics.totalTestCases,
+          parsedSteps: diagnostics.totalParsedSteps,
+          stepsWithMentions: diagnostics.totalStepsWithMentions,
+          totalCustomerIdsFound: diagnostics.totalMentionedCustomerIds,
+          testCasesWithoutCustomerIds: diagnostics.testCasesWithoutMentionedCustomerIds,
+          failingRows: diagnostics.failingRows,
+        })
       );
 
       return {
@@ -1161,6 +1280,17 @@ export default class ResultDataProvider {
   private buildInternalValidationSheetName(planName: string, testPlanId: string): string {
     const suffix = String(planName || '').trim() || `Plan ${testPlanId}`;
     return `MEWP Internal Validation - ${suffix}`;
+  }
+
+  private formatLogValue(value: any): string {
+    if (value === null || value === undefined) return '<none>';
+    const asText = String(value).trim();
+    return asText !== '' ? asText : '<none>';
+  }
+
+  private buildTaggedLogMessage(tag: string, fields: Record<string, any>): string {
+    const sections = Object.entries(fields).map(([key, value]) => `${key}=${this.formatLogValue(value)}`);
+    return `${tag} ${sections.join(' | ')}`;
   }
 
   private createMewpCoverageRow(
@@ -2698,7 +2828,7 @@ export default class ResultDataProvider {
         // Direction B display is family-level when multiple members exist.
         return baseKey;
       })
-      .join('\n');
+      .join('; ');
   }
 
   private toMewpComparableText(value: any): string {
