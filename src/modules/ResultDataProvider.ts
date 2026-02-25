@@ -3049,7 +3049,7 @@ export default class ResultDataProvider {
       // Fetch detailed information for each test point and map to required format
       const detailedPoints = await Promise.all(
         latestPoints.map(async (point: any) => {
-          const url = `${point.url}?witFields=Microsoft.VSTS.TCM.Steps&includePointDetails=true`;
+          const url = `${point.url}?witFields=Microsoft.VSTS.TCM.Steps,System.Rev&includePointDetails=true`;
           const detailedPoint = await TFSServices.getItemContent(url, this.token);
           return this.mapTestPointForCrossPlans(detailedPoint, projectName);
           // return this.mapTestPointForCrossPlans(detailedPoint, projectName);
@@ -3142,7 +3142,7 @@ export default class ResultDataProvider {
     testPlanId: string,
     suiteId: string
   ): Promise<any[]> {
-    const url = `${this.orgUrl}${projectName}/_apis/testplan/Plans/${testPlanId}/Suites/${suiteId}/TestCase?witFields=Microsoft.VSTS.TCM.Steps`;
+    const url = `${this.orgUrl}${projectName}/_apis/testplan/Plans/${testPlanId}/Suites/${suiteId}/TestCase?witFields=Microsoft.VSTS.TCM.Steps,System.Rev`;
 
     const { value: testCases } = await TFSServices.getItemContent(url, this.token);
 
@@ -3186,8 +3186,28 @@ export default class ResultDataProvider {
     return fields;
   }
 
+  private getFieldValueByName(fields: Record<string, any>, fieldName: string): any {
+    if (!fields || typeof fields !== 'object') return undefined;
+    if (Object.prototype.hasOwnProperty.call(fields, fieldName)) {
+      return fields[fieldName];
+    }
+
+    const lookupName = String(fieldName || '').toLowerCase().trim();
+    if (!lookupName) return undefined;
+    const matchedKey = Object.keys(fields).find(
+      (key) => String(key || '').toLowerCase().trim() === lookupName
+    );
+    return matchedKey ? fields[matchedKey] : undefined;
+  }
+
   private resolveSuiteTestCaseRevision(testCaseItem: any): number {
+    const fieldsFromList = this.extractWorkItemFieldsMap(testCaseItem?.workItem?.workItemFields);
+    const fieldsFromMap = testCaseItem?.workItem?.fields || {};
+    const systemRevFromList = this.getFieldValueByName(fieldsFromList, 'System.Rev');
+    const systemRevFromMap = this.getFieldValueByName(fieldsFromMap, 'System.Rev');
     const revisionCandidates = [
+      systemRevFromList,
+      systemRevFromMap,
       testCaseItem?.workItem?.rev,
       testCaseItem?.workItem?.revision,
       testCaseItem?.workItem?.version,

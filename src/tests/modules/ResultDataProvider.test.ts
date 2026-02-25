@@ -679,6 +679,34 @@ describe('ResultDataProvider', () => {
 
       // Assert
       expect(result).toEqual(mockTestCases.value);
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        expect.stringContaining(
+          `/_apis/testplan/Plans/${mockTestPlanId}/Suites/${mockSuiteId}/TestCase?witFields=Microsoft.VSTS.TCM.Steps,System.Rev`
+        ),
+        mockToken
+      );
+    });
+  });
+
+  describe('resolveSuiteTestCaseRevision', () => {
+    it('should resolve System.Rev from workItemFields', () => {
+      const revision = (resultDataProvider as any).resolveSuiteTestCaseRevision({
+        workItem: {
+          workItemFields: [{ key: 'System.Rev', value: '12' }],
+        },
+      });
+
+      expect(revision).toBe(12);
+    });
+
+    it('should resolve System.Rev case-insensitively from workItem fields map', () => {
+      const revision = (resultDataProvider as any).resolveSuiteTestCaseRevision({
+        workItem: {
+          fields: { 'system.rev': 14 },
+        },
+      });
+
+      expect(revision).toBe(14);
     });
   });
 
@@ -837,7 +865,7 @@ describe('ResultDataProvider', () => {
       const result = await (resultDataProvider as any).fetchCrossTestPoints(mockProjectName, [1, 2]);
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-        'https://example.com/points/2?witFields=Microsoft.VSTS.TCM.Steps&includePointDetails=true',
+        'https://example.com/points/2?witFields=Microsoft.VSTS.TCM.Steps,System.Rev&includePointDetails=true',
         mockToken
       );
       expect(result).toHaveLength(2);
@@ -3874,6 +3902,53 @@ describe('ResultDataProvider', () => {
       expect(res).toEqual(expect.objectContaining({ testCaseRevision: 9 }));
     });
 
+    it('should resolve no-run revision from System.Rev in suite test-case fields', async () => {
+      const point = {
+        testCaseId: '321',
+        testCaseName: 'TC 321',
+        outcome: 'Not Run',
+        suiteTestCase: {
+          workItem: {
+            id: 321,
+            workItemFields: [
+              { key: 'System.Rev', value: '13' },
+              { key: 'Microsoft.VSTS.TCM.Steps', value: '<steps></steps>' },
+            ],
+          },
+        },
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        id: 321,
+        rev: 13,
+        fields: {
+          'System.State': 'Design',
+          'System.CreatedDate': '2024-05-01T00:00:00',
+          'Microsoft.VSTS.TCM.Priority': 1,
+          'System.Title': 'Title 321',
+          'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+        },
+        relations: [],
+      });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '0',
+        '0',
+        true,
+        [],
+        false,
+        point
+      );
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        expect.stringContaining('/_apis/wit/workItems/321/revisions/13?$expand=all'),
+        mockToken
+      );
+      expect(res).toEqual(expect.objectContaining({ testCaseRevision: 13 }));
+    });
+
     it('should append linked relations and filter testCaseWorkItemField when isTestReporter=true and isQueryMode=false', async () => {
       (TFSServices.getItemContent as jest.Mock).mockReset();
 
@@ -5045,6 +5120,35 @@ describe('ResultDataProvider', () => {
       expect(fetchStrategy).not.toHaveBeenCalled();
       expect(result).toEqual([]);
     });
+
+    it('should keep points without run/result IDs when test reporter mode is enabled', async () => {
+      const testData = [
+        {
+          testSuiteId: 1,
+          testPointsItems: [{ testCaseId: 10, lastRunId: 101, lastResultId: 201 }, { testCaseId: 11 }],
+        },
+      ];
+      const fetchStrategy = jest
+        .fn()
+        .mockResolvedValueOnce({ testCaseId: 10 })
+        .mockResolvedValueOnce({ testCaseId: 11 });
+
+      const result = await (resultDataProvider as any).fetchAllResultDataBase(
+        testData,
+        mockProjectName,
+        true,
+        fetchStrategy
+      );
+
+      expect(fetchStrategy).toHaveBeenCalledTimes(2);
+      expect(fetchStrategy).toHaveBeenNthCalledWith(
+        2,
+        mockProjectName,
+        1,
+        expect.objectContaining({ testCaseId: 11 })
+      );
+      expect(result).toEqual([{ testCaseId: 10 }, { testCaseId: 11 }]);
+    });
   });
 
   describe('fetchResultDataBase', () => {
@@ -5070,6 +5174,26 @@ describe('ResultDataProvider', () => {
       // Assert
       expect(fetchResultMethod).toHaveBeenCalled();
       expect(result).toBeDefined();
+    });
+
+    it('should call fetch method with runId/resultId as 0 when point has no run history', async () => {
+      const point = { testCaseId: 15, lastRunId: undefined, lastResultId: undefined };
+      const fetchResultMethod = jest.fn().mockResolvedValue({
+        testCase: { id: 15, name: 'TC 15' },
+        testSuite: { name: 'S' },
+        iterationDetails: [],
+      });
+      const createResponseObject = jest.fn().mockReturnValue({ id: 15 });
+
+      await (resultDataProvider as any).fetchResultDataBase(
+        mockProjectName,
+        'suite-no-runs',
+        point,
+        fetchResultMethod,
+        createResponseObject
+      );
+
+      expect(fetchResultMethod).toHaveBeenCalledWith(mockProjectName, '0', '0');
     });
   });
 
@@ -5457,6 +5581,86 @@ describe('ResultDataProvider', () => {
           testPointId: 501,
           stepOutcome: 'Unspecified',
           stepStepIdentifier: '1',
+        })
+      );
+    });
+
+    it('should return test-level row with empty step fields when suite has no run history', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan 12');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([
+        {
+          testSuiteId: 300,
+          suiteId: 300,
+          suiteName: 'suite no runs',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel3',
+          suitePath: 'Root/Rel3/suite no runs',
+          testGroupName: 'suite no runs',
+        },
+      ]);
+
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testSuiteId: 300,
+          suiteId: 300,
+          suiteName: 'suite no runs',
+          parentSuiteId: 100,
+          parentSuiteName: 'Rel3',
+          suitePath: 'Root/Rel3/suite no runs',
+          testGroupName: 'suite no runs',
+          testPointsItems: [
+            {
+              testCaseId: 55,
+              testCaseName: 'TC 55',
+              outcome: 'Not Run',
+              testPointId: 9001,
+              lastRunId: undefined,
+              lastResultId: undefined,
+              lastResultDetails: undefined,
+            },
+          ],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 55,
+                workItemFields: [{ key: 'System.Rev', value: 4 }],
+              },
+            },
+          ],
+        },
+      ]);
+
+      jest.spyOn(resultDataProvider as any, 'fetchAllResultDataTestReporter').mockResolvedValueOnce([
+        {
+          testCaseId: 55,
+          testCase: { id: 55, name: 'TC 55' },
+          testSuite: { name: 'suite no runs' },
+          executionDate: '',
+          testCaseResult: { resultMessage: 'Not Run', url: '' },
+          customFields: {},
+          runBy: '',
+          iteration: undefined,
+          lastRunId: undefined,
+          lastResultId: undefined,
+        },
+      ]);
+
+      const result = await resultDataProvider.getTestReporterFlatResults(
+        mockTestPlanId,
+        mockProjectName,
+        undefined,
+        [],
+        false
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          testCaseId: 55,
+          testRunId: undefined,
+          testPointId: 9001,
+          stepOutcome: undefined,
+          stepStepIdentifier: '',
         })
       );
     });
