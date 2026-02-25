@@ -2993,7 +2993,7 @@ describe('ResultDataProvider', () => {
           'Test Case ID': 42,
           'Test Case Title': 'TC-0042',
           'Mentioned but Not Linked': 'Step 3: SR0027',
-          'Linked but Not Mentioned': 'SR0817\nSR0818\nSR0859',
+          'Linked but Not Mentioned': 'SR0817; SR0818; SR0859',
           'Validation Status': 'Fail',
         })
       );
