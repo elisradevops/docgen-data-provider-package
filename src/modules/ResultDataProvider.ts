@@ -4439,16 +4439,23 @@ export default class ResultDataProvider {
         });
         resultObjectsToAdd.push(resultObj);
       }
-      resultObjectsToAdd.length > 0
-        ? detailedResults.push(...resultObjectsToAdd)
-        : detailedResults.push(
-            options.createResultObject({
-              testItem,
-              point,
-              fetchedTestCase,
-              filteredFields,
-            })
-          );
+      if (resultObjectsToAdd.length > 0) {
+        detailedResults.push(...resultObjectsToAdd);
+      } else {
+        logger.debug(
+          `[RunlessResolver] No step rows generated for testCaseId=${String(
+            point?.testCaseId || ''
+          )}; falling back to test-level row`
+        );
+        detailedResults.push(
+          options.createResultObject({
+            testItem,
+            point,
+            fetchedTestCase,
+            filteredFields,
+          })
+        );
+      }
     }
   }
 
@@ -4725,6 +4732,11 @@ export default class ResultDataProvider {
           resultData.stepsResultXml,
           sharedStepIdToRevisionLookupMap
         );
+        logger.debug(
+          `[RunlessResolver] TC ${String(point?.testCaseId || resultData?.testCase?.id || '')}: parseTestSteps xmlLength=${String(
+            String(resultData.stepsResultXml || '').length
+          )}, parsedSteps=${String(stepsList.length)}, actionResultsBeforeMap=${String(actionResults.length)}`
+        );
 
         sharedStepIdToRevisionLookupMap.clear();
 
@@ -4748,6 +4760,11 @@ export default class ResultDataProvider {
           iteration.actionResults = actionResults
             .filter((result: any) => result.stepPosition)
             .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
+          logger.debug(
+            `[RunlessResolver] TC ${String(point?.testCaseId || resultData?.testCase?.id || '')}: mappedActionResults=${String(
+              iteration.actionResults?.length || 0
+            )} (from existing iteration actionResults)`
+          );
         } else {
           // Fallback for runs that have no action results: emit test definition steps as Not Run.
           iteration.actionResults = stepsList
@@ -4763,6 +4780,11 @@ export default class ResultDataProvider {
               actionPath: String(step?.stepPosition ?? ''),
             }))
             .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
+          logger.debug(
+            `[RunlessResolver] TC ${String(point?.testCaseId || resultData?.testCase?.id || '')}: fallbackActionResults=${String(
+              iteration.actionResults?.length || 0
+            )} (from parsed steps)`
+          );
         }
       }
 

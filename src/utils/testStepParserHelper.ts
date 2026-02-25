@@ -165,8 +165,12 @@ export default class TestStepParserHelper {
         parentStepId
       );
       return stepsList;
-    } catch (err) {
-      logger.error('Failed to parse XML test steps.', err);
+    } catch (err: any) {
+      logger.error(
+        `Failed to parse XML test steps: ${err?.message || err}. xmlLength=${String(
+          String(xmlSteps || '').length
+        )}`
+      );
       return [];
     }
   }
