@@ -5128,6 +5128,17 @@ describe('ResultDataProvider', () => {
       // Assert
       expect(result['1']).toBeDefined();
     });
+
+    it('should map runless test reporter item with iteration by testCaseId key', () => {
+      const iterations = [
+        { testCaseId: 217897, lastRunId: undefined, lastResultId: undefined, iteration: { actionResults: [] } },
+      ];
+
+      const result = (resultDataProvider as any).createIterationsMap(iterations, true, true);
+
+      expect(result['217897']).toBeDefined();
+      expect(result['undefined-undefined-217897']).toBeUndefined();
+    });
   });
 
   describe('alignStepsWithIterationsBase', () => {

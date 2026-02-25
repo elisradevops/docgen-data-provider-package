@@ -4499,14 +4499,29 @@ export default class ResultDataProvider {
     includeNotRunTestCases: boolean
   ): Record<string, any> {
     return iterations.reduce((map, iterationItem) => {
-      if (
-        (isTestReporter && iterationItem.lastRunId && iterationItem.lastResultId) ||
-        iterationItem.iteration
-      ) {
+      const hasRunIdentifiers =
+        iterationItem?.lastRunId !== undefined &&
+        iterationItem?.lastRunId !== null &&
+        String(iterationItem?.lastRunId).trim() !== '' &&
+        iterationItem?.lastResultId !== undefined &&
+        iterationItem?.lastResultId !== null &&
+        String(iterationItem?.lastResultId).trim() !== '';
+
+      if (hasRunIdentifiers) {
         const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${iterationItem.testCaseId}`;
         map[key] = iterationItem;
       } else if (includeNotRunTestCases) {
         const key = `${iterationItem.testCaseId}`;
+        map[key] = iterationItem;
+        if (isTestReporter && iterationItem?.iteration) {
+          logger.debug(
+            `[RunlessResolver] createIterationsMap: mapped runless testCaseId=${String(
+              iterationItem?.testCaseId
+            )} to case-only key`
+          );
+        }
+      } else if (iterationItem?.iteration && !isTestReporter) {
+        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${iterationItem.testCaseId}`;
         map[key] = iterationItem;
       }
       return map;
