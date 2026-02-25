@@ -410,7 +410,8 @@ export default class ResultDataProvider {
         projectName,
         selectedFields,
         false,
-        includeAllHistory
+        includeAllHistory,
+        true
       );
 
       const rows = this.alignStepsWithIterationsFlatReport(
@@ -3086,40 +3087,108 @@ export default class ResultDataProvider {
    * Maps raw test point data to a simplified object.
    */
   private mapTestPoint(testPoint: any, projectName: string): any {
-    return {
-      testPointId: testPoint.id,
-      testCaseId: testPoint.testCaseReference.id,
-      testCaseName: testPoint.testCaseReference.name,
-      testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${testPoint.testCaseReference.id}`,
-      configurationName: testPoint.configuration?.name,
-      outcome: testPoint.results?.outcome || 'Not Run',
-      testSuite: testPoint.testSuite,
-      lastRunId: testPoint.results?.lastTestRunId,
-      lastResultId: testPoint.results?.lastResultId,
-      lastResultDetails: testPoint.results?.lastResultDetails,
-    };
+    const pointAsOfTimestamp = this.resolvePointAsOfTimestamp(testPoint);
+    return this.buildMappedTestPoint(
+      {
+        testPointId: testPoint.id,
+        testCaseId: testPoint.testCaseReference.id,
+        testCaseName: testPoint.testCaseReference.name,
+        configurationName: testPoint.configuration?.name,
+        outcome: testPoint.results?.outcome,
+        testSuite: testPoint.testSuite,
+        lastRunId: testPoint.results?.lastTestRunId,
+        lastResultId: testPoint.results?.lastResultId,
+        lastResultDetails: testPoint.results?.lastResultDetails,
+      },
+      projectName,
+      pointAsOfTimestamp
+    );
   }
 
   /**
    * Maps raw test point data to a simplified object.
    */
   private mapTestPointForCrossPlans(testPoint: any, projectName: string): any {
-    return {
-      testPointId: testPoint.id,
-      testCaseId: testPoint.testCase.id,
-      testCaseName: testPoint.testCase.name,
-      testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${testPoint.testCase.id}`,
-      testSuite: testPoint.testSuite,
-      configurationName: testPoint.configuration?.name,
-      outcome: testPoint.outcome || 'Not Run',
-      lastRunId: testPoint.lastTestRun?.id,
-      lastResultId: testPoint.lastResult?.id,
-      lastResultDetails: testPoint.lastResultDetails || {
-        duration: 0,
-        dateCompleted: '0000-00-00T00:00:00.000Z',
-        runBy: { displayName: 'No tester', id: '00000000-0000-0000-0000-000000000000' },
+    const pointAsOfTimestamp = this.resolvePointAsOfTimestamp(testPoint);
+    return this.buildMappedTestPoint(
+      {
+        testPointId: testPoint.id,
+        testCaseId: testPoint.testCase.id,
+        testCaseName: testPoint.testCase.name,
+        configurationName: testPoint.configuration?.name,
+        outcome: testPoint.outcome,
+        testSuite: testPoint.testSuite,
+        lastRunId: testPoint.lastTestRun?.id,
+        lastResultId: testPoint.lastResult?.id,
+        lastResultDetails: testPoint.lastResultDetails || {
+          duration: 0,
+          dateCompleted: '0000-00-00T00:00:00.000Z',
+          runBy: { displayName: 'No tester', id: '00000000-0000-0000-0000-000000000000' },
+        },
       },
+      projectName,
+      pointAsOfTimestamp
+    );
+  }
+
+  /**
+   * Resolves a point timestamp that can be used as WIT `asOf` anchor.
+   * Returns an ISO string when a valid date exists, otherwise an empty string.
+   */
+  private resolvePointAsOfTimestamp(testPoint: any): string {
+    const candidates = [
+      testPoint?.lastUpdatedDate,
+      testPoint?.lastUpdatedOn,
+      testPoint?.updatedDate,
+      testPoint?.updatedOn,
+    ];
+
+    for (const candidate of candidates) {
+      const raw = String(candidate || '').trim();
+      if (!raw) continue;
+      const parsed = new Date(raw);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+    }
+
+    return '';
+  }
+
+  /**
+   * Builds a normalized test point shape used by downstream result fetch flows.
+   */
+  private buildMappedTestPoint(
+    pointData: {
+      testPointId: any;
+      testCaseId: any;
+      testCaseName: any;
+      configurationName?: any;
+      outcome?: any;
+      testSuite?: any;
+      lastRunId?: any;
+      lastResultId?: any;
+      lastResultDetails?: any;
+    },
+    projectName: string,
+    pointAsOfTimestamp: string
+  ): any {
+    const mappedPoint: any = {
+      testPointId: pointData.testPointId,
+      testCaseId: pointData.testCaseId,
+      testCaseName: pointData.testCaseName,
+      testCaseUrl: `${this.orgUrl}${projectName}/_workitems/edit/${pointData.testCaseId}`,
+      configurationName: pointData.configurationName,
+      outcome: pointData.outcome || 'Not Run',
+      testSuite: pointData.testSuite,
+      lastRunId: pointData.lastRunId,
+      lastResultId: pointData.lastResultId,
+      lastResultDetails: pointData.lastResultDetails,
     };
+    if (pointAsOfTimestamp) {
+      mappedPoint.pointAsOfTimestamp = pointAsOfTimestamp;
+    }
+    return mappedPoint;
   }
 
   // Helper method to get all test points for a test case
@@ -3186,6 +3255,9 @@ export default class ResultDataProvider {
     return fields;
   }
 
+  /**
+   * Reads a field value by reference name with case-insensitive key matching.
+   */
   private getFieldValueByName(fields: Record<string, any>, fieldName: string): any {
     if (!fields || typeof fields !== 'object') return undefined;
     if (Object.prototype.hasOwnProperty.call(fields, fieldName)) {
@@ -3277,12 +3349,25 @@ export default class ResultDataProvider {
 
     const expandParam = expandAll ? '?$expand=all' : '';
     const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${id}/revisions/${rev}${expandParam}`;
-    try {
-      return await TFSServices.getItemContent(url, this.token);
-    } catch (error: any) {
-      logger.warn(`Failed to fetch work item ${id} by revision ${rev}: ${error?.message || error}`);
-      return null;
+    return this.fetchWorkItemByUrl(url, `work item ${id} by revision ${rev}`);
+  }
+
+  private async fetchWorkItemByAsOf(
+    projectName: string,
+    workItemId: number,
+    asOfTimestamp: string,
+    expandAll: boolean = false
+  ): Promise<any | null> {
+    const id = Number(workItemId || 0);
+    const parsedAsOf = new Date(String(asOfTimestamp || '').trim());
+    if (!Number.isFinite(id) || id <= 0 || Number.isNaN(parsedAsOf.getTime())) return null;
+
+    const query: string[] = [`asOf=${encodeURIComponent(parsedAsOf.toISOString())}`];
+    if (expandAll) {
+      query.push(`$expand=all`);
     }
+    const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${id}?${query.join('&')}`;
+    return this.fetchWorkItemByUrl(url, `work item ${id} by asOf ${parsedAsOf.toISOString()}`);
   }
 
   private async fetchWorkItemLatest(
@@ -3295,12 +3380,54 @@ export default class ResultDataProvider {
 
     const expandParam = expandAll ? '?$expand=all' : '';
     const url = `${this.orgUrl}${projectName}/_apis/wit/workItems/${id}${expandParam}`;
+    return this.fetchWorkItemByUrl(url, `latest work item ${id}`);
+  }
+
+  /**
+   * Executes a work-item GET by URL and applies consistent warning/error handling.
+   */
+  private async fetchWorkItemByUrl(url: string, failureContext: string): Promise<any | null> {
     try {
       return await TFSServices.getItemContent(url, this.token);
     } catch (error: any) {
-      logger.warn(`Failed to fetch latest work item ${id}: ${error?.message || error}`);
+      logger.warn(`Failed to fetch ${failureContext}: ${error?.message || error}`);
       return null;
     }
+  }
+
+  /**
+   * Resolves runless test case data using ordered fallbacks:
+   * 1) point-based `asOf` snapshot, 2) explicit revision, 3) suite payload snapshot, 4) latest WI.
+   */
+  private async resolveRunlessTestCaseData(
+    projectName: string,
+    testCaseId: number,
+    suiteTestCaseRevision: number,
+    pointAsOfTimestamp: string,
+    fallbackSnapshot: any,
+    expandAll: boolean
+  ): Promise<any | null> {
+    if (pointAsOfTimestamp) {
+      const asOfSnapshot = await this.fetchWorkItemByAsOf(
+        projectName,
+        testCaseId,
+        pointAsOfTimestamp,
+        expandAll
+      );
+      if (asOfSnapshot) return asOfSnapshot;
+    }
+
+    const revisionSnapshot = await this.fetchWorkItemByRevision(
+      projectName,
+      testCaseId,
+      suiteTestCaseRevision,
+      expandAll
+    );
+    if (revisionSnapshot) return revisionSnapshot;
+
+    if (fallbackSnapshot) return fallbackSnapshot;
+
+    return this.fetchWorkItemLatest(projectName, testCaseId, expandAll);
   }
 
   /**
@@ -3325,7 +3452,8 @@ export default class ResultDataProvider {
     selectedFields?: string[],
     isQueryMode?: boolean,
     point?: any,
-    includeAllHistory: boolean = false
+    includeAllHistory: boolean = false,
+    useRunlessAsOf: boolean = false
   ): Promise<any> {
     try {
       let filteredFields: any = {};
@@ -3342,23 +3470,22 @@ export default class ResultDataProvider {
           point?.testCaseId || suiteTestCaseItem?.workItem?.id || suiteTestCaseItem?.testCaseId || 0
         );
         const suiteTestCaseRevision = this.resolveSuiteTestCaseRevision(suiteTestCaseItem);
+        const pointAsOfTimestamp = useRunlessAsOf
+          ? String(point?.pointAsOfTimestamp || '').trim()
+          : '';
         const fallbackSnapshot = this.buildWorkItemSnapshotFromSuiteTestCase(
           suiteTestCaseItem,
           testCaseId,
           String(point?.testCaseName || '')
         );
-        let testCaseData = await this.fetchWorkItemByRevision(
+        const testCaseData = await this.resolveRunlessTestCaseData(
           projectName,
           testCaseId,
           suiteTestCaseRevision,
+          pointAsOfTimestamp,
+          fallbackSnapshot,
           isTestReporter
         );
-        if (!testCaseData) {
-          testCaseData = fallbackSnapshot;
-        }
-        if (!testCaseData) {
-          testCaseData = await this.fetchWorkItemLatest(projectName, testCaseId, isTestReporter);
-        }
         if (!testCaseData) {
           logger.warn(`Could not resolve test case ${point.testCaseId} for runless point fallback.`);
           return null;
@@ -4992,7 +5119,8 @@ export default class ResultDataProvider {
     selectedFields?: string[],
     isQueryMode?: boolean,
     point?: any,
-    includeAllHistory: boolean = false
+    includeAllHistory: boolean = false,
+    useRunlessAsOf: boolean = false
   ): Promise<any> {
     return this.fetchResultDataBasedOnWiBase(
       projectName,
@@ -5002,7 +5130,8 @@ export default class ResultDataProvider {
       selectedFields,
       isQueryMode,
       point,
-      includeAllHistory
+      includeAllHistory,
+      useRunlessAsOf
     );
   }
 
@@ -5023,22 +5152,24 @@ export default class ResultDataProvider {
     projectName: string,
     selectedFields?: string[],
     isQueryMode?: boolean,
-    includeAllHistory: boolean = false
+    includeAllHistory: boolean = false,
+    useRunlessAsOf: boolean = false
   ): Promise<any[]> {
     return this.fetchAllResultDataBase(
       testData,
       projectName,
       true,
-      (projectName, testSuiteId, point, selectedFields, isQueryMode, includeAllHistory) =>
+      (projectName, testSuiteId, point, selectedFields, isQueryMode, includeAllHistory, useRunlessAsOf) =>
         this.fetchResultDataForTestReporter(
           projectName,
           testSuiteId,
           point,
           selectedFields,
           isQueryMode,
-          includeAllHistory
+          includeAllHistory,
+          useRunlessAsOf
         ),
-      [selectedFields, isQueryMode, includeAllHistory]
+      [selectedFields, isQueryMode, includeAllHistory, useRunlessAsOf]
     );
   }
 
@@ -5196,13 +5327,14 @@ export default class ResultDataProvider {
     point: any,
     selectedFields?: string[],
     isQueryMode?: boolean,
-    includeAllHistory: boolean = false
+    includeAllHistory: boolean = false,
+    useRunlessAsOf: boolean = false
   ) {
     return this.fetchResultDataBase(
       projectName,
       testSuiteId,
       point,
-      (project, runId, resultId, fields, isQueryMode, point, includeAllHistory) =>
+      (project, runId, resultId, fields, isQueryMode, point, includeAllHistory, useRunlessAsOf) =>
         this.fetchResultDataBasedOnWiTestReporter(
           project,
           runId,
@@ -5210,7 +5342,8 @@ export default class ResultDataProvider {
           fields,
           isQueryMode,
           point,
-          includeAllHistory
+          includeAllHistory,
+          useRunlessAsOf
         ),
       (resultData, testSuiteId, point, selectedFields) => {
         const { lastRunId, lastResultId, configurationName, lastResultDetails } = point;
@@ -5330,7 +5463,7 @@ export default class ResultDataProvider {
           return null;
         }
       },
-      [selectedFields, isQueryMode, point, includeAllHistory]
+      [selectedFields, isQueryMode, point, includeAllHistory, useRunlessAsOf]
     );
   }
 

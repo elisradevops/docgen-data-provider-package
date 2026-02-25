@@ -333,6 +333,21 @@ describe('ResultDataProvider', () => {
           testCaseUrl: 'https://dev.azure.com/organization/test-project/_workitems/edit/1',
         });
       });
+
+      it('should include pointAsOfTimestamp when lastUpdatedDate is available', () => {
+        const testPoint = {
+          testCaseReference: { id: 1, name: 'Test Case 1' },
+          lastUpdatedDate: '2025-01-01T12:34:56Z',
+        };
+
+        const result = (resultDataProvider as any).mapTestPoint(testPoint, mockProjectName);
+
+        expect(result).toEqual(
+          expect.objectContaining({
+            pointAsOfTimestamp: '2025-01-01T12:34:56.000Z',
+          })
+        );
+      });
     });
 
     describe('calculateGroupResultSummary', () => {
@@ -3890,7 +3905,9 @@ describe('ResultDataProvider', () => {
         true,
         [],
         false,
-        point
+        point,
+        false,
+        true
       );
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
@@ -3902,7 +3919,150 @@ describe('ResultDataProvider', () => {
       expect(res).toEqual(expect.objectContaining({ testCaseRevision: 9 }));
     });
 
+    it('should ignore point asOf timestamp when runless asOf mode is disabled', async () => {
+      const point = {
+        testCaseId: '123',
+        testCaseName: 'TC 123',
+        outcome: 'passed',
+        pointAsOfTimestamp: '2025-01-01T12:34:56Z',
+        suiteTestCase: {
+          workItem: {
+            id: 123,
+            rev: 9,
+            workItemFields: [{ key: 'Microsoft.VSTS.TCM.Steps', value: '<steps></steps>' }],
+          },
+        },
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        id: 123,
+        rev: 9,
+        fields: {
+          'System.State': 'Active',
+          'System.CreatedDate': '2024-01-01T00:00:00',
+          'Microsoft.VSTS.TCM.Priority': 1,
+          'System.Title': 'Title 123',
+          'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+        },
+        relations: null,
+      });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '0',
+        '0',
+        true,
+        [],
+        false,
+        point
+      );
+
+      const calledUrls = (TFSServices.getItemContent as jest.Mock).mock.calls.map((args: any[]) => String(args[0]));
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/123?asOf='))).toBe(false);
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/123/revisions/9'))).toBe(true);
+      expect(res).toEqual(expect.objectContaining({ testCaseRevision: 9 }));
+    });
+
+    it('should fetch no-run test case by asOf timestamp when pointAsOfTimestamp is available', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+      const point = {
+        testCaseId: '123',
+        testCaseName: 'TC 123',
+        outcome: 'passed',
+        pointAsOfTimestamp: '2025-01-01T12:34:56Z',
+        suiteTestCase: {
+          workItem: {
+            id: 123,
+            rev: 9,
+            workItemFields: [{ key: 'Microsoft.VSTS.TCM.Steps', value: '<steps></steps>' }],
+          },
+        },
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        id: 123,
+        rev: 6,
+        fields: {
+          'System.State': 'Active',
+          'System.CreatedDate': '2024-01-01T00:00:00',
+          'Microsoft.VSTS.TCM.Priority': 1,
+          'System.Title': 'Title 123',
+          'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+        },
+        relations: null,
+      });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '0',
+        '0',
+        true,
+        [],
+        false,
+        point,
+        false,
+        true
+      );
+
+      const calledUrls = (TFSServices.getItemContent as jest.Mock).mock.calls.map((args: any[]) => String(args[0]));
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/123?asOf='))).toBe(true);
+      expect(calledUrls.some((url: string) => url.includes('/revisions/9'))).toBe(false);
+      expect(res).toEqual(expect.objectContaining({ testCaseRevision: 6 }));
+    });
+
+    it('should fallback to suite revision when asOf fetch fails', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+      const point = {
+        testCaseId: '456',
+        testCaseName: 'TC 456',
+        outcome: 'Not Run',
+        pointAsOfTimestamp: '2025-02-01T00:00:00Z',
+        suiteTestCase: {
+          workItem: {
+            id: 456,
+            workItemFields: [{ key: 'System.Rev', value: '11' }],
+          },
+        },
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock)
+        .mockRejectedValueOnce(new Error('asOf failed'))
+        .mockResolvedValueOnce({
+          id: 456,
+          rev: 11,
+          fields: {
+            'System.State': 'Active',
+            'System.CreatedDate': '2024-01-01T00:00:00',
+            'Microsoft.VSTS.TCM.Priority': 1,
+            'System.Title': 'Title 456',
+            'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+          },
+          relations: [],
+        });
+
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '0',
+        '0',
+        true,
+        [],
+        false,
+        point,
+        false,
+        true
+      );
+
+      const calledUrls = (TFSServices.getItemContent as jest.Mock).mock.calls.map((args: any[]) => String(args[0]));
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/456?asOf='))).toBe(true);
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/456/revisions/11'))).toBe(true);
+      expect(res).toEqual(expect.objectContaining({ testCaseRevision: 11 }));
+    });
+
     it('should resolve no-run revision from System.Rev in suite test-case fields', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
       const point = {
         testCaseId: '321',
         testCaseName: 'TC 321',
