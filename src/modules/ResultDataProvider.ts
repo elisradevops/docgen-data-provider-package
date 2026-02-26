@@ -4358,10 +4358,25 @@ export default class ResultDataProvider {
         }
       }
       for (const point of testItem.testPointsItems) {
-        const testCase = testCaseById.get(Number(point.testCaseId));
-        if (!testCase) continue;
+        const pointTestCaseId = Number(point?.testCaseId || 0);
+        const testCase =
+          testCaseById.get(pointTestCaseId) || {
+            workItem: { id: pointTestCaseId, workItemFields: [] },
+          };
+        if (!Number.isFinite(pointTestCaseId) || pointTestCaseId <= 0) continue;
 
-        if (testCase.workItem.workItemFields.length === 0) {
+        if (!testCaseById.has(pointTestCaseId) && isTestReporter) {
+          logger.debug(
+            `[RunlessResolver] Missing suite testCase payload for point testCaseId=${String(
+              pointTestCaseId
+            )}; using point fallback for alignment`
+          );
+        }
+
+        const testCaseWorkItemFields = Array.isArray(testCase?.workItem?.workItemFields)
+          ? testCase.workItem.workItemFields
+          : [];
+        if (testCaseWorkItemFields.length === 0) {
           logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
           if (!isTestReporter) {
             continue;

@@ -6080,6 +6080,56 @@ describe('ResultDataProvider', () => {
       expect(res).toHaveLength(1);
       expect(res[0].stepNo).toBeUndefined();
     });
+
+    it('should keep runless step rows even when suite testCasesItems entry is missing', () => {
+      const testData = [
+        {
+          testGroupName: 'G',
+          testPointsItems: [{ testCaseId: 217916, testCaseName: 'TC 217916', testCaseUrl: 'u' }],
+          testCasesItems: [],
+        },
+      ];
+      const iterations = [
+        {
+          testCaseId: 217916,
+          lastRunId: undefined,
+          lastResultId: undefined,
+          iteration: {
+            actionResults: [
+              {
+                stepIdentifier: '16',
+                stepPosition: '1',
+                action: 'A',
+                expected: 'E',
+                outcome: 'Unspecified',
+                isSharedStepTitle: false,
+                errorMessage: '',
+              },
+            ],
+          },
+          testCaseResult: 'Not Run',
+          comment: '',
+          runBy: { displayName: 'u' },
+          failureType: '',
+          executionDate: '',
+          configurationName: '',
+          relatedRequirements: [],
+          relatedBugs: [],
+          relatedCRs: [],
+          customFields: {},
+        },
+      ];
+
+      const res = (resultDataProvider as any).alignStepsWithIterationsTestReporter(
+        testData,
+        iterations,
+        ['includeSteps@stepsRunProperties', 'stepRunStatus@stepsRunProperties'],
+        true
+      );
+
+      expect(res).toHaveLength(1);
+      expect(res[0]).toEqual(expect.objectContaining({ stepNo: '1', stepStatus: 'Not Run' }));
+    });
   });
 
   describe('fetchOpenPcrData', () => {
