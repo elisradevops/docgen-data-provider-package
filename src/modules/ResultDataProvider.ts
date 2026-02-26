@@ -4382,12 +4382,35 @@ export default class ResultDataProvider {
             continue;
           }
         }
-        const iterationKey =
-          !point.lastRunId || !point.lastResultId
-            ? `${testCase.workItem.id}`
-            : `${point.lastRunId}-${point.lastResultId}-${testCase.workItem.id}`;
+        const iterationKey = this.buildIterationLookupKey({
+          testCaseId: testCase.workItem.id,
+          lastRunId: point?.lastRunId,
+          lastResultId: point?.lastResultId,
+          testPointId: point?.testPointId,
+          testCaseRevision:
+            this.resolveSuiteTestCaseRevision(testCase) ||
+            this.resolveSuiteTestCaseRevision(point?.suiteTestCase),
+        });
+        const fallbackRevision = Number(
+          this.resolveSuiteTestCaseRevision(testCase) ||
+            this.resolveSuiteTestCaseRevision(point?.suiteTestCase) ||
+            0
+        );
+        const fallbackRevisionKey =
+          Number.isFinite(fallbackRevision) && fallbackRevision > 0
+            ? this.buildIterationLookupKey({
+                testCaseId: testCase.workItem.id,
+                testCaseRevision: fallbackRevision,
+              })
+            : '';
+        const fallbackCaseOnlyKey = `${testCase.workItem.id}`;
         const fetchedTestCase =
-          iterationsMap[iterationKey] || (includeNotRunTestCases ? testCase : undefined);
+          iterationsMap[iterationKey] ||
+          (fallbackRevisionKey && fallbackRevisionKey !== iterationKey
+            ? iterationsMap[fallbackRevisionKey]
+            : undefined) ||
+          (iterationKey !== fallbackCaseOnlyKey ? iterationsMap[fallbackCaseOnlyKey] : undefined) ||
+          (includeNotRunTestCases ? testCase : undefined);
         // First check if fetchedTestCase exists
         if (!fetchedTestCase) continue;
 
@@ -4530,24 +4553,78 @@ export default class ResultDataProvider {
         String(iterationItem?.lastResultId).trim() !== '';
 
       if (hasRunIdentifiers) {
-        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${iterationItem.testCaseId}`;
+        const key = this.buildIterationLookupKey({
+          testCaseId: iterationItem?.testCaseId,
+          lastRunId: iterationItem?.lastRunId,
+          lastResultId: iterationItem?.lastResultId,
+          testPointId: iterationItem?.testPointId,
+          testCaseRevision: iterationItem?.testCaseRevision,
+        });
         map[key] = iterationItem;
       } else if (includeNotRunTestCases) {
-        const key = `${iterationItem.testCaseId}`;
+        const key = this.buildIterationLookupKey({
+          testCaseId: iterationItem?.testCaseId,
+          lastRunId: iterationItem?.lastRunId,
+          lastResultId: iterationItem?.lastResultId,
+          testPointId: iterationItem?.testPointId,
+          testCaseRevision: iterationItem?.testCaseRevision,
+        });
         map[key] = iterationItem;
         if (isTestReporter && iterationItem?.iteration) {
           logger.debug(
             `[RunlessResolver] createIterationsMap: mapped runless testCaseId=${String(
               iterationItem?.testCaseId
-            )} to case-only key`
+            )} to key=${key}`
           );
         }
       } else if (iterationItem?.iteration && !isTestReporter) {
-        const key = `${iterationItem.lastRunId}-${iterationItem.lastResultId}-${iterationItem.testCaseId}`;
+        const key = this.buildIterationLookupKey({
+          testCaseId: iterationItem?.testCaseId,
+          lastRunId: iterationItem?.lastRunId,
+          lastResultId: iterationItem?.lastResultId,
+          testPointId: iterationItem?.testPointId,
+          testCaseRevision: iterationItem?.testCaseRevision,
+        });
         map[key] = iterationItem;
       }
       return map;
     }, {} as Record<string, any>);
+  }
+
+  /**
+   * Builds a stable lookup key for joining points to fetched iteration payloads.
+   * Run-backed items are keyed by run/result/testCase, while runless items prefer
+   * testPointId to avoid collisions across suites that share the same testCaseId.
+   */
+  private buildIterationLookupKey(input: {
+    testCaseId: any;
+    lastRunId?: any;
+    lastResultId?: any;
+    testPointId?: any;
+    testCaseRevision?: any;
+  }): string {
+    const testCaseId = Number(input?.testCaseId || 0);
+    const hasRunIdentifiers =
+      input?.lastRunId !== undefined &&
+      input?.lastRunId !== null &&
+      String(input?.lastRunId).trim() !== '' &&
+      input?.lastResultId !== undefined &&
+      input?.lastResultId !== null &&
+      String(input?.lastResultId).trim() !== '';
+    if (hasRunIdentifiers) {
+      return `${input?.lastRunId}-${input?.lastResultId}-${testCaseId}`;
+    }
+
+    const testPointId = Number(input?.testPointId || 0);
+    if (Number.isFinite(testPointId) && testPointId > 0) {
+      return `point-${testPointId}-${testCaseId}`;
+    }
+
+    const testCaseRevision = Number(input?.testCaseRevision || 0);
+    if (Number.isFinite(testCaseRevision) && testCaseRevision > 0) {
+      return `rev-${testCaseId}-${testCaseRevision}`;
+    }
+    return `${testCaseId}`;
   }
 
   /**
@@ -5478,6 +5555,7 @@ export default class ResultDataProvider {
           const resultDataResponse: any = {
             testCaseName: `${resultData?.testCase?.name ?? ''} - ${resultData?.testCase?.id ?? ''}`,
             testCaseId: resultData?.testCase?.id,
+            testPointId: point?.testPointId,
             testSuiteName: `${resultData?.testSuite?.name ?? ''}`,
             testSuiteId,
             lastRunId,

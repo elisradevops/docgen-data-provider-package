@@ -5129,7 +5129,7 @@ describe('ResultDataProvider', () => {
       expect(result['1']).toBeDefined();
     });
 
-    it('should map runless test reporter item with iteration by testCaseId key', () => {
+    it('should map runless test reporter item with iteration by testCaseId key when point id is missing', () => {
       const iterations = [
         { testCaseId: 217897, lastRunId: undefined, lastResultId: undefined, iteration: { actionResults: [] } },
       ];
@@ -5138,6 +5138,40 @@ describe('ResultDataProvider', () => {
 
       expect(result['217897']).toBeDefined();
       expect(result['undefined-undefined-217897']).toBeUndefined();
+    });
+
+    it('should map runless test reporter item with iteration by point-aware key when point id exists', () => {
+      const iterations = [
+        {
+          testCaseId: 217916,
+          testPointId: 1001,
+          lastRunId: undefined,
+          lastResultId: undefined,
+          iteration: { actionResults: [] },
+        },
+      ];
+
+      const result = (resultDataProvider as any).createIterationsMap(iterations, true, true);
+
+      expect(result['point-1001-217916']).toBeDefined();
+      expect(result['217916']).toBeUndefined();
+    });
+
+    it('should map runless test reporter item with iteration by revision key when point id is missing', () => {
+      const iterations = [
+        {
+          testCaseId: 217916,
+          testCaseRevision: 18,
+          lastRunId: undefined,
+          lastResultId: undefined,
+          iteration: { actionResults: [] },
+        },
+      ];
+
+      const result = (resultDataProvider as any).createIterationsMap(iterations, true, true);
+
+      expect(result['rev-217916-18']).toBeDefined();
+      expect(result['217916']).toBeUndefined();
     });
   });
 
@@ -6085,13 +6119,14 @@ describe('ResultDataProvider', () => {
       const testData = [
         {
           testGroupName: 'G',
-          testPointsItems: [{ testCaseId: 217916, testCaseName: 'TC 217916', testCaseUrl: 'u' }],
+          testPointsItems: [{ testCaseId: 217916, testPointId: 1001, testCaseName: 'TC 217916', testCaseUrl: 'u' }],
           testCasesItems: [],
         },
       ];
       const iterations = [
         {
           testCaseId: 217916,
+          testPointId: 1001,
           lastRunId: undefined,
           lastResultId: undefined,
           iteration: {
@@ -6129,6 +6164,176 @@ describe('ResultDataProvider', () => {
 
       expect(res).toHaveLength(1);
       expect(res[0]).toEqual(expect.objectContaining({ stepNo: '1', stepStatus: 'Not Run' }));
+    });
+
+    it('should match runless iterations by testPointId when the same testCase appears in multiple suites', () => {
+      const testData = [
+        {
+          testGroupName: 'Suite A',
+          testPointsItems: [{ testCaseId: 217916, testPointId: 2001, testCaseName: 'TC', testCaseUrl: 'u1' }],
+          testCasesItems: [],
+        },
+        {
+          testGroupName: 'Suite B',
+          testPointsItems: [{ testCaseId: 217916, testPointId: 2002, testCaseName: 'TC', testCaseUrl: 'u2' }],
+          testCasesItems: [],
+        },
+      ];
+
+      const iterations = [
+        {
+          testCaseId: 217916,
+          testPointId: 2001,
+          lastRunId: undefined,
+          lastResultId: undefined,
+          iteration: {
+            actionResults: [
+              {
+                stepIdentifier: '16',
+                stepPosition: '1',
+                action: 'A',
+                expected: 'E',
+                outcome: 'Unspecified',
+                isSharedStepTitle: false,
+                errorMessage: '',
+              },
+            ],
+          },
+          testCaseResult: 'Not Run',
+          comment: '',
+          runBy: { displayName: 'u' },
+          failureType: '',
+          executionDate: '',
+          configurationName: '',
+          relatedRequirements: [],
+          relatedBugs: [],
+          relatedCRs: [],
+          customFields: {},
+        },
+        {
+          testCaseId: 217916,
+          testPointId: 2002,
+          lastRunId: undefined,
+          lastResultId: undefined,
+          iteration: { actionResults: [] },
+          testCaseResult: 'Not Run',
+          comment: '',
+          runBy: { displayName: 'u' },
+          failureType: '',
+          executionDate: '',
+          configurationName: '',
+          relatedRequirements: [],
+          relatedBugs: [],
+          relatedCRs: [],
+          customFields: {},
+        },
+      ];
+
+      const res = (resultDataProvider as any).alignStepsWithIterationsTestReporter(
+        testData,
+        iterations,
+        ['includeSteps@stepsRunProperties', 'stepRunStatus@stepsRunProperties'],
+        true
+      );
+
+      expect(res).toHaveLength(2);
+      const suiteA = res.find((row: any) => row?.suiteName === 'Suite A');
+      const suiteB = res.find((row: any) => row?.suiteName === 'Suite B');
+      expect(suiteA).toEqual(expect.objectContaining({ stepNo: '1', stepStatus: 'Not Run' }));
+      expect(suiteB).toBeDefined();
+      expect(Object.prototype.hasOwnProperty.call(suiteB, 'stepNo')).toBe(false);
+    });
+
+    it('should match runless iterations by revision when point id is missing and same testCase appears in multiple suites', () => {
+      const testData = [
+        {
+          testGroupName: 'Suite A',
+          testPointsItems: [{ testCaseId: 217916, testCaseName: 'TC', testCaseUrl: 'u1' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 217916,
+                workItemFields: [{ key: 'System.Rev', value: 18 }],
+              },
+            },
+          ],
+        },
+        {
+          testGroupName: 'Suite B',
+          testPointsItems: [{ testCaseId: 217916, testCaseName: 'TC', testCaseUrl: 'u2' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 217916,
+                workItemFields: [{ key: 'System.Rev', value: 23 }],
+              },
+            },
+          ],
+        },
+      ];
+
+      const iterations = [
+        {
+          testCaseId: 217916,
+          testCaseRevision: 18,
+          lastRunId: undefined,
+          lastResultId: undefined,
+          iteration: {
+            actionResults: [
+              {
+                stepIdentifier: '16',
+                stepPosition: '1',
+                action: 'A',
+                expected: 'E',
+                outcome: 'Unspecified',
+                isSharedStepTitle: false,
+                errorMessage: '',
+              },
+            ],
+          },
+          testCaseResult: 'Not Run',
+          comment: '',
+          runBy: { displayName: 'u' },
+          failureType: '',
+          executionDate: '',
+          configurationName: '',
+          relatedRequirements: [],
+          relatedBugs: [],
+          relatedCRs: [],
+          customFields: {},
+        },
+        {
+          testCaseId: 217916,
+          testCaseRevision: 23,
+          lastRunId: undefined,
+          lastResultId: undefined,
+          iteration: { actionResults: [] },
+          testCaseResult: 'Not Run',
+          comment: '',
+          runBy: { displayName: 'u' },
+          failureType: '',
+          executionDate: '',
+          configurationName: '',
+          relatedRequirements: [],
+          relatedBugs: [],
+          relatedCRs: [],
+          customFields: {},
+        },
+      ];
+
+      const res = (resultDataProvider as any).alignStepsWithIterationsTestReporter(
+        testData,
+        iterations,
+        ['includeSteps@stepsRunProperties', 'stepRunStatus@stepsRunProperties'],
+        true
+      );
+
+      expect(res).toHaveLength(2);
+      const suiteA = res.find((row: any) => row?.suiteName === 'Suite A');
+      const suiteB = res.find((row: any) => row?.suiteName === 'Suite B');
+      expect(suiteA).toEqual(expect.objectContaining({ stepNo: '1', stepStatus: 'Not Run' }));
+      expect(suiteB).toBeDefined();
+      expect(Object.prototype.hasOwnProperty.call(suiteB, 'stepNo')).toBe(false);
     });
   });
 
