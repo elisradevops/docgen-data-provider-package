@@ -3361,12 +3361,6 @@ export default class ResultDataProvider {
     const id = Number(workItemId || 0);
     const parsedAsOf = new Date(String(asOfTimestamp || '').trim());
     if (!Number.isFinite(id) || id <= 0 || Number.isNaN(parsedAsOf.getTime())) return null;
-
-    logger.debug(
-      `[RunlessResolver] Fetching work item ${id} by asOf (raw="${String(
-        asOfTimestamp || ''
-      )}", normalized="${parsedAsOf.toISOString()}", expandAll=${String(expandAll)})`
-    );
     const query: string[] = [`asOf=${encodeURIComponent(parsedAsOf.toISOString())}`];
     if (expandAll) {
       query.push(`$expand=all`);
@@ -3408,19 +3402,48 @@ export default class ResultDataProvider {
     return String(stepsXml || '').trim() !== '';
   }
 
-  private logRunlessSnapshotDecision(testCaseId: number, source: string, snapshot: any | null): void {
-    if (!snapshot) {
-      logger.debug(`[RunlessResolver] TC ${testCaseId}: source=${source}, snapshot=none`);
-      return;
+  /**
+   * Resolves the suite-aware revision for a test point.
+   */
+  private resolvePointRevision(testCase: any, point: any): number {
+    return Number(
+      this.resolveSuiteTestCaseRevision(testCase) ||
+        this.resolveSuiteTestCaseRevision(point?.suiteTestCase) ||
+        0
+    );
+  }
+
+  /**
+   * Builds ordered keys used to match a point with fetched iteration payloads.
+   */
+  private buildIterationLookupCandidates(input: {
+    testCaseId: any;
+    lastRunId?: any;
+    lastResultId?: any;
+    testPointId?: any;
+    testCaseRevision?: any;
+  }): string[] {
+    const candidates: string[] = [];
+    const addCandidate = (key: string) => {
+      if (key && !candidates.includes(key)) {
+        candidates.push(key);
+      }
+    };
+
+    addCandidate(this.buildIterationLookupKey(input));
+
+    const revision = Number(input?.testCaseRevision || 0);
+    if (Number.isFinite(revision) && revision > 0) {
+      addCandidate(
+        this.buildIterationLookupKey({
+          testCaseId: input?.testCaseId,
+          testCaseRevision: revision,
+        })
+      );
     }
 
-    const stepsXml = this.extractStepsXmlFromFieldsMap(snapshot?.fields || {});
-    const stepsLength = String(stepsXml || '').trim().length;
-    logger.debug(
-      `[RunlessResolver] TC ${testCaseId}: source=${source}, rev=${String(
-        snapshot?.rev ?? ''
-      )}, hasSteps=${String(stepsLength > 0)}, stepsLength=${String(stepsLength)}`
-    );
+    addCandidate(`${Number(input?.testCaseId || 0)}`);
+    return candidates;
   }
 
   /**
@@ -3444,13 +3467,10 @@ export default class ResultDataProvider {
         pointAsOfTimestamp,
         expandAll
       );
-      this.logRunlessSnapshotDecision(testCaseId, 'asOf', asOfSnapshot);
       if (asOfSnapshot) {
         if (this.hasStepsInWorkItemSnapshot(asOfSnapshot)) return asOfSnapshot;
         bestSnapshotWithoutSteps = asOfSnapshot;
       }
-    } else {
-      logger.debug(`[RunlessResolver] TC ${testCaseId}: asOf timestamp is empty, skipping asOf fetch`);
     }
 
     const revisionSnapshot = await this.fetchWorkItemByRevision(
@@ -3459,20 +3479,17 @@ export default class ResultDataProvider {
       suiteTestCaseRevision,
       expandAll
     );
-    this.logRunlessSnapshotDecision(testCaseId, `revision:${String(suiteTestCaseRevision)}`, revisionSnapshot);
     if (revisionSnapshot) {
       if (this.hasStepsInWorkItemSnapshot(revisionSnapshot)) return revisionSnapshot;
       bestSnapshotWithoutSteps = bestSnapshotWithoutSteps || revisionSnapshot;
     }
 
-    this.logRunlessSnapshotDecision(testCaseId, 'suiteSnapshot', fallbackSnapshot);
     if (fallbackSnapshot) {
       if (this.hasStepsInWorkItemSnapshot(fallbackSnapshot)) return fallbackSnapshot;
       bestSnapshotWithoutSteps = bestSnapshotWithoutSteps || fallbackSnapshot;
     }
 
     const latestSnapshot = await this.fetchWorkItemLatest(projectName, testCaseId, expandAll);
-    this.logRunlessSnapshotDecision(testCaseId, 'latest', latestSnapshot);
     if (latestSnapshot) {
       if (this.hasStepsInWorkItemSnapshot(latestSnapshot)) return latestSnapshot;
       bestSnapshotWithoutSteps = bestSnapshotWithoutSteps || latestSnapshot;
@@ -3524,13 +3541,6 @@ export default class ResultDataProvider {
         const pointAsOfTimestamp = useRunlessAsOf
           ? String(point?.pointAsOfTimestamp || '').trim()
           : '';
-        logger.debug(
-          `[RunlessResolver] Start TC ${String(testCaseId)}: useRunlessAsOf=${String(
-            useRunlessAsOf
-          )}, pointAsOfTimestamp="${pointAsOfTimestamp}", suiteRevision=${String(
-            suiteTestCaseRevision
-          )}, pointOutcome="${String(point?.outcome || '')}"`
-        );
         const fallbackSnapshot = this.buildWorkItemSnapshotFromSuiteTestCase(
           suiteTestCaseItem,
           testCaseId,
@@ -4365,14 +4375,6 @@ export default class ResultDataProvider {
           };
         if (!Number.isFinite(pointTestCaseId) || pointTestCaseId <= 0) continue;
 
-        if (!testCaseById.has(pointTestCaseId) && isTestReporter) {
-          logger.debug(
-            `[RunlessResolver] Missing suite testCase payload for point testCaseId=${String(
-              pointTestCaseId
-            )}; using point fallback for alignment`
-          );
-        }
-
         const testCaseWorkItemFields = Array.isArray(testCase?.workItem?.workItemFields)
           ? testCase.workItem.workItemFields
           : [];
@@ -4382,34 +4384,16 @@ export default class ResultDataProvider {
             continue;
           }
         }
-        const iterationKey = this.buildIterationLookupKey({
+        const iterationLookupKeys = this.buildIterationLookupCandidates({
           testCaseId: testCase.workItem.id,
           lastRunId: point?.lastRunId,
           lastResultId: point?.lastResultId,
           testPointId: point?.testPointId,
-          testCaseRevision:
-            this.resolveSuiteTestCaseRevision(testCase) ||
-            this.resolveSuiteTestCaseRevision(point?.suiteTestCase),
+          testCaseRevision: this.resolvePointRevision(testCase, point),
         });
-        const fallbackRevision = Number(
-          this.resolveSuiteTestCaseRevision(testCase) ||
-            this.resolveSuiteTestCaseRevision(point?.suiteTestCase) ||
-            0
-        );
-        const fallbackRevisionKey =
-          Number.isFinite(fallbackRevision) && fallbackRevision > 0
-            ? this.buildIterationLookupKey({
-                testCaseId: testCase.workItem.id,
-                testCaseRevision: fallbackRevision,
-              })
-            : '';
-        const fallbackCaseOnlyKey = `${testCase.workItem.id}`;
+        const fetchedTestCaseFromMap = iterationLookupKeys.find((key) => iterationsMap[key]) || '';
         const fetchedTestCase =
-          iterationsMap[iterationKey] ||
-          (fallbackRevisionKey && fallbackRevisionKey !== iterationKey
-            ? iterationsMap[fallbackRevisionKey]
-            : undefined) ||
-          (iterationKey !== fallbackCaseOnlyKey ? iterationsMap[fallbackCaseOnlyKey] : undefined) ||
+          (fetchedTestCaseFromMap ? iterationsMap[fetchedTestCaseFromMap] : undefined) ||
           (includeNotRunTestCases ? testCase : undefined);
         // First check if fetchedTestCase exists
         if (!fetchedTestCase) continue;
@@ -4480,11 +4464,6 @@ export default class ResultDataProvider {
       if (resultObjectsToAdd.length > 0) {
         detailedResults.push(...resultObjectsToAdd);
       } else {
-        logger.debug(
-          `[RunlessResolver] No step rows generated for testCaseId=${String(
-            point?.testCaseId || ''
-          )}; falling back to test-level row`
-        );
         detailedResults.push(
           options.createResultObject({
             testItem,
@@ -4570,13 +4549,6 @@ export default class ResultDataProvider {
           testCaseRevision: iterationItem?.testCaseRevision,
         });
         map[key] = iterationItem;
-        if (isTestReporter && iterationItem?.iteration) {
-          logger.debug(
-            `[RunlessResolver] createIterationsMap: mapped runless testCaseId=${String(
-              iterationItem?.testCaseId
-            )} to key=${key}`
-          );
-        }
       } else if (iterationItem?.iteration && !isTestReporter) {
         const key = this.buildIterationLookupKey({
           testCaseId: iterationItem?.testCaseId,
@@ -4824,11 +4796,6 @@ export default class ResultDataProvider {
           resultData.stepsResultXml,
           sharedStepIdToRevisionLookupMap
         );
-        logger.debug(
-          `[RunlessResolver] TC ${String(point?.testCaseId || resultData?.testCase?.id || '')}: parseTestSteps xmlLength=${String(
-            String(resultData.stepsResultXml || '').length
-          )}, parsedSteps=${String(stepsList.length)}, actionResultsBeforeMap=${String(actionResults.length)}`
-        );
 
         sharedStepIdToRevisionLookupMap.clear();
 
@@ -4852,11 +4819,6 @@ export default class ResultDataProvider {
           iteration.actionResults = actionResults
             .filter((result: any) => result.stepPosition)
             .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
-          logger.debug(
-            `[RunlessResolver] TC ${String(point?.testCaseId || resultData?.testCase?.id || '')}: mappedActionResults=${String(
-              iteration.actionResults?.length || 0
-            )} (from existing iteration actionResults)`
-          );
         } else {
           // Fallback for runs that have no action results: emit test definition steps as Not Run.
           iteration.actionResults = stepsList
@@ -4872,11 +4834,6 @@ export default class ResultDataProvider {
               actionPath: String(step?.stepPosition ?? ''),
             }))
             .sort((a: any, b: any) => this.compareActionResults(a.stepPosition, b.stepPosition));
-          logger.debug(
-            `[RunlessResolver] TC ${String(point?.testCaseId || resultData?.testCase?.id || '')}: fallbackActionResults=${String(
-              iteration.actionResults?.length || 0
-            )} (from parsed steps)`
-          );
         }
       }
 
