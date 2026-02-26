@@ -5083,6 +5083,131 @@ describe('ResultDataProvider', () => {
     });
   });
 
+  describe('runless key/resolution edge cases', () => {
+    it('should prioritize run key over point/revision in buildIterationLookupKey', () => {
+      const key = (resultDataProvider as any).buildIterationLookupKey({
+        testCaseId: 217916,
+        lastRunId: 101,
+        lastResultId: 202,
+        testPointId: 303,
+        testCaseRevision: 18,
+      });
+
+      expect(key).toBe('101-202-217916');
+    });
+
+    it('should treat blank run identifiers as missing and use point/revision fallback keys', () => {
+      const pointKey = (resultDataProvider as any).buildIterationLookupKey({
+        testCaseId: 217916,
+        lastRunId: ' ',
+        lastResultId: '',
+        testPointId: 303,
+        testCaseRevision: 18,
+      });
+      const revKey = (resultDataProvider as any).buildIterationLookupKey({
+        testCaseId: 217916,
+        lastRunId: ' ',
+        lastResultId: '',
+        testCaseRevision: 18,
+      });
+
+      expect(pointKey).toBe('point-303-217916');
+      expect(revKey).toBe('rev-217916-18');
+    });
+
+    it('should deduplicate candidate keys when primary key is already case-only', () => {
+      const keys = (resultDataProvider as any).buildIterationLookupCandidates({
+        testCaseId: 217916,
+      });
+
+      expect(keys).toEqual(['217916']);
+    });
+
+    it('should resolve point revision from suite test case when test case revision is missing', () => {
+      const revision = (resultDataProvider as any).resolvePointRevision(
+        { workItem: { workItemFields: [] } },
+        {
+          suiteTestCase: {
+            workItem: {
+              workItemFields: [{ key: 'System.Rev', value: 23 }],
+            },
+          },
+        }
+      );
+
+      expect(revision).toBe(23);
+    });
+
+    it('should short-circuit runless resolution when asOf snapshot already has steps', async () => {
+      const asOfSnapshot = { rev: 18, fields: { 'Microsoft.VSTS.TCM.Steps': '<steps><step id="1"/></steps>' } };
+      const asOfSpy = jest.spyOn(resultDataProvider as any, 'fetchWorkItemByAsOf').mockResolvedValueOnce(asOfSnapshot);
+      const revSpy = jest.spyOn(resultDataProvider as any, 'fetchWorkItemByRevision').mockResolvedValueOnce(null);
+      const latestSpy = jest.spyOn(resultDataProvider as any, 'fetchWorkItemLatest').mockResolvedValueOnce(null);
+
+      const res = await (resultDataProvider as any).resolveRunlessTestCaseData(
+        mockProjectName,
+        217916,
+        18,
+        '2025-05-20T00:47:30.610Z',
+        null,
+        true
+      );
+
+      expect(res).toBe(asOfSnapshot);
+      expect(asOfSpy).toHaveBeenCalledTimes(1);
+      expect(revSpy).not.toHaveBeenCalled();
+      expect(latestSpy).not.toHaveBeenCalled();
+    });
+
+    it('should keep earliest snapshot when no source has steps', async () => {
+      const asOfSnapshot = { rev: 1, fields: { 'Microsoft.VSTS.TCM.Steps': '' } };
+      jest
+        .spyOn(resultDataProvider as any, 'fetchWorkItemByAsOf')
+        .mockResolvedValueOnce(asOfSnapshot);
+      jest
+        .spyOn(resultDataProvider as any, 'fetchWorkItemByRevision')
+        .mockResolvedValueOnce({ rev: 2, fields: { 'Microsoft.VSTS.TCM.Steps': ' ' } });
+      const latestSnapshot = { rev: 3, fields: { 'Microsoft.VSTS.TCM.Steps': '' } };
+      jest.spyOn(resultDataProvider as any, 'fetchWorkItemLatest').mockResolvedValueOnce(latestSnapshot);
+
+      const res = await (resultDataProvider as any).resolveRunlessTestCaseData(
+        mockProjectName,
+        217916,
+        18,
+        '2025-05-20T00:47:30.610Z',
+        null,
+        true
+      );
+
+      expect(res).toBe(asOfSnapshot);
+    });
+
+    it('should return latest snapshot when only latest has steps', async () => {
+      jest
+        .spyOn(resultDataProvider as any, 'fetchWorkItemByAsOf')
+        .mockResolvedValueOnce({ rev: 1, fields: { 'Microsoft.VSTS.TCM.Steps': '' } });
+      jest
+        .spyOn(resultDataProvider as any, 'fetchWorkItemByRevision')
+        .mockResolvedValueOnce({ rev: 2, fields: { 'Microsoft.VSTS.TCM.Steps': '' } });
+      const latestSnapshot = {
+        rev: 3,
+        fields: { 'Microsoft.VSTS.TCM.Steps': '<steps><step id="1"/></steps>' },
+      };
+      jest.spyOn(resultDataProvider as any, 'fetchWorkItemLatest').mockResolvedValueOnce(latestSnapshot);
+
+      const res = await (resultDataProvider as any).resolveRunlessTestCaseData(
+        mockProjectName,
+        217916,
+        18,
+        '2025-05-20T00:47:30.610Z',
+        null,
+        true
+      );
+
+      expect(res).toBe(latestSnapshot);
+    });
+  });
+
   describe('createIterationsMap', () => {
     it('should create iterations map from results', () => {
       // Arrange
