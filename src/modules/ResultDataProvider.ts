@@ -56,6 +56,8 @@ export default class ResultDataProvider {
   private static readonly MEWP_INTERNAL_VALIDATION_DIAGNOSTICS_TAG =
     '[MEWP][InternalValidation][Diagnostics]';
   private static readonly MEWP_INTERNAL_VALIDATION_SUMMARY_TAG = '[MEWP][InternalValidation][Summary]';
+  private static readonly MEWP_INTERNAL_VALIDATION_ASSUMPTIONS_REF = 'Assumptions';
+  private static readonly MEWP_INTERNAL_VALIDATION_ASSUMPTIONS_HEADER_PATTERN = /assumptions/i;
 
   private static readonly MEWP_L2_COVERAGE_COLUMNS = [
     'L2 REQ ID',
@@ -806,6 +808,7 @@ export default class ResultDataProvider {
       const rows: MewpInternalValidationRow[] = [];
       const stepsXmlByTestCase = this.buildTestCaseStepsXmlMap(testData);
       const testCaseTitleMap = this.buildMewpTestCaseTitleMap(testData);
+      const testCaseDescriptionMap = this.buildMewpTestCaseDescriptionMap(testData);
       const allTestCaseIds = new Set<number>();
       for (const suite of testData || []) {
         const testCasesItems = Array.isArray(suite?.testCasesItems) ? suite.testCasesItems : [];
@@ -861,7 +864,16 @@ export default class ResultDataProvider {
             : [];
         const executableSteps = parsedSteps.filter((step) => !step?.isSharedStepTitle);
         diagnostics.totalParsedSteps += executableSteps.length;
-        const mentionEntries = this.extractRequirementMentionsFromExpectedSteps(parsedSteps, true);
+        // Direction A/B mentions can come from two sources:
+        // 1) Expected Result in executable steps.
+        // 2) "Assumptions" section in the test-case description.
+        const stepMentionEntries = this.extractRequirementMentionsFromExpectedSteps(parsedSteps, true);
+        const descriptionText = testCaseDescriptionMap.get(testCaseId) || '';
+        const assumptionsMentionEntries = this.extractRequirementMentionsFromAssumptionsDescription(
+          descriptionText,
+          true
+        );
+        const mentionEntries = [...stepMentionEntries, ...assumptionsMentionEntries];
         diagnostics.totalStepsWithMentions += mentionEntries.length;
         const mentionedL2Only = new Set<string>();
         const mentionedCodeFirstStep = new Map<string, string>();
@@ -1752,6 +1764,54 @@ export default class ResultDataProvider {
     return map;
   }
 
+  /**
+   * Builds a lookup of test case id -> test case description using suite payload data.
+   *
+   * Resolution order:
+   * 1) direct description fields on test-case payload (`testCase.description` / `workItem.description`)
+   * 2) `System.Description` / `Description` in work-item fields map
+   * 3) `System.Description` / `Description` from work-item field list (`workItemFields`)
+   */
+  private buildMewpTestCaseDescriptionMap(testData: any[]): Map<number, string> {
+    const map = new Map<number, string>();
+
+    const readDescriptionFromFields = (fields: Record<string, any>): string => {
+      const value =
+        this.getFieldValueByName(fields, 'System.Description') ??
+        this.getFieldValueByName(fields, 'Description');
+      return this.toMewpComparableText(value);
+    };
+
+    for (const suite of testData || []) {
+      const testCasesItems = Array.isArray(suite?.testCasesItems) ? suite.testCasesItems : [];
+      for (const testCase of testCasesItems) {
+        const id = Number(testCase?.workItem?.id || testCase?.testCaseId || testCase?.id);
+        if (!Number.isFinite(id) || id <= 0 || map.has(id)) continue;
+
+        const fromDirect = this.toMewpComparableText(testCase?.description || testCase?.workItem?.description);
+        if (fromDirect) {
+          map.set(id, fromDirect);
+          continue;
+        }
+
+        const fieldsFromMap = testCase?.workItem?.fields || {};
+        const fromFieldsMap = readDescriptionFromFields(fieldsFromMap);
+        if (fromFieldsMap) {
+          map.set(id, fromFieldsMap);
+          continue;
+        }
+
+        const fieldsFromList = this.extractWorkItemFieldsMap(testCase?.workItem?.workItemFields);
+        const fromFieldsList = readDescriptionFromFields(fieldsFromList);
+        if (fromFieldsList) {
+          map.set(id, fromFieldsList);
+        }
+      }
+    }
+
+    return map;
+  }
+
   private extractMewpTestCaseId(runResult: any): number {
     const testCaseId = Number(runResult?.testCaseId || runResult?.testCase?.id || 0);
     return Number.isFinite(testCaseId) ? testCaseId : 0;
@@ -1954,6 +2014,107 @@ export default class ResultDataProvider {
       });
     }
     return out;
+  }
+
+  /**
+   * Extracts SR requirement mentions from the "assumptions" section inside a test-case description.
+   *
+   * Notes:
+   * - Heading detection is case-insensitive and keyed by "assumptions".
+   * - Parsing is scoped to that section only and stops when a likely next section heading is reached
+   *   after at least one requirement-bearing line was collected.
+   * - Returned stepRef is a synthetic marker ("Assumptions") so downstream discrepancy output can
+   *   clearly attribute source to description-level assumptions.
+   */
+  private extractRequirementMentionsFromAssumptionsDescription(
+    description: string,
+    includeSuffix: boolean
+  ): Array<{ stepRef: string; codes: Set<string> }> {
+    const lines = this.normalizeMewpDescriptionLines(description);
+    if (lines.length === 0) return [];
+
+    const assumptionsHeaderIndex = lines.findIndex((line) =>
+      ResultDataProvider.MEWP_INTERNAL_VALIDATION_ASSUMPTIONS_HEADER_PATTERN.test(line)
+    );
+    if (assumptionsHeaderIndex < 0) return [];
+
+    const assumptionCodes = new Set<string>();
+    let hasCollectedRequirementCodes = false;
+    for (let index = assumptionsHeaderIndex + 1; index < lines.length; index += 1) {
+      const rawLine = String(lines[index] || '').trim();
+      if (!rawLine) continue;
+
+      const line = rawLine.replace(/^[-*•]+\s*/, '').trim();
+      if (!line) continue;
+
+      const lineCodes = this.extractRequirementCodesFromExpectedText(line, includeSuffix);
+      if (lineCodes.size > 0) {
+        for (const code of lineCodes) assumptionCodes.add(code);
+        hasCollectedRequirementCodes = true;
+        continue;
+      }
+
+      if (hasCollectedRequirementCodes && this.isLikelyMewpDescriptionSectionHeading(line)) {
+        break;
+      }
+    }
+
+    if (assumptionCodes.size === 0) return [];
+    return [{ stepRef: ResultDataProvider.MEWP_INTERNAL_VALIDATION_ASSUMPTIONS_REF, codes: assumptionCodes }];
+  }
+
+  /**
+   * Normalizes raw HTML/plain description content into comparable text lines.
+   * This makes section/title heuristics resilient to formatting differences.
+   */
+  private normalizeMewpDescriptionLines(description: string): string[] {
+    const raw = String(description || '');
+    if (!raw) return [];
+
+    const normalized = raw
+      .replace(/\r\n?/g, '\n')
+      .replace(/<\s*br\s*\/?>/gi, '\n')
+      // Underlined sections are commonly used as inline HTML titles in MEWP test-case descriptions.
+      // Treat underline tags as boundaries so compact forms like <u><b>Title</b></u><p>... preserve section split.
+      .replace(/<\s*u\b[^>]*>/gi, '\n')
+      .replace(/<\/\s*u\s*>/gi, '\n')
+      .replace(/<\s*li\b[^>]*>/gi, '\n- ')
+      .replace(/<\/\s*(p|div|li|ul|ol|tr|td|h[1-6])\s*>/gi, '\n')
+      .replace(/&nbsp;|&#160;|&#xA0;/gi, ' ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/[ \t]+/g, ' ');
+
+    return normalized
+      .split('\n')
+      .map((line) => String(line || '').trim())
+      .filter((line) => !!line);
+  }
+
+  /**
+   * Heuristic detector for description section headings used to stop assumptions parsing.
+   * A line is considered a heading when it is short/title-like and does not itself contain SR codes.
+   */
+  private isLikelyMewpDescriptionSectionHeading(line: string): boolean {
+    const normalized = String(line || '')
+      .replace(/^[-*•]+\s*/, '')
+      .trim();
+    if (!normalized) return false;
+    if (ResultDataProvider.MEWP_INTERNAL_VALIDATION_ASSUMPTIONS_HEADER_PATTERN.test(normalized))
+      return false;
+    if (this.extractRequirementCodesFromExpectedText(normalized, true).size > 0) return false;
+
+    const compact = normalized.replace(/[.:;,\-–—]+$/, '').trim();
+    if (!compact) return false;
+    const wordCount = compact.split(/\s+/).filter((item) => !!item).length;
+    if (wordCount === 0 || wordCount > 12) return false;
+    if (/[.;!?]/.test(compact)) return false;
+    return /^[a-z0-9\s()&/+_'-]+$/i.test(compact);
   }
 
   private extractRequirementCodesFromExpectedText(text: string, includeSuffix: boolean): Set<string> {
