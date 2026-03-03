@@ -1980,6 +1980,338 @@ describe('ResultDataProvider', () => {
       );
     });
 
+    it('should parse requirement mentions only from the assumptions section in test-case description', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 121, testCaseName: 'TC 121' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 121,
+                workItemFields: [
+                  { key: 'Steps', value: '<steps></steps>' },
+                  {
+                    key: 'System.Description',
+                    value: `
+                      <p>Some intro text</p>
+                      <b><u>Trial specific assumptions, constraints, dependencies and requirements</u></b>
+                      <p>- VVRM-1 &amp; SR0100 - some text 1</p>
+                      <p>- VVRM-3 &amp; SR0588 - some text 2</p>
+                      <p>- SR1234, SR5678, SR1212</p>
+                      <p>some other text</p>
+                      <u><b>another title</b></u>
+                      <p>SR2242</p>
+                    `,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 8100,
+          requirementId: 'SR0100',
+          baseKey: 'SR0100',
+          title: 'Req 100',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 8588,
+          requirementId: 'SR0588',
+          baseKey: 'SR0588',
+          title: 'Req 588',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 91234,
+          requirementId: 'SR1234',
+          baseKey: 'SR1234',
+          title: 'Req 1234',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 95678,
+          requirementId: 'SR5678',
+          baseKey: 'SR5678',
+          title: 'Req 5678',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 91212,
+          requirementId: 'SR1212',
+          baseKey: 'SR1212',
+          title: 'Req 1212',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 92242,
+          requirementId: 'SR2242',
+          baseKey: 'SR2242',
+          title: 'Req 2242',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest
+        .spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase')
+        .mockResolvedValueOnce(new Map([[121, { baseKeys: new Set<string>(), fullCodes: new Set<string>() }]]));
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: '',
+          expected: '',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      const directionA = String(result.rows[0]['Mentioned but Not Linked'] || '');
+      expect(directionA).toContain('Assumptions:');
+      expect(directionA).toContain('SR0100');
+      expect(directionA).toContain('SR0588');
+      expect(directionA).toContain('SR1234');
+      expect(directionA).toContain('SR5678');
+      expect(directionA).toContain('SR1212');
+      expect(directionA).not.toContain('SR2242');
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Validation Status': 'Fail',
+        })
+      );
+    });
+
+    it('should detect assumptions heading case-insensitively in description', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 122, testCaseName: 'TC 122' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 122,
+                workItemFields: [
+                  { key: 'Steps', value: '<steps></steps>' },
+                  {
+                    key: 'System.Description',
+                    value: `
+                      <p>Intro</p>
+                      <b><u>TRIAL SPECIFIC ASSUMPTIONS, constraints</u></b>
+                      <p>- SR0501</p>
+                    `,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 8501,
+          requirementId: 'SR0501',
+          baseKey: 'SR0501',
+          title: 'Req 501',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([
+          [
+            122,
+            {
+              baseKeys: new Set(['SR0501']),
+              fullCodes: new Set(['SR0501']),
+            },
+          ],
+        ])
+      );
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: '',
+          expected: '',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Pass',
+        })
+      );
+    });
+
+    it('should treat compact <u><b>...</b></u> titles as section boundaries in description parsing', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 123, testCaseName: 'TC 123' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 123,
+                workItemFields: [
+                  { key: 'Steps', value: '<steps></steps>' },
+                  {
+                    key: 'System.Description',
+                    value:
+                      '<b><u>Trial specific assumptions, constraints, dependencies and requirements</u></b><p>SR0100</p><u><b>another title</b></u><p>SR2242</p>',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 8100,
+          requirementId: 'SR0100',
+          baseKey: 'SR0100',
+          title: 'Req 100',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 82242,
+          requirementId: 'SR2242',
+          baseKey: 'SR2242',
+          title: 'Req 2242',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest
+        .spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase')
+        .mockResolvedValueOnce(new Map([[123, { baseKeys: new Set<string>(), fullCodes: new Set<string>() }]]));
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: '',
+          expected: '',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      const directionA = String(result.rows[0]['Mentioned but Not Linked'] || '');
+      expect(directionA).toContain('Assumptions: SR0100');
+      expect(directionA).not.toContain('SR2242');
+    });
+
+    it('should treat nested <u> titles as section boundaries in description parsing', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
+      jest.spyOn(resultDataProvider as any, 'fetchTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 124, testCaseName: 'TC 124' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 124,
+                workItemFields: [
+                  { key: 'Steps', value: '<steps></steps>' },
+                  {
+                    key: 'System.Description',
+                    value:
+                      '<u>Trial specific assumptions, constraints, dependencies and requirements</u><p>SR0100</p><u><u>Nested title</u></u><p>SR2242</p>',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 9100,
+          requirementId: 'SR0100',
+          baseKey: 'SR0100',
+          title: 'Req 100',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+        {
+          workItemId: 92242,
+          requirementId: 'SR2242',
+          baseKey: 'SR2242',
+          title: 'Req 2242',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest
+        .spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase')
+        .mockResolvedValueOnce(new Map([[124, { baseKeys: new Set<string>(), fullCodes: new Set<string>() }]]));
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockResolvedValueOnce([
+        {
+          stepId: '1',
+          stepPosition: '1',
+          action: '',
+          expected: '',
+          isSharedStepTitle: false,
+        },
+      ]);
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(result.rows).toHaveLength(1);
+      const directionA = String(result.rows[0]['Mentioned but Not Linked'] || '');
+      expect(directionA).toContain('Assumptions: SR0100');
+      expect(directionA).not.toContain('SR2242');
+    });
+
     it('should emit Direction A rows only for specifically mentioned child requirements', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       jest.spyOn(resultDataProvider as any, 'fetchTestSuites').mockResolvedValueOnce([{ testSuiteId: 1 }]);
