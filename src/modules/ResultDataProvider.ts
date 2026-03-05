@@ -61,7 +61,9 @@ export default class ResultDataProvider {
 
   private static readonly MEWP_L2_COVERAGE_COLUMNS = [
     'L2 REQ ID',
+    'SR #',
     'L2 REQ Title',
+    'L2 Owner',
     'L2 SubSystem',
     'L2 Run Status',
     'Bug ID',
@@ -915,24 +917,6 @@ export default class ResultDataProvider {
           if (!mentionedCodesByBase.has(baseKey)) mentionedCodesByBase.set(baseKey, new Set<string>());
           mentionedCodesByBase.get(baseKey)!.add(code);
         }
-        if (traceCurrentTestCase) {
-          logger.debug(
-            this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
-              event: 'test-case-start',
-              tc: testCaseId,
-              parsedSteps: executableSteps.length,
-              stepsWithMentions: mentionEntries.length,
-              mentionedCodes:
-                [...mentionedL2Only].sort((a, b) => this.compareMewpRequirementCodes(a, b)).join('; ') ||
-                '<none>',
-              linkedCodesInTestCase:
-                [...linkedFullCodes]
-                  .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                  .join('; ') || '<none>',
-            })
-          );
-        }
-
         // Direction A logic:
         // 1) Base mention ("SR0054") is parent-level and considered covered only when
         //    the whole family is covered across scoped test cases:
@@ -958,37 +942,11 @@ export default class ResultDataProvider {
 
             // Base mention ("SR0054") requires full family coverage across selected test cases.
             if (hasBaseMention) {
-              const missingRequiredFamilyMembers = requiredFamilyMembers.filter(
-                (memberCode) => !familyLinkedCodes.has(memberCode)
-              );
               const isWholeFamilyCovered = requiredFamilyMembers.every((memberCode) =>
                 familyLinkedCodes.has(memberCode)
               );
               if (!isWholeFamilyCovered) {
                 missingBaseWhenFamilyUncovered.add(baseKey);
-              }
-              if (traceCurrentTestCase) {
-                logger.debug(
-                  this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
-                    event: 'base-family-coverage',
-                    tc: testCaseId,
-                    base: baseKey,
-                    baseMention: true,
-                    requiredFamily:
-                      requiredFamilyMembers
-                        .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                        .join('; ') || '<none>',
-                    linkedAcrossScope:
-                      [...familyLinkedCodes]
-                        .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                        .join('; ') || '<none>',
-                    missingRequired:
-                      missingRequiredFamilyMembers
-                        .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                        .join('; ') || '<none>',
-                    covered: isWholeFamilyCovered,
-                  })
-                );
               }
             }
 
@@ -999,59 +957,19 @@ export default class ResultDataProvider {
             for (const code of missingSpecificMembers) {
               missingSpecificMentionedNoFamily.add(code);
             }
-            if (traceCurrentTestCase && mentionedSpecificMembers.length > 0) {
-              logger.debug(
-                this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
-                  event: 'specific-members-check',
-                  tc: testCaseId,
-                  base: baseKey,
-                  specificMentioned:
-                    mentionedSpecificMembers
-                      .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                      .join('; ') || '<none>',
-                  specificMissing:
-                    missingSpecificMembers
-                      .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                      .join('; ') || '<none>',
-                })
-              );
-            }
             continue;
           }
 
           // Fallback path when family data is unavailable for this base key.
-          const fallbackMissingSpecific: string[] = [];
-          let fallbackMissingBase = false;
           for (const code of mentionedCodes) {
             const hasSpecificSuffix = /-\d+$/.test(code);
             if (hasSpecificSuffix) {
               if (!linkedFullCodesAcrossTestCases.has(code)) {
                 missingSpecificMentionedNoFamily.add(code);
-                fallbackMissingSpecific.push(code);
               }
             } else if (!linkedBaseKeysAcrossTestCases.has(baseKey)) {
               missingBaseWhenFamilyUncovered.add(baseKey);
-              fallbackMissingBase = true;
             }
-          }
-          if (traceCurrentTestCase) {
-            logger.debug(
-              this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
-                event: 'fallback-path',
-                tc: testCaseId,
-                base: baseKey,
-                fallbackUsed: true,
-                mentioned:
-                  mentionedCodesList
-                    .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                    .join('; ') || '<none>',
-                missingSpecific:
-                  fallbackMissingSpecific
-                    .sort((a, b) => this.compareMewpRequirementCodes(a, b))
-                    .join('; ') || '<none>',
-                missingBase: fallbackMissingBase,
-              })
-            );
           }
         }
 
@@ -1098,17 +1016,6 @@ export default class ResultDataProvider {
           const stepRef = mentionedBaseFirstStep.get(baseKey) || 'Step ?';
           appendMentionedButNotLinked(baseKey, stepRef);
         }
-        if (traceCurrentTestCase) {
-          logger.debug(
-            this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_TRACE_TAG, {
-              event: 'direction-a-summary',
-              tc: testCaseId,
-              missingSpecific: sortedMissingSpecificMentionedNoFamily.join('; ') || '<none>',
-              missingBase: sortedMissingBaseWhenFamilyUncovered.join('; ') || '<none>',
-            })
-          );
-        }
-
         const sortedExtraLinked = [...new Set(extraLinked)]
           .map((code) => this.normalizeMewpRequirementCodeWithSuffix(code))
           .filter((code) => !!code)
@@ -1146,21 +1053,23 @@ export default class ResultDataProvider {
         const validationStatus: 'Pass' | 'Fail' =
           mentionedButNotLinked || linkedButNotMentioned ? 'Fail' : 'Pass';
         if (validationStatus === 'Fail') diagnostics.failingRows += 1;
-        logger.debug(
-          this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_DIAGNOSTICS_TAG, {
-            testCaseId,
-            parsedSteps: executableSteps.length,
-            stepsWithMentions: mentionEntries.length,
-            customerIdsFound: mentionedL2Only.size,
-            linkedRequirements: linkedFullCodes.size,
-            mentionedButNotLinked:
-              sortedMissingSpecificMentionedNoFamily.length +
-              sortedMissingBaseWhenFamilyUncovered.length,
-            linkedButNotMentioned: sortedExtraLinked.length,
-            status: validationStatus,
-            customerIdSample: [...mentionedL2Only].slice(0, 5).join(', '),
-          })
-        );
+        if (traceCurrentTestCase) {
+          logger.debug(
+            this.buildTaggedLogMessage(ResultDataProvider.MEWP_INTERNAL_VALIDATION_DIAGNOSTICS_TAG, {
+              testCaseId,
+              parsedSteps: executableSteps.length,
+              stepsWithMentions: mentionEntries.length,
+              customerIdsFound: mentionedL2Only.size,
+              linkedRequirements: linkedFullCodes.size,
+              mentionedButNotLinked:
+                sortedMissingSpecificMentionedNoFamily.length +
+                sortedMissingBaseWhenFamilyUncovered.length,
+              linkedButNotMentioned: sortedExtraLinked.length,
+              status: validationStatus,
+              customerIdSample: [...mentionedL2Only].slice(0, 5).join(', '),
+            })
+          );
+        }
 
         rows.push({
           'Test Case ID': testCaseId,
@@ -1309,7 +1218,7 @@ export default class ResultDataProvider {
   private createMewpCoverageRow(
     requirement: Pick<
       MewpL2RequirementFamily,
-      'workItemId' | 'requirementId' | 'title' | 'subSystem' | 'responsibility'
+      'workItemId' | 'requirementId' | 'title' | 'owner' | 'subSystem' | 'responsibility'
     >,
     runStatus: MewpRunStatus,
     bug: MewpCoverageBugCell,
@@ -1317,12 +1226,18 @@ export default class ResultDataProvider {
   ): MewpCoverageRow {
     const l2ReqIdNumeric = Number(requirement?.workItemId || 0);
     const l2ReqId = l2ReqIdNumeric > 0 ? String(l2ReqIdNumeric) : '';
+    const srNumber = this.normalizeMewpRequirementCodeWithSuffix(requirement?.requirementId || '');
     const l2ReqTitle = this.toMewpComparableText(requirement.title);
+    const reqName = this.deriveMewpRequirementDisplayName(srNumber, l2ReqTitle);
+    const l2Owner = this.toMewpComparableText(requirement.owner);
     const l2SubSystem = this.toMewpComparableText(requirement.subSystem);
 
     return {
       'L2 REQ ID': l2ReqId,
-      'L2 REQ Title': l2ReqTitle,
+      'SR #': srNumber,
+      'L2 REQ Title': reqName,
+      'L2 REQ Full Title': l2ReqTitle,
+      'L2 Owner': l2Owner,
       'L2 SubSystem': l2SubSystem,
       'L2 Run Status': runStatus,
       'Bug ID': Number.isFinite(Number(bug?.id)) && Number(bug?.id) > 0 ? Number(bug?.id) : '',
@@ -1333,6 +1248,20 @@ export default class ResultDataProvider {
       'L4 REQ ID': String(linkedL3L4?.l4Id || '').trim(),
       'L4 REQ Title': String(linkedL3L4?.l4Title || '').trim(),
     };
+  }
+
+  private deriveMewpRequirementDisplayName(requirementCode: string, title: string): string {
+    const normalizedTitle = this.toMewpComparableText(title);
+    if (!normalizedTitle) return '';
+
+    const normalizedCode = this.normalizeMewpRequirementCodeWithSuffix(requirementCode || '');
+    if (!normalizedCode) return normalizedTitle;
+
+    const escapedCode = normalizedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const codePrefixPattern = new RegExp(`^${escapedCode}(?:\\s*[:\\-–—]\\s*|\\s+)`, 'i');
+    const withoutCodePrefix = normalizedTitle.replace(codePrefixPattern, '').trim();
+    if (!withoutCodePrefix) return normalizedTitle;
+    return withoutCodePrefix;
   }
 
   private createEmptyMewpCoverageBugCell(): MewpCoverageBugCell {
@@ -1655,14 +1584,17 @@ export default class ResultDataProvider {
   }
 
   private buildRequirementSapWbsByBaseKey(
-    requirements: Array<Pick<MewpL2RequirementWorkItem, 'baseKey' | 'responsibility'>>
+    requirements: Array<Pick<MewpL2RequirementWorkItem, 'baseKey' | 'owner' | 'responsibility'>>
   ): Map<string, string> {
     const out = new Map<string, string>();
     for (const requirement of requirements || []) {
       const baseKey = String(requirement?.baseKey || '').trim();
       if (!baseKey) continue;
 
-      const normalized = this.resolveMewpResponsibility(this.toMewpComparableText(requirement?.responsibility));
+      const rawOwner = this.toMewpComparableText(requirement?.owner);
+      const normalized =
+        this.resolveMewpResponsibility(rawOwner) ||
+        this.resolveMewpResponsibility(this.toMewpComparableText(requirement?.responsibility));
       if (!normalized) continue;
 
       const existing = out.get(baseKey) || '';
@@ -2299,6 +2231,7 @@ export default class ResultDataProvider {
         requirementId,
         baseKey: this.toRequirementKey(requirementId),
         title: this.toMewpComparableText(fields?.['System.Title'] || wi?.title),
+        owner: this.deriveMewpRequirementOwner(fields),
         subSystem: this.deriveMewpSubSystem(fields),
         responsibility: this.deriveMewpResponsibility(fields),
         linkedTestCaseIds: this.extractLinkedTestCaseIdsFromRequirement(wi?.relations || []),
@@ -2348,6 +2281,7 @@ export default class ResultDataProvider {
       if (areaPath.includes('\\customer requirements\\level 2')) score += 3;
       if (!areaPath.includes('\\mop')) score += 2;
       if (String(item?.title || '').trim()) score += 1;
+      if (String(item?.owner || '').trim()) score += 1;
       if (String(item?.subSystem || '').trim()) score += 1;
       if (String(item?.responsibility || '').trim()) score += 1;
       return score;
@@ -2384,6 +2318,7 @@ export default class ResultDataProvider {
         requirementId: String(family?.representative?.requirementId || baseKey),
         baseKey,
         title: String(family?.representative?.title || ''),
+        owner: String(family?.representative?.owner || ''),
         subSystem: String(family?.representative?.subSystem || ''),
         responsibility: String(family?.representative?.responsibility || ''),
         linkedTestCaseIds: [...family.linkedTestCaseIds].sort((a, b) => a - b),
@@ -2830,6 +2765,24 @@ export default class ResultDataProvider {
       if (!keyHints.some((hint) => normalizedKey.includes(hint))) continue;
       const resolved = this.resolveMewpResponsibility(this.toMewpComparableText(value));
       if (resolved) return resolved;
+    }
+
+    return '';
+  }
+
+  // L2 owner is sourced only from requirement SAPWBS fields.
+  private deriveMewpRequirementOwner(fields: Record<string, any>): string {
+    const directCandidates = [fields?.['Custom.SAPWBS'], fields?.['SAPWBS']];
+    for (const candidate of directCandidates) {
+      const normalized = this.toMewpComparableText(candidate);
+      if (normalized) return normalized;
+    }
+
+    for (const [key, value] of Object.entries(fields || {})) {
+      const normalizedKey = String(key || '').toLowerCase();
+      if (!normalizedKey.includes('sapwbs')) continue;
+      const normalizedValue = this.toMewpComparableText(value);
+      if (normalizedValue) return normalizedValue;
     }
 
     return '';

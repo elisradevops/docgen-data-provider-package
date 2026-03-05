@@ -28,6 +28,7 @@ export interface MewpL2RequirementWorkItem {
   requirementId: string;
   baseKey: string;
   title: string;
+  owner: string;
   subSystem: string;
   responsibility: string;
   linkedTestCaseIds: number[];
@@ -40,6 +41,7 @@ export interface MewpL2RequirementFamily {
   requirementId: string;
   baseKey: string;
   title: string;
+  owner: string;
   subSystem: string;
   responsibility: string;
   linkedTestCaseIds: number[];
@@ -84,7 +86,10 @@ export type MewpCoverageL3L4Cell = MewpL3L4Pair;
 
 export interface MewpCoverageRow {
   'L2 REQ ID': string;
+  'SR #': string;
   'L2 REQ Title': string;
+  'L2 REQ Full Title'?: string;
+  'L2 Owner': string;
   'L2 SubSystem': string;
   'L2 Run Status': MewpRunStatus;
   'Bug ID': number | '';
