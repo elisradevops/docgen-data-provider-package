@@ -1126,6 +1126,62 @@ describe('ResultDataProvider', () => {
   });
 
   describe('getMewpL2CoverageFlatResults', () => {
+    it('should split SR prefix into SR # + L2 REQ Title while preserving full title', () => {
+      const row = (resultDataProvider as any).createMewpCoverageRow(
+        {
+          workItemId: 5054,
+          requirementId: 'SR0054',
+          title: 'SR0054 - Engine startup coverage',
+          owner: 'ESUK',
+          subSystem: 'Propulsion',
+          responsibility: 'ESUK',
+        },
+        'Pass',
+        { id: '', title: '', responsibility: '' },
+        { l3Id: '', l3Title: '', l4Id: '', l4Title: '' }
+      );
+
+      expect(row).toEqual(
+        expect.objectContaining({
+          'L2 REQ ID': '5054',
+          'SR #': 'SR0054',
+          'L2 REQ Title': 'Engine startup coverage',
+          'L2 REQ Full Title': 'SR0054 - Engine startup coverage',
+          'L2 Owner': 'ESUK',
+          'L2 SubSystem': 'Propulsion',
+        })
+      );
+    });
+
+    it('should keep full title when title is only the SR token', () => {
+      const row = (resultDataProvider as any).createMewpCoverageRow(
+        {
+          workItemId: 9999,
+          requirementId: 'SR9999',
+          title: 'SR9999',
+          owner: 'IL',
+          subSystem: '',
+          responsibility: 'IL',
+        },
+        'Not Run',
+        { id: '', title: '', responsibility: '' },
+        { l3Id: '', l3Title: '', l4Id: '', l4Title: '' }
+      );
+
+      expect(row['L2 REQ Title']).toBe('SR9999');
+      expect(row['L2 REQ Full Title']).toBe('SR9999');
+      expect(row['L2 Owner']).toBe('IL');
+    });
+
+    it('should resolve L2 run status precedence: Fail > Not Run > Pass', () => {
+      const resolve = (resultDataProvider as any).resolveMewpL2RunStatus.bind(resultDataProvider as any);
+
+      expect(resolve({ passed: 2, failed: 1, notRun: 3, hasAnyTestCase: true })).toBe('Fail');
+      expect(resolve({ passed: 5, failed: 0, notRun: 1, hasAnyTestCase: true })).toBe('Not Run');
+      expect(resolve({ passed: 1, failed: 0, notRun: 0, hasAnyTestCase: true })).toBe('Pass');
+      expect(resolve({ passed: 0, failed: 0, notRun: 0, hasAnyTestCase: true })).toBe('Not Run');
+    });
+
     it('should fetch MEWP scoped test data from selected suites', async () => {
       jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
       const scopedSpy = jest
@@ -1234,7 +1290,7 @@ describe('ResultDataProvider', () => {
       expect(result).toEqual(
         expect.objectContaining({
           sheetName: expect.stringContaining('MEWP L2 Coverage'),
-          columnOrder: expect.arrayContaining(['L2 REQ ID', 'L2 REQ Title', 'L2 Run Status']),
+          columnOrder: expect.arrayContaining(['L2 REQ ID', 'SR #', 'L2 REQ Title', 'L2 Owner', 'L2 Run Status']),
         })
       );
 
