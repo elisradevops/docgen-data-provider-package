@@ -826,6 +826,13 @@ export default class ResultDataProvider {
       }
 
       const preloadedStepXmlCount = stepsXmlByTestCase.size;
+      const latestWorkItemMapStats = await this.enrichMewpTestCaseMapsFromLatestWorkItems(
+        projectName,
+        [...allTestCaseIds],
+        stepsXmlByTestCase,
+        testCaseTitleMap,
+        testCaseDescriptionMap
+      );
       const fallbackStepLoadStats = await this.enrichMewpStepsXmlMapFromWorkItems(
         projectName,
         [...allTestCaseIds],
@@ -833,7 +840,11 @@ export default class ResultDataProvider {
       );
       logger.info(
         `MEWP internal validation steps source summary: testCases=${allTestCaseIds.size} ` +
-          `fromSuitePayload=${preloadedStepXmlCount} fromWorkItemFallback=${fallbackStepLoadStats.loadedFromFallback} ` +
+          `fromSuitePayload=${preloadedStepXmlCount} ` +
+          `fromLatestWorkItem=${latestWorkItemMapStats.stepsLoadedFromLatest} ` +
+          `titleFromLatest=${latestWorkItemMapStats.titleLoadedFromLatest} ` +
+          `descriptionFromLatest=${latestWorkItemMapStats.descriptionLoadedFromLatest} ` +
+          `fromWorkItemFallback=${fallbackStepLoadStats.loadedFromFallback} ` +
           `stepsXmlAvailable=${stepsXmlByTestCase.size} unresolved=${fallbackStepLoadStats.unresolvedCount}`
       );
 
@@ -1742,6 +1753,81 @@ export default class ResultDataProvider {
     }
 
     return map;
+  }
+
+  private async enrichMewpTestCaseMapsFromLatestWorkItems(
+    projectName: string,
+    testCaseIds: number[],
+    stepsXmlByTestCase: Map<number, string>,
+    testCaseTitleMap: Map<number, string>,
+    testCaseDescriptionMap: Map<number, string>
+  ): Promise<{ stepsLoadedFromLatest: number; titleLoadedFromLatest: number; descriptionLoadedFromLatest: number }> {
+    const uniqueIds = [...new Set(testCaseIds)]
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    if (uniqueIds.length === 0) {
+      return {
+        stepsLoadedFromLatest: 0,
+        titleLoadedFromLatest: 0,
+        descriptionLoadedFromLatest: 0,
+      };
+    }
+
+    let stepsLoadedFromLatest = 0;
+    let titleLoadedFromLatest = 0;
+    let descriptionLoadedFromLatest = 0;
+
+    try {
+      const latestWorkItems = await this.fetchWorkItemsByIds(projectName, uniqueIds, false);
+      for (const workItem of latestWorkItems || []) {
+        const id = Number(workItem?.id || 0);
+        if (!Number.isFinite(id) || id <= 0) continue;
+
+        const fields = workItem?.fields || {};
+        const latestStepsXml = this.extractStepsXmlFromFieldsMap(fields);
+        if (latestStepsXml) {
+          const previous = String(stepsXmlByTestCase.get(id) || '');
+          if (previous !== latestStepsXml) {
+            stepsLoadedFromLatest += 1;
+          }
+          stepsXmlByTestCase.set(id, latestStepsXml);
+        }
+
+        const latestTitle = this.toMewpComparableText(
+          this.getFieldValueByName(fields, 'System.Title') ?? this.getFieldValueByName(fields, 'Title')
+        );
+        if (latestTitle) {
+          const previous = String(testCaseTitleMap.get(id) || '');
+          if (previous !== latestTitle) {
+            titleLoadedFromLatest += 1;
+          }
+          testCaseTitleMap.set(id, latestTitle);
+        }
+
+        const latestDescription = this.toMewpComparableText(
+          this.getFieldValueByName(fields, 'System.Description') ??
+            this.getFieldValueByName(fields, 'Description')
+        );
+        if (latestDescription) {
+          const previous = String(testCaseDescriptionMap.get(id) || '');
+          if (previous !== latestDescription) {
+            descriptionLoadedFromLatest += 1;
+          }
+          testCaseDescriptionMap.set(id, latestDescription);
+        }
+      }
+    } catch (error: any) {
+      logger.warn(
+        `MEWP internal validation: failed to load latest test-case fields: ${error?.message || error}`
+      );
+    }
+
+    return {
+      stepsLoadedFromLatest,
+      titleLoadedFromLatest,
+      descriptionLoadedFromLatest,
+    };
   }
 
   private extractMewpTestCaseId(runResult: any): number {
