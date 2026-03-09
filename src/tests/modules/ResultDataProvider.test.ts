@@ -3505,6 +3505,100 @@ describe('ResultDataProvider', () => {
         })
       );
     });
+
+    it('should prefer latest test-case revision fields (title/description/steps) in internal validation flow', async () => {
+      jest.spyOn(resultDataProvider as any, 'fetchTestPlanName').mockResolvedValueOnce('Plan A');
+      jest.spyOn(resultDataProvider as any, 'fetchMewpScopedTestData').mockResolvedValueOnce([
+        {
+          testPointsItems: [{ testCaseId: 777, testCaseName: 'TC 777 (snapshot)' }],
+          testCasesItems: [
+            {
+              workItem: {
+                id: 777,
+                workItemFields: [
+                  { key: 'System.Title', value: 'TC 777 (snapshot title)' },
+                  {
+                    key: 'Microsoft.VSTS.TCM.Steps',
+                    value:
+                      '<steps><step id="2" type="ActionStep"><parameterizedString isformatted="true">Action</parameterizedString><parameterizedString isformatted="true">SR0001</parameterizedString></step></steps>',
+                  },
+                  { key: 'System.Description', value: '<p>Snapshot description</p>' },
+                ],
+              },
+            },
+          ],
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'fetchMewpL2Requirements').mockResolvedValueOnce([
+        {
+          workItemId: 9777,
+          requirementId: 'SR7777',
+          baseKey: 'SR7777',
+          title: 'Req 7777',
+          responsibility: 'ESUK',
+          linkedTestCaseIds: [777],
+          areaPath: 'MEWP\\Customer Requirements\\Level 2',
+        },
+      ]);
+      jest.spyOn(resultDataProvider as any, 'buildLinkedRequirementsByTestCase').mockResolvedValueOnce(
+        new Map([
+          [
+            777,
+            {
+              baseKeys: new Set(['SR7777']),
+              fullCodes: new Set(['SR7777']),
+            },
+          ],
+        ])
+      );
+      const fetchWorkItemsByIdsSpy = jest
+        .spyOn(resultDataProvider as any, 'fetchWorkItemsByIds')
+        .mockResolvedValueOnce([
+          {
+            id: 777,
+            fields: {
+              'System.Title': 'TC 777 (latest title)',
+              'System.Description':
+                '<p><b><u>Trial specific assumptions, constraints, dependencies and requirements</u></b></p><p>SR7777</p>',
+              'Microsoft.VSTS.TCM.Steps':
+                '<steps><step id="2" type="ActionStep"><parameterizedString isformatted="true">Action</parameterizedString><parameterizedString isformatted="true">SR7777</parameterizedString></step></steps>',
+            },
+          },
+        ]);
+      jest.spyOn((resultDataProvider as any).testStepParserHelper, 'parseTestSteps').mockImplementation(
+        async (...args: any[]) => [
+          {
+            stepId: '1',
+            stepPosition: '1',
+            action: 'Action',
+            expected: String(args?.[0] || '').includes('SR7777') ? 'SR7777' : 'SR0001',
+            isSharedStepTitle: false,
+          },
+        ]
+      );
+
+      const result = await (resultDataProvider as any).getMewpInternalValidationFlatResults(
+        '123',
+        mockProjectName,
+        [1]
+      );
+
+      expect(fetchWorkItemsByIdsSpy).toHaveBeenCalledWith(mockProjectName, [777], false);
+      expect((resultDataProvider as any).testStepParserHelper.parseTestSteps).toHaveBeenCalledWith(
+        expect.stringContaining('SR7777'),
+        expect.any(Map)
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0]).toEqual(
+        expect.objectContaining({
+          'Test Case ID': 777,
+          'Test Case Title': 'TC 777 (latest title)',
+          'Mentioned but Not Linked': '',
+          'Linked but Not Mentioned': '',
+          'Validation Status': 'Pass',
+        })
+      );
+    });
   });
 
   describe('buildLinkedRequirementsByTestCase', () => {
