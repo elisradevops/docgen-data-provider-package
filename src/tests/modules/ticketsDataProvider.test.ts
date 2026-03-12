@@ -1848,6 +1848,81 @@ describe('TicketsDataProvider', () => {
   });
 
   describe('GetSharedQueries - docType branches', () => {
+    it('should handle STP docType', async () => {
+      // Arrange
+      const mockQueries = {
+        children: [{ name: 'STP', isFolder: true, children: [] }],
+      };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(mockQueries);
+
+      // Act
+      const result = await ticketsDataProvider.GetSharedQueries(mockProject, '', 'stp');
+
+      // Assert
+      expect(result).toBeDefined();
+    });
+
+    it('should fallback to STD root when STP root is missing', async () => {
+      const rootQueries = { id: 'root', children: [] };
+      const stdRoot = { id: 'std-root', children: [] };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(rootQueries);
+
+      const getDocTypeRootSpy = jest
+        .spyOn(ticketsDataProvider as any, 'getDocTypeRoot')
+        .mockImplementation(async (...args: any[]) => {
+          const docTypeName = String(args[1] || '');
+          if (docTypeName === 'stp') return { root: rootQueries, found: false };
+          if (docTypeName === 'std') return { root: stdRoot, found: true };
+          return { root: rootQueries, found: false };
+        });
+
+      const fetchDocTypeBranchesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchDocTypeBranches')
+        .mockResolvedValue({
+          reqToTest: { result: { reqTestTree: { id: 'req-tree' }, testReqTree: { id: 'fallback-tree' } } },
+          testToReq: { result: { testReqTree: { id: 'test-tree' } } },
+          mom: { result: { linkedMomTree: { id: 'mom-tree' } } },
+        });
+
+      const result = await ticketsDataProvider.GetSharedQueries(mockProject, '', 'stp');
+
+      expect(getDocTypeRootSpy).toHaveBeenNthCalledWith(1, rootQueries, 'stp');
+      expect(getDocTypeRootSpy).toHaveBeenNthCalledWith(2, rootQueries, 'std');
+      expect(fetchDocTypeBranchesSpy).toHaveBeenCalledWith(rootQueries, stdRoot, expect.any(Array));
+      expect(result.reqTestQueries.reqTestTree).toEqual({ id: 'req-tree' });
+      expect(result.reqTestQueries.testReqTree).toEqual({ id: 'test-tree' });
+      expect(result.linkedMomQueries.linkedMomTree).toEqual({ id: 'mom-tree' });
+    });
+
+    it('should prefer STP root over STD when both exist', async () => {
+      const rootQueries = { id: 'root', children: [] };
+      const stpRoot = { id: 'stp-root', children: [] };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(rootQueries);
+
+      const getDocTypeRootSpy = jest
+        .spyOn(ticketsDataProvider as any, 'getDocTypeRoot')
+        .mockImplementation(async (...args: any[]) => {
+          const docTypeName = String(args[1] || '');
+          if (docTypeName === 'stp') return { root: stpRoot, found: true };
+          if (docTypeName === 'std') return { root: { id: 'std-root', children: [] }, found: true };
+          return { root: rootQueries, found: false };
+        });
+
+      const fetchDocTypeBranchesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchDocTypeBranches')
+        .mockResolvedValue({
+          reqToTest: { result: { reqTestTree: { id: 'req-tree' }, testReqTree: null } },
+          testToReq: { result: { testReqTree: { id: 'test-tree' } } },
+          mom: { result: { linkedMomTree: null } },
+        });
+
+      await ticketsDataProvider.GetSharedQueries(mockProject, '', 'stp');
+
+      expect(getDocTypeRootSpy).toHaveBeenCalledTimes(1);
+      expect(getDocTypeRootSpy).toHaveBeenCalledWith(rootQueries, 'stp');
+      expect(fetchDocTypeBranchesSpy).toHaveBeenCalledWith(rootQueries, stpRoot, expect.any(Array));
+    });
+
     it('should handle STR docType', async () => {
       // Arrange
       const mockQueries = {

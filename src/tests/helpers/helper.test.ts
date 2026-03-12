@@ -13,13 +13,14 @@ describe('Helper', () => {
   describe('suiteData class', () => {
     it('should create suiteData with correct properties', () => {
       // Act
-      const suite = new suiteData('Test Suite', '123', '456', 2);
+      const suite = new suiteData('Test Suite', '123', '456', 2, 'Suite description');
 
       // Assert
       expect(suite.name).toBe('Test Suite');
       expect(suite.id).toBe('123');
       expect(suite.parent).toBe('456');
       expect(suite.level).toBe(2);
+      expect(suite.description).toBe('Suite description');
       expect(suite.url).toBeUndefined();
     });
   });

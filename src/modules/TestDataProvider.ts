@@ -59,6 +59,93 @@ export default class TestDataProvider {
     }
   }
 
+  private getSuiteDescription(suite: any): string {
+    return String(suite?.description || suite?.suiteDescription || '').trim();
+  }
+
+  private async getSuiteDescriptionsFromWorkItems(
+    project: string,
+    suiteIds: Array<string | number>
+  ): Promise<Map<string, string>> {
+    const ids = Array.from(
+      new Set(
+        suiteIds
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      )
+    );
+    if (ids.length === 0) {
+      return new Map<string, string>();
+    }
+
+    const url = `${this.joinOrgProject(project)}/_apis/wit/workitemsbatch?api-version=7.1`;
+    const maxBatchSize = 200;
+    const chunks: number[][] = [];
+    for (let i = 0; i < ids.length; i += maxBatchSize) {
+      chunks.push(ids.slice(i, i + maxBatchSize));
+    }
+    const descriptions = new Map<string, string>();
+
+    try {
+      for (const chunkIds of chunks) {
+        const payload = {
+          ids: chunkIds,
+          fields: ['System.Description'],
+          errorPolicy: 'Omit',
+        };
+        const response = await TFSServices.getItemContent(
+          url,
+          this.token,
+          'post',
+          payload,
+          { 'Content-Type': 'application/json' }
+        );
+        const items = Array.isArray(response?.value) ? response.value : [];
+        items.forEach((wi: any) => {
+          const desc = String(wi?.fields?.['System.Description'] || '').trim();
+          if (wi?.id && desc) {
+            descriptions.set(String(wi.id), desc);
+          }
+        });
+      }
+      return descriptions;
+    } catch (error: any) {
+      logger.warn(`Failed to enrich suite descriptions from work items batch: ${error?.message || error}`);
+      return new Map<string, string>();
+    }
+  }
+
+  private async normalizeAndEnrichSuitesResponse(project: string, data: any): Promise<any> {
+    const suites = Array.isArray(data?.testSuites)
+      ? data.testSuites
+      : Array.isArray(data?.value)
+      ? data.value
+      : Array.isArray(data)
+      ? data
+      : [];
+
+    const mapped = suites.map((suite: any) => ({
+      ...suite,
+      title: suite?.title || suite?.name || '',
+      parentSuiteId: suite?.parentSuiteId ?? suite?.parentSuite?.id ?? 0,
+      description: this.getSuiteDescription(suite),
+    }));
+
+    const missingDescriptionIds = mapped
+      .filter((suite: any) => !String(suite?.description || '').trim())
+      .map((suite: any) => suite?.id);
+    const descriptionBySuiteId = await this.getSuiteDescriptionsFromWorkItems(project, missingDescriptionIds);
+    const enriched = mapped.map((suite: any) => ({
+      ...suite,
+      description: suite?.description || descriptionBySuiteId.get(String(suite?.id)) || '',
+    }));
+
+    if (Array.isArray(data)) {
+      return { value: data, testSuites: enriched };
+    }
+    return { ...(data || {}), testSuites: enriched };
+  }
+
   async GetTestSuiteByTestCase(testCaseId: string): Promise<any> {
     const base = String(this.orgUrl || '').replace(/\/+$/, '');
     let url = `${base}/_apis/testplan/suites?testCaseId=${testCaseId}`;
@@ -87,23 +174,11 @@ export default class TestDataProvider {
     if (!planid) {
       throw new Error('Plan not selected');
     }
-    if (this.isBearerToken()) {
-      const url = `${this.joinOrgProject(
-        project
-      )}/_apis/testplan/Plans/${planid}/suites?includeChildren=true&api-version=7.0`;
-      const data = await this.fetchWithCache(url);
-      const suites = Array.isArray(data?.value) ? data.value : Array.isArray(data) ? data : [];
-      const mapped = suites.map((suite: any) => ({
-        ...suite,
-        title: suite?.title || suite?.name || '',
-        parentSuiteId: suite?.parentSuiteId ?? suite?.parentSuite?.id ?? 0,
-      }));
-      return { ...data, testSuites: mapped };
-    }
-    const url = `${this.joinOrgProject(
-      project
-    )}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${planid}`;
-    return await this.fetchWithCache(url);
+    const url = this.isBearerToken()
+      ? `${this.joinOrgProject(project)}/_apis/testplan/Plans/${planid}/suites?includeChildren=true&api-version=7.0`
+      : `${this.joinOrgProject(project)}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${planid}`;
+    const data = await this.fetchWithCache(url);
+    return this.normalizeAndEnrichSuitesResponse(project, data);
   }
 
   async GetTestSuitesByPlan(
@@ -130,16 +205,22 @@ export default class TestDataProvider {
       // These represent separate hierarchies that need to be processed independently
 
       const topLevelSuites: string[] = [];
+      const filterAsStrings = new Set(suiteIdsFilter.map((id) => id.toString()));
+      const filterAsNumbers = new Set(
+        suiteIdsFilter
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id))
+      );
 
       for (const filterSuiteId of suiteIdsFilter) {
         const suite = suiteMap.get(filterSuiteId) || suiteMap.get(parseInt(filterSuiteId.toString()));
         if (suite) {
+          const parentSuiteIdString = String(suite.parentSuiteId);
+          const parentSuiteIdNumber = Number(parentSuiteIdString);
           // Check if this suite's parent is NOT in our filter (making it a top-level suite for our selection)
-          const parentInFilter = suiteIdsFilter.some(
-            (id) =>
-              id.toString() === suite.parentSuiteId.toString() ||
-              parseInt(id.toString()) === suite.parentSuiteId
-          );
+          const parentInFilter =
+            filterAsStrings.has(parentSuiteIdString) ||
+            (Number.isFinite(parentSuiteIdNumber) && filterAsNumbers.has(parentSuiteIdNumber));
 
           if (!parentInFilter && suite.parentSuiteId !== 0) {
             topLevelSuites.push(filterSuiteId.toString());
@@ -322,6 +403,7 @@ export default class TestDataProvider {
           testCase.title = test.fields['System.Title'];
           testCase.area = test.fields['System.AreaPath'];
           testCase.description = test.fields['System.Description'];
+          testCase.testPhase = this.extractTestPhase(test.fields);
           testCase.url = url + test.id;
           //testCase.steps = test.fields["Microsoft.VSTS.TCM.Steps"];
           testCase.id = test.id;
@@ -458,6 +540,32 @@ export default class TestDataProvider {
       customerId
     );
     return newRequirementRelation;
+  }
+
+  private extractTestPhase(fields: any): string {
+    if (!fields || typeof fields !== 'object') return '';
+
+    const direct =
+      fields['Custom.TestPhase'] ??
+      fields['Custom.Phase'] ??
+      fields['Microsoft.VSTS.Common.TestPhase'];
+    if (direct !== undefined && direct !== null) {
+      const value = typeof direct === 'object' ? direct?.displayName ?? direct?.name ?? direct : direct;
+      const normalized = String(value).trim();
+      if (normalized) return normalized;
+    }
+
+    const normalizedKey = Object.keys(fields).find((key) => key.toLowerCase().includes('testphase'));
+    if (normalizedKey) {
+      const value = fields[normalizedKey];
+      const normalized =
+        value && typeof value === 'object'
+          ? String(value.displayName ?? value.name ?? '').trim()
+          : String(value ?? '').trim();
+      if (normalized) return normalized;
+    }
+
+    return '';
   }
 
   ParseSteps(steps: string) {
