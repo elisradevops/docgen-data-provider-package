@@ -199,12 +199,25 @@ export default class TicketsDataProvider {
       const queriesWithChildren = await this.ensureQueryChildren(queries);
 
       switch (normalizedDocType) {
-        case 'std': {
-          const { root: stdRoot, found: stdRootFound } = await this.getDocTypeRoot(
-            queriesWithChildren,
-            'std'
+        case 'std':
+        case 'stp': {
+          const rootCandidates =
+            normalizedDocType === 'stp' ? (['stp', 'std'] as const) : (['std'] as const);
+          let stdRoot = queriesWithChildren;
+          let stdRootFound = false;
+          for (const candidate of rootCandidates) {
+            const lookup = await this.getDocTypeRoot(queriesWithChildren, candidate);
+            if (lookup.found) {
+              stdRoot = lookup.root;
+              stdRootFound = true;
+              break;
+            }
+          }
+          logger.debug(
+            `[GetSharedQueries][${normalizedDocType}] using ${
+              stdRootFound ? 'dedicated folder' : 'root queries'
+            }`
           );
-          logger.debug(`[GetSharedQueries][std] using ${stdRootFound ? 'dedicated folder' : 'root queries'}`);
           // Each branch describes the dedicated folder names, the fetch routine, and how to validate results.
           const stdBranches = await this.fetchDocTypeBranches(queriesWithChildren, stdRoot, [
             {

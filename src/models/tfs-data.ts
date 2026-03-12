@@ -131,6 +131,7 @@ export class TestCase {
   id: string;
   title: string;
   description: string;
+  testPhase?: string;
   area: string;
   steps: TestSteps[];
   caseEvidenceAttachments: any[] = [];

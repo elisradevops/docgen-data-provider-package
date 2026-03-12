@@ -204,8 +204,8 @@ describe('TestDataProvider', () => {
       // Arrange
       const mockData = {
         testSuites: [
-          { id: '123', name: 'Test Suite 1' },
-          { id: '456', name: 'Test Suite 2' },
+          { id: '123', name: 'Test Suite 1', suiteDescription: 'Legacy Desc 1' },
+          { id: '456', name: 'Test Suite 2', description: 'Legacy Desc 2' },
         ],
       };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockData);
@@ -214,19 +214,110 @@ describe('TestDataProvider', () => {
       const result = await testDataProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
 
       // Assert
-      expect(result).toEqual(mockData);
+      expect(result.testSuites).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: '123',
+            title: 'Test Suite 1',
+            parentSuiteId: 0,
+            description: 'Legacy Desc 1',
+          }),
+          expect.objectContaining({
+            id: '456',
+            title: 'Test Suite 2',
+            parentSuiteId: 0,
+            description: 'Legacy Desc 2',
+          }),
+        ])
+      );
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${mockPlanId}`,
         mockToken
       );
     });
 
+    it('should enrich missing suite descriptions via work items batch for PAT token', async () => {
+      const suitesPayload = {
+        testSuites: [
+          { id: 11, name: 'Suite A' },
+          { id: 22, name: 'Suite B', suiteDescription: 'From legacy payload' },
+        ],
+      };
+      const workItemsPayload = {
+        value: [{ id: 11, fields: { 'System.Description': '<div>WI Desc A</div>' } }],
+      };
+      (TFSServices.getItemContent as jest.Mock).mockImplementation((url: string) => {
+        if (url.includes('/_apis/wit/workitemsbatch')) {
+          return Promise.resolve(workItemsPayload);
+        }
+        return Promise.resolve(suitesPayload);
+      });
+
+      const result = await testDataProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+      expect(TFSServices.getItemContent).toHaveBeenNthCalledWith(
+        1,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${mockPlanId}`,
+        mockToken
+      );
+      expect(TFSServices.getItemContent).toHaveBeenNthCalledWith(
+        2,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/wit/workitemsbatch?api-version=7.1`,
+        mockToken,
+        'post',
+        {
+          ids: [11],
+          fields: ['System.Description'],
+          errorPolicy: 'Omit',
+        },
+        { 'Content-Type': 'application/json' }
+      );
+      expect(result.testSuites).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 11, description: '<div>WI Desc A</div>' }),
+          expect.objectContaining({ id: 22, description: 'From legacy payload' }),
+        ])
+      );
+    });
+
+    it('should chunk work items batch requests when suite IDs exceed batch limit', async () => {
+      const suitesPayload = {
+        testSuites: Array.from({ length: 205 }, (_, i) => ({
+          id: i + 1,
+          name: `Suite ${i + 1}`,
+        })),
+      };
+      (TFSServices.getItemContent as jest.Mock).mockImplementation((url: string, _token: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          const ids = Array.isArray(data?.ids) ? data.ids : [];
+          return Promise.resolve({
+            value: ids.map((id: number) => ({
+              id,
+              fields: { 'System.Description': `Desc ${id}` },
+            })),
+          });
+        }
+        return Promise.resolve(suitesPayload);
+      });
+
+      const result = await testDataProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+      expect((TFSServices.getItemContent as jest.Mock).mock.calls).toHaveLength(3);
+      expect((TFSServices.getItemContent as jest.Mock).mock.calls[1][2]).toBe('post');
+      expect((TFSServices.getItemContent as jest.Mock).mock.calls[1][3].ids).toHaveLength(200);
+      expect((TFSServices.getItemContent as jest.Mock).mock.calls[2][2]).toBe('post');
+      expect((TFSServices.getItemContent as jest.Mock).mock.calls[2][3].ids).toHaveLength(5);
+
+      expect(result.testSuites.find((s: any) => s.id === 1)?.description).toBe('Desc 1');
+      expect(result.testSuites.find((s: any) => s.id === 205)?.description).toBe('Desc 205');
+    });
+
     it('should use testplan suites endpoint for bearer token and normalize response', async () => {
       const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
       const mockData = {
         value: [
-          { id: '123', name: 'Suite 1' },
-          { id: '456', name: 'Suite 2', parentSuite: { id: '123' } },
+          { id: '123', name: 'Suite 1', description: 'Desc 1' },
+          { id: '456', name: 'Suite 2', parentSuite: { id: '123' }, suiteDescription: 'Desc 2' },
         ],
         count: 2,
       };
@@ -240,8 +331,58 @@ describe('TestDataProvider', () => {
       );
       expect(result.testSuites).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ id: '123', title: 'Suite 1', parentSuiteId: 0 }),
-          expect.objectContaining({ id: '456', title: 'Suite 2', parentSuiteId: '123' }),
+          expect.objectContaining({ id: '123', title: 'Suite 1', parentSuiteId: 0, description: 'Desc 1' }),
+          expect.objectContaining({
+            id: '456',
+            title: 'Suite 2',
+            parentSuiteId: '123',
+            description: 'Desc 2',
+          }),
+        ])
+      );
+    });
+
+    it('should enrich missing suite descriptions via work items batch for bearer token', async () => {
+      const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+      const suitesPayload = {
+        value: [
+          { id: 101, name: 'Suite A' },
+          { id: 202, name: 'Suite B', description: 'Native Desc B' },
+        ],
+      };
+      const workItemsPayload = {
+        value: [{ id: 101, fields: { 'System.Description': 'Enriched Desc A' } }],
+      };
+      (TFSServices.getItemContent as jest.Mock).mockImplementation((url: string) => {
+        if (url.includes('/_apis/wit/workitemsbatch')) {
+          return Promise.resolve(workItemsPayload);
+        }
+        return Promise.resolve(suitesPayload);
+      });
+
+      const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+      expect(TFSServices.getItemContent).toHaveBeenNthCalledWith(
+        1,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?includeChildren=true&api-version=7.0`,
+        mockBearerToken
+      );
+      expect(TFSServices.getItemContent).toHaveBeenNthCalledWith(
+        2,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/wit/workitemsbatch?api-version=7.1`,
+        mockBearerToken,
+        'post',
+        {
+          ids: [101],
+          fields: ['System.Description'],
+          errorPolicy: 'Omit',
+        },
+        { 'Content-Type': 'application/json' }
+      );
+      expect(result.testSuites).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 101, description: 'Enriched Desc A' }),
+          expect.objectContaining({ id: 202, description: 'Native Desc B' }),
         ])
       );
     });
@@ -268,7 +409,14 @@ describe('TestDataProvider', () => {
         mockPlanId,
         mockOrgUrl,
         mockProject,
-        mockTestSuites.testSuites,
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: '123',
+            title: 'Test Suite 1',
+            parentSuiteId: 0,
+            description: '',
+          }),
+        ]),
         mockSuiteId,
         true
       );
@@ -278,7 +426,7 @@ describe('TestDataProvider', () => {
     it('should use bearer suites payload when token is bearer', async () => {
       const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
       const mockTestSuites = {
-        value: [{ id: '123', name: 'Suite 1', parentSuite: { id: 0 } }],
+        value: [{ id: '123', name: 'Suite 1', parentSuite: { id: 0 }, description: 'Suite Desc' }],
       };
       const mockSuiteData = [new suiteData('Suite 1', '123', '456', 1)];
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockTestSuites);
@@ -1044,6 +1192,74 @@ describe('TestDataProvider', () => {
       expect(res[0].relations).toEqual(
         expect.arrayContaining([expect.objectContaining({ type: 'Task', id: 900 })])
       );
+    });
+
+    it('should populate testPhase from Custom.TestPhase', async () => {
+      const suite = { id: '1', name: 'Suite 1' } as any;
+      const testCases = {
+        count: 1,
+        value: [{ testCase: { id: 123, url: 'https://example.com/testcase/123' } }],
+      };
+
+      jest.spyOn(testDataProvider as any, 'fetchWithCache').mockResolvedValueOnce({
+        id: 123,
+        fields: {
+          'System.Title': 'TC 123',
+          'System.AreaPath': 'A',
+          'System.Description': 'D',
+          'Custom.TestPhase': 'SIT',
+          'Microsoft.VSTS.TCM.Steps': null,
+        },
+        relations: [],
+      });
+
+      const res = await testDataProvider.StructureTestCase(
+        mockProject,
+        testCases as any,
+        suite,
+        false,
+        false,
+        false,
+        new Map<string, string[]>(),
+        new Map<string, string[]>()
+      );
+
+      expect(res).toHaveLength(1);
+      expect(res[0].testPhase).toBe('SIT');
+    });
+
+    it('should extract testPhase from fallback key containing testphase', async () => {
+      const suite = { id: '1', name: 'Suite 1' } as any;
+      const testCases = {
+        count: 1,
+        value: [{ testCase: { id: 123, url: 'https://example.com/testcase/123' } }],
+      };
+
+      jest.spyOn(testDataProvider as any, 'fetchWithCache').mockResolvedValueOnce({
+        id: 123,
+        fields: {
+          'System.Title': 'TC 123',
+          'System.AreaPath': 'A',
+          'System.Description': 'D',
+          'Custom.MyTestPhaseField': { displayName: 'Regression' },
+          'Microsoft.VSTS.TCM.Steps': null,
+        },
+        relations: [],
+      });
+
+      const res = await testDataProvider.StructureTestCase(
+        mockProject,
+        testCases as any,
+        suite,
+        false,
+        false,
+        false,
+        new Map<string, string[]>(),
+        new Map<string, string[]>()
+      );
+
+      expect(res).toHaveLength(1);
+      expect(res[0].testPhase).toBe('Regression');
     });
 
     it('should return empty list when test case fetch fails', async () => {

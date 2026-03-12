@@ -6,11 +6,13 @@ export class suiteData {
   parent: string;
   level: number;
   url: string;
-  constructor(name: string, id: string, parent: string, level: number) {
+  description: string;
+  constructor(name: string, id: string, parent: string, level: number, description: string = '') {
     this.name = name;
     this.id = id;
     this.parent = parent;
     this.level = level;
+    this.description = description;
   }
 }
 export class Relations {
@@ -85,7 +87,13 @@ export class Helper {
 
 
           // Found children of the selected suite - add them to results
-          let suit: suiteData = new suiteData(suits[i].title, suits[i].id, foundId, parentLevel);
+          let suit: suiteData = new suiteData(
+            suits[i].title,
+            suits[i].id,
+            foundId,
+            parentLevel,
+            suits[i].description || ''
+          );
           suit.url =
             url + project + '/_testManagement?planId=' + planId + '&suiteId=' + suits[i].id + '&_a=tests';
           this.suitList.push(suit);
@@ -103,7 +111,8 @@ export class Helper {
             suits[i].title,
             suits[i].id,
             suits[i].parentSuiteId,
-            this.level + 1
+            this.level + 1,
+            suits[i].description || ''
           );
           suit.url =
             url + project + '/_testManagement?planId=' + planId + '&suiteId=' + suits[i].id + '&_a=tests';
@@ -117,7 +126,13 @@ export class Helper {
         // Root suites (parentSuiteId = 0) - these do NOT get added to results
         if (suits[i].id == foundId && Helper.first) {
 
-          let suit: suiteData = new suiteData(suits[i].title, suits[i].id, foundId, this.level);
+          let suit: suiteData = new suiteData(
+            suits[i].title,
+            suits[i].id,
+            foundId,
+            this.level,
+            suits[i].description || ''
+          );
           suit.url = url + project + '/_workitems/edit/' + suits[i].id;
           Helper.first = false;
           if (recursive == false) {
