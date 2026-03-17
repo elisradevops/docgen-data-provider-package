@@ -27,6 +27,10 @@ type DocTypeBranchConfig = {
   fallbackStart?: any;
 };
 
+/** Default fields fetched per work item in tree/flat query parsing. */
+const WI_DEFAULT_FIELDS =
+  'System.Description,System.Title,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom';
+
 export default class TicketsDataProvider {
   orgUrl: string = '';
   token: string = '';
@@ -201,8 +205,7 @@ export default class TicketsDataProvider {
       switch (normalizedDocType) {
         case 'std':
         case 'stp': {
-          const rootCandidates =
-            normalizedDocType === 'stp' ? (['stp', 'std'] as const) : (['std'] as const);
+          const rootCandidates = normalizedDocType === 'stp' ? (['stp', 'std'] as const) : (['std'] as const);
           let stdRoot = queriesWithChildren;
           let stdRootFound = false;
           for (const candidate of rootCandidates) {
@@ -216,7 +219,7 @@ export default class TicketsDataProvider {
           logger.debug(
             `[GetSharedQueries][${normalizedDocType}] using ${
               stdRootFound ? 'dedicated folder' : 'root queries'
-            }`
+            }`,
           );
           // Each branch describes the dedicated folder names, the fetch routine, and how to validate results.
           const stdBranches = await this.fetchDocTypeBranches(queriesWithChildren, stdRoot, [
@@ -271,7 +274,7 @@ export default class TicketsDataProvider {
         case 'str': {
           const { root: strRoot, found: strRootFound } = await this.getDocTypeRoot(
             queriesWithChildren,
-            'str'
+            'str',
           );
           logger.debug(`[GetSharedQueries][str] using ${strRootFound ? 'dedicated folder' : 'root queries'}`);
           const strBranches = await this.fetchDocTypeBranches(queriesWithChildren, strRoot, [
@@ -338,12 +341,12 @@ export default class TicketsDataProvider {
         case 'test-reporter': {
           const { root: testReporterRoot, found: testReporterFound } = await this.getDocTypeRoot(
             queriesWithChildren,
-            'test-reporter'
+            'test-reporter',
           );
           logger.debug(
             `[GetSharedQueries][test-reporter] using ${
               testReporterFound ? 'dedicated folder' : 'root queries'
-            }`
+            }`,
           );
           const testReporterBranches = await this.fetchDocTypeBranches(
             queriesWithChildren,
@@ -356,13 +359,15 @@ export default class TicketsDataProvider {
                 fetcher: (folder: any) => this.fetchTestReporterQueries(folder),
                 validator: (result: any) => this.hasAnyQueryTree(result?.testAssociatedTree),
               },
-            ]
+            ],
           );
           const testReporterFetch = testReporterBranches['testReporter'];
           return testReporterFetch?.result ?? { testAssociatedTree: null };
         }
         case 'srs':
           return await this.fetchSrsQueries(queriesWithChildren);
+        case 'sysrs':
+          return await this.fetchSysRsQueries(queriesWithChildren);
         case 'svd': {
           const { root: svdRoot, found } = await this.getDocTypeRoot(queriesWithChildren, 'svd');
           if (!found) {
@@ -429,7 +434,7 @@ export default class TicketsDataProvider {
               field.name !== 'Title' &&
               field.name !== 'Description' &&
               field.name !== 'Work Item Type' &&
-              field.name !== 'Steps'
+              field.name !== 'Steps',
           )
           .map((field: any) => {
             return {
@@ -456,7 +461,7 @@ export default class TicketsDataProvider {
       onlyTestReq,
       null,
       ['Requirement'],
-      ['Test Case']
+      ['Test Case'],
     );
     return { reqTestTree, testReqTree };
   }
@@ -489,7 +494,7 @@ export default class TicketsDataProvider {
         'Review',
         'Test Plan',
         'Test Suite',
-      ]
+      ],
     );
     return { linkedMomTree };
   }
@@ -545,7 +550,7 @@ export default class TicketsDataProvider {
       onlySourceSide,
       null,
       ['Bug', 'Change Request'],
-      ['Test Case']
+      ['Test Case'],
     );
     return { OpenPcrToTestTree, TestToOpenPcrTree };
   }
@@ -561,7 +566,7 @@ export default class TicketsDataProvider {
       true,
       null,
       ['Requirement', 'Bug', 'Change Request'],
-      ['Test Case']
+      ['Test Case'],
     );
     return { testAssociatedTree };
   }
@@ -591,7 +596,7 @@ export default class TicketsDataProvider {
       undefined,
       true, // Enable processing of both tree and direct link queries, including flat queries
       excludedFolderNames,
-      true
+      true,
     );
     return { systemRequirementsQueryTree };
   }
@@ -617,24 +622,56 @@ export default class TicketsDataProvider {
 
     const systemToSoftwareFolder = await this.findChildFolderByName(
       srsFolderWithChildren,
-      'System to Software'
+      'System to Software',
     );
     const softwareToSystemFolder = await this.findChildFolderByName(
       srsFolderWithChildren,
-      'Software to System'
+      'Software to System',
     );
 
-    const systemToSoftwareRequirementsQueries = await this.fetchRequirementsTraceQueriesForFolder(
-      systemToSoftwareFolder
-    );
-    const softwareToSystemRequirementsQueries = await this.fetchRequirementsTraceQueriesForFolder(
-      softwareToSystemFolder
-    );
+    const systemToSoftwareRequirementsQueries =
+      await this.fetchRequirementsTraceQueriesForFolder(systemToSoftwareFolder);
+    const softwareToSystemRequirementsQueries =
+      await this.fetchRequirementsTraceQueriesForFolder(softwareToSystemFolder);
 
     return {
       systemRequirementsQueries,
       systemToSoftwareRequirementsQueries,
       softwareToSystemRequirementsQueries,
+    };
+  }
+
+  private async fetchSysRsQueries(rootQueries: any) {
+    const { root: sysRsRoot, found: sysRsRootFound } = await this.getDocTypeRoot(rootQueries, 'sysrs');
+    logger.debug(`[GetSharedQueries][sysrs] using ${sysRsRootFound ? 'dedicated folder' : 'root queries'}`);
+
+    const systemRequirementsQueries = await this.fetchSystemRequirementQueries(sysRsRoot, [
+      'System To Customer',
+      'System To Subsystem',
+    ]);
+
+    const systemToCustomerFolder = await this.findChildFolderByPossibleNames(sysRsRoot, [
+      'system to customer',
+      'system-to-customer',
+      'system customer',
+      'subsystem to system',
+      'customer to system',
+    ]);
+    const systemToSubsystemFolder = await this.findChildFolderByPossibleNames(sysRsRoot, [
+      'system to subsystem',
+      'system-to-subsystem',
+      'system subsystem',
+    ]);
+
+    const subsystemToSystemRequirementsQueries =
+      await this.fetchRequirementsTraceQueriesForFolder(systemToCustomerFolder);
+    const systemToSubsystemRequirementsQueries =
+      await this.fetchRequirementsTraceQueriesForFolder(systemToSubsystemFolder);
+
+    return {
+      systemRequirementsQueries,
+      subsystemToSystemRequirementsQueries,
+      systemToSubsystemRequirementsQueries,
     };
   }
 
@@ -662,7 +699,7 @@ export default class TicketsDataProvider {
         ['epic', 'feature', 'requirement'],
         ['epic', 'feature', 'requirement'],
         'sys', // Source area filter for tree1: System area paths
-        'soft' // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
+        'soft', // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
       );
     return { SystemToSoftwareRequirementsTree, SoftwareToSystemRequirementsTree };
   }
@@ -680,7 +717,7 @@ export default class TicketsDataProvider {
       ['epic', 'feature', 'requirement'],
       undefined,
       undefined,
-      true
+      true,
     );
     return tree1;
   }
@@ -727,7 +764,7 @@ export default class TicketsDataProvider {
     const normalizedName = childName.toLowerCase();
     return (
       parentWithChildren.children.find(
-        (child: any) => child.isFolder && (child.name || '').toLowerCase() === normalizedName
+        (child: any) => child.isFolder && (child.name || '').toLowerCase() === normalizedName,
       ) || null
     );
   }
@@ -836,7 +873,7 @@ export default class TicketsDataProvider {
     startingFolder: any,
     fetcher: (folder: any) => Promise<any>,
     logContext: string,
-    validator?: (result: any) => boolean
+    validator?: (result: any) => boolean,
   ): Promise<{ result: any; usedFolder: any }> {
     const rootWithChildren = await this.ensureQueryChildren(rootQueries);
     const candidates = await this.buildFallbackChain(rootWithChildren, startingFolder);
@@ -870,7 +907,7 @@ export default class TicketsDataProvider {
   private async fetchDocTypeBranches(
     queriesWithChildren: any,
     docRoot: any,
-    branches: DocTypeBranchConfig[]
+    branches: DocTypeBranchConfig[],
   ): Promise<Record<string, FallbackFetchOutcome>> {
     const results: Record<string, FallbackFetchOutcome> = {};
     const effectiveDocRoot = docRoot ?? queriesWithChildren;
@@ -884,7 +921,7 @@ export default class TicketsDataProvider {
       if (branch.folderNames?.length && effectiveDocRoot) {
         const resolvedFolder = await this.findChildFolderByPossibleNames(
           effectiveDocRoot,
-          branch.folderNames
+          branch.folderNames,
         );
         if (resolvedFolder) {
           startingFolder = resolvedFolder;
@@ -899,7 +936,7 @@ export default class TicketsDataProvider {
         startingFolder,
         branch.fetcher,
         branch.label,
-        branch.validator
+        branch.validator,
       );
 
       logger.debug(`${branch.label} final folder: ${fetchOutcome.usedFolder?.name ?? '<root>'}`);
@@ -955,7 +992,7 @@ export default class TicketsDataProvider {
   private async findPathToNode(
     currentNode: any,
     targetId: string,
-    visited: Set<string> = new Set<string>()
+    visited: Set<string> = new Set<string>(),
   ): Promise<any[] | null> {
     if (!currentNode) {
       return null;
@@ -989,7 +1026,7 @@ export default class TicketsDataProvider {
 
   private async getDocTypeRoot(
     rootQueries: any,
-    docTypeName: string
+    docTypeName: string,
   ): Promise<{ root: any; found: boolean }> {
     if (!rootQueries) {
       return { root: rootQueries, found: false };
@@ -1022,7 +1059,8 @@ export default class TicketsDataProvider {
   async GetQueryResultsFromWiql(
     wiqlHref: string = '',
     displayAsTable: boolean = false,
-    testCaseToRelatedWiMap: Map<number, Set<any>>
+    testCaseToRelatedWiMap: Map<number, Set<any>>,
+    fetchAllFields: boolean = false,
   ): Promise<any> {
     try {
       if (!wiqlHref) {
@@ -1038,13 +1076,13 @@ export default class TicketsDataProvider {
         case QueryType.OneHop:
           return displayAsTable
             ? await this.parseDirectLinkedQueryResultForTableFormat(queryResult, testCaseToRelatedWiMap)
-            : await this.parseTreeQueryResult(queryResult);
+            : await this.parseTreeQueryResult(queryResult, fetchAllFields);
         case QueryType.Tree:
-          return await this.parseTreeQueryResult(queryResult);
+          return await this.parseTreeQueryResult(queryResult, fetchAllFields);
         case QueryType.Flat:
           return displayAsTable
             ? await this.parseFlatQueryResultForTableFormat(queryResult)
-            : await this.parseFlatQueryResult(queryResult);
+            : await this.parseFlatQueryResult(queryResult, fetchAllFields);
         default:
           break;
       }
@@ -1055,7 +1093,7 @@ export default class TicketsDataProvider {
 
   private async parseDirectLinkedQueryResultForTableFormat(
     queryResult: QueryTree,
-    testCaseToRelatedWiMap: Map<number, Set<any>>
+    testCaseToRelatedWiMap: Map<number, Set<any>>,
   ) {
     const { columns, workItemRelations } = queryResult;
 
@@ -1104,17 +1142,17 @@ export default class TicketsDataProvider {
       const allSourcePromises = Array.from(sourceIds).map((id) =>
         this.limit(() => {
           const relation = workItemRelations.find(
-            (r) => (!r.source && r.target.id === id) || r.source?.id === id
+            (r) => (!r.source && r.target.id === id) || r.source?.id === id,
           );
           return this.fetchWIForQueryResult(relation, columnsToShowMap, columnSourceMap, true);
-        })
+        }),
       );
 
       const allTargetPromises = Array.from(targetIds).map((id) =>
         this.limit(() => {
           const relation = workItemRelations.find((r) => r.target?.id === id);
           return this.fetchWIForQueryResult(relation, columnsToShowMap, columnTargetsMap, true);
-        })
+        }),
       );
 
       // Wait for all fetches to complete in parallel (with concurrency control)
@@ -1188,7 +1226,7 @@ export default class TicketsDataProvider {
   private mapTestCaseToRelatedItem(
     sourceWi: any,
     targetWi: any,
-    testCaseToRelatedItemMap: Map<number, Set<any>>
+    testCaseToRelatedItemMap: Map<number, Set<any>>,
   ) {
     if (sourceWi.fields['System.WorkItemType'] == 'Test Case') {
       if (!testCaseToRelatedItemMap.has(sourceWi.id)) {
@@ -1230,7 +1268,7 @@ export default class TicketsDataProvider {
     const wiSet: Set<any> = new Set();
     if (workItems) {
       const fetchPromises = workItems.map((workItem) =>
-        this.limit(() => this.fetchWIForQueryResult(workItem, columnsToShowMap, fieldsToIncludeMap, false))
+        this.limit(() => this.fetchWIForQueryResult(workItem, columnsToShowMap, fieldsToIncludeMap, false)),
       );
 
       const fetchedWorkItems = await Promise.all(fetchPromises);
@@ -1244,7 +1282,7 @@ export default class TicketsDataProvider {
     };
   }
 
-  private async parseTreeQueryResult(queryResult: QueryTree) {
+  private async parseTreeQueryResult(queryResult: QueryTree, fetchAllFields: boolean = false) {
     const { workItemRelations } = queryResult;
     if (!workItemRelations) return null;
 
@@ -1258,11 +1296,11 @@ export default class TicketsDataProvider {
     // This ensures nodes with non-hierarchy links are also available
     for (const rel of workItemRelations) {
       const t = rel.target;
-      if (!allItems[t.id]) await this.initTreeQueryResultItem(t, allItems);
+      if (!allItems[t.id]) await this.initTreeQueryResultItem(t, allItems, fetchAllFields);
 
       // Also initialize source nodes if they exist
       if (rel.source && !allItems[rel.source.id]) {
-        await this.initTreeQueryResultItem(rel.source, allItems);
+        await this.initTreeQueryResultItem(rel.source, allItems, fetchAllFields);
       }
 
       if (rel.rel === null && rel.source === null) {
@@ -1273,7 +1311,7 @@ export default class TicketsDataProvider {
       }
     }
     logger.debug(
-      `parseTreeQueryResult: Found ${rootOrder.length} roots, ${Object.keys(allItems).length} total nodes`
+      `parseTreeQueryResult: Found ${rootOrder.length} roots, ${Object.keys(allItems).length} total nodes`,
     );
 
     // Attach only forward hierarchy edges; dedupe children by id per parent
@@ -1293,11 +1331,11 @@ export default class TicketsDataProvider {
       // Nodes should already be initialized, but double-check
       if (!allItems[parentId]) {
         logger.warn(`Parent ${parentId} not found, initializing now`);
-        await this.initTreeQueryResultItem(rel.source, allItems);
+        await this.initTreeQueryResultItem(rel.source, allItems, fetchAllFields);
       }
       if (!allItems[childId]) {
         logger.warn(`Child ${childId} not found, initializing now`);
-        await this.initTreeQueryResultItem(rel.target, allItems);
+        await this.initTreeQueryResultItem(rel.target, allItems, fetchAllFields);
       }
 
       const parent = allItems[parentId];
@@ -1313,13 +1351,13 @@ export default class TicketsDataProvider {
       }
     }
     logger.debug(
-      `parseTreeQueryResult: ${hierarchyCount} hierarchy links, ${skippedNonHierarchy} non-hierarchy links skipped`
+      `parseTreeQueryResult: ${hierarchyCount} hierarchy links, ${skippedNonHierarchy} non-hierarchy links skipped`,
     );
 
     // Return roots in original order, excluding those that became children
     const roots = rootOrder.filter((id) => rootSet.has(id)).map((id) => allItems[id]);
     logger.debug(
-      `parseTreeQueryResult: Returning ${roots.length} roots with ${Object.keys(allItems).length} total items`
+      `parseTreeQueryResult: Returning ${roots.length} roots with ${Object.keys(allItems).length} total items`,
     );
 
     // Optional: clean helper sets
@@ -1332,32 +1370,42 @@ export default class TicketsDataProvider {
     };
   }
 
-  private async initTreeQueryResultItem(item: any, allItems: any) {
-    const urlWi = `${item.url}?fields=System.Description,System.Title,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom`;
+  private async initTreeQueryResultItem(item: any, allItems: any, fetchAllFields: boolean = false) {
+    const urlWi = fetchAllFields ? `${item.url}` : `${item.url}?fields=${WI_DEFAULT_FIELDS}`;
     const wi = await TFSServices.getItemContent(urlWi, this.token);
+    const fields = wi?.fields || {};
     // need to fetch the WI with only the the title, the web URL and the description
     allItems[item.id] = {
       id: item.id,
-      title: wi.fields['System.Title'] || '',
-      description: wi.fields['Microsoft.VSTS.CMMI.Symptom'] ?? wi.fields['System.Description'] ?? '',
+      title: fields['System.Title'] || '',
+      description: fields['Microsoft.VSTS.CMMI.Symptom'] ?? fields['System.Description'] ?? '',
       htmlUrl: wi._links.html.href,
+      fields,
+      workItemType: fields['System.WorkItemType'] || '',
       children: [],
     };
   }
 
-  private async initFlatQueryResultItem(item: any, workItemMap: Map<number, any>) {
-    const urlWi = `${item.url}?fields=System.Description,System.Title,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom`;
+  private async initFlatQueryResultItem(
+    item: any,
+    workItemMap: Map<number, any>,
+    fetchAllFields: boolean = false,
+  ) {
+    const urlWi = fetchAllFields ? `${item.url}` : `${item.url}?fields=${WI_DEFAULT_FIELDS}`;
     const wi = await TFSServices.getItemContent(urlWi, this.token);
+    const fields = wi?.fields || {};
     // need to fetch the WI with only the the title, the web URL and the description
     workItemMap.set(item.id, {
       id: item.id,
-      title: wi.fields['System.Title'] || '',
-      description: wi.fields['Microsoft.VSTS.CMMI.Symptom'] ?? wi.fields['System.Description'] ?? '',
+      title: fields['System.Title'] || '',
+      description: fields['Microsoft.VSTS.CMMI.Symptom'] ?? fields['System.Description'] ?? '',
       htmlUrl: wi._links.html.href,
+      fields,
+      workItemType: fields['System.WorkItemType'] || '',
     });
   }
 
-  private async parseFlatQueryResult(queryResult: QueryTree) {
+  private async parseFlatQueryResult(queryResult: QueryTree, fetchAllFields: boolean = false) {
     const { workItems } = queryResult;
     if (!workItems) {
       logger.warn(`No work items were found for this requested query`);
@@ -1368,7 +1416,7 @@ export default class TicketsDataProvider {
       const workItemsResultMap: Map<number, any> = new Map();
       for (const wi of workItems) {
         if (!workItemsResultMap.has(wi.id)) {
-          await this.initFlatQueryResultItem(wi, workItemsResultMap);
+          await this.initFlatQueryResultItem(wi, workItemsResultMap, fetchAllFields);
         }
       }
       return [...workItemsResultMap.values()];
@@ -1381,7 +1429,7 @@ export default class TicketsDataProvider {
     receivedObject: any,
     columnMap: Map<string, string>,
     resultedRefNameMap: Map<string, string>,
-    isRelation: boolean
+    isRelation: boolean,
   ) {
     const url = isRelation ? `${receivedObject.target.url}` : `${receivedObject.url}`;
     const wi: any = await TFSServices.getItemContent(url, this.token);
@@ -1414,7 +1462,7 @@ export default class TicketsDataProvider {
       if (modeledResult.queryType == 'tree') {
         let levelResults: Array<Workitem> = Helper.LevelBuilder(
           modeledResult,
-          modeledResult.workItems[0].fields[0].value
+          modeledResult.workItems[0].fields[0].value,
         );
         return levelResults;
       }
@@ -1585,7 +1633,7 @@ export default class TicketsDataProvider {
 
   async CreateNewWorkItem(projectName: string, wiBody: any, wiType: string, byPass: boolean) {
     let url = `${this.orgUrl}${projectName}/_apis/wit/workitems/$${wiType}?bypassRules=${String(
-      byPass
+      byPass,
     ).toString()}`;
     return TFSServices.getItemContent(url, this.token, 'POST', wiBody, {
       'Content-Type': 'application/json-patch+json',
@@ -1605,7 +1653,7 @@ export default class TicketsDataProvider {
             attachment.downloadUrl = `${relation.url}/${relation.attributes.name}`;
             attachmentList.push(attachment);
           }
-        })
+        }),
       );
       return attachmentList;
     } catch (e) {
@@ -1626,7 +1674,7 @@ export default class TicketsDataProvider {
   async UpdateWorkItem(projectName: string, wiBody: any, workItemId: number, byPass: boolean) {
     let res: any;
     let url: string = `${this.orgUrl}${projectName}/_apis/wit/workitems/${workItemId}?bypassRules=${String(
-      byPass
+      byPass,
     ).toString()}`;
     res = await TFSServices.getItemContent(url, this.token, 'patch', wiBody, {
       'Content-Type': 'application/json-patch+json',
@@ -1680,7 +1728,7 @@ export default class TicketsDataProvider {
 
       // Process children recursively
       const childResults = await Promise.all(
-        rootQuery.children.map((child: any) => this.structureAllQueryPath(child, rootQuery.id))
+        rootQuery.children.map((child: any) => this.structureAllQueryPath(child, rootQuery.id)),
       );
 
       // Build tree
@@ -1718,8 +1766,8 @@ export default class TicketsDataProvider {
     } catch (err: any) {
       logger.error(
         `Error occurred while constructing the query list ${err.message} with query ${JSON.stringify(
-          rootQuery
-        )}`
+          rootQuery,
+        )}`,
       );
       throw err;
     }
@@ -1757,7 +1805,7 @@ export default class TicketsDataProvider {
     includeTreeQueries: boolean = false,
     excludedFolderNames: string[] = [],
     includeFlatQueries: boolean = false,
-    workItemTypeCache?: Map<string, string | null>
+    workItemTypeCache?: Map<string, string | null>,
   ): Promise<any> {
     try {
       // Per-invocation cache for ID->WorkItemType lookups; avoids global state and is safe for concurrency.
@@ -1765,7 +1813,7 @@ export default class TicketsDataProvider {
       const shouldSkipFolder =
         rootQuery?.isFolder &&
         excludedFolderNames.some(
-          (folderName) => folderName.toLowerCase() === (rootQuery.name || '').toLowerCase()
+          (folderName) => folderName.toLowerCase() === (rootQuery.name || '').toLowerCase(),
         );
 
       if (shouldSkipFolder) {
@@ -1789,7 +1837,7 @@ export default class TicketsDataProvider {
               rootQuery,
               wiql,
               allTypes,
-              typeCache
+              typeCache,
             );
 
             if (typesOk) {
@@ -1816,7 +1864,7 @@ export default class TicketsDataProvider {
                 wiql,
                 sources,
                 targets,
-                typeCache
+                typeCache,
               );
             }
             const matchesReverse = await this.matchesSourceTargetConditionAsync(
@@ -1824,7 +1872,7 @@ export default class TicketsDataProvider {
               wiql,
               targets,
               sources,
-              typeCache
+              typeCache,
             );
 
             if (matchesForward) {
@@ -1871,7 +1919,7 @@ export default class TicketsDataProvider {
           includeTreeQueries,
           excludedFolderNames,
           includeFlatQueries,
-          typeCache
+          typeCache,
         );
       }
 
@@ -1889,9 +1937,9 @@ export default class TicketsDataProvider {
             includeTreeQueries,
             excludedFolderNames,
             includeFlatQueries,
-            typeCache
-          )
-        )
+            typeCache,
+          ),
+        ),
       );
 
       // Build tree1
@@ -1924,8 +1972,8 @@ export default class TicketsDataProvider {
     } catch (err: any) {
       logger.error(
         `Error occurred while constructing the query list ${err.message} with query ${JSON.stringify(
-          rootQuery
-        )}`
+          rootQuery,
+        )}`,
       );
       logger.error(`Error stack ${err.message}`);
     }
@@ -1941,7 +1989,7 @@ export default class TicketsDataProvider {
   private matchesAreaPathCondition(
     wiql: string,
     sourceAreaFilter: string,
-    targetAreaFilter: string
+    targetAreaFilter: string,
   ): boolean {
     const wiqlLower = (wiql || '').toLowerCase();
     const srcFilter = (sourceAreaFilter || '').toLowerCase().trim();
@@ -1979,7 +2027,7 @@ export default class TicketsDataProvider {
     wiql: string,
     source: string[],
     target: string[],
-    workItemTypeCache: Map<string, string | null>
+    workItemTypeCache: Map<string, string | null>,
   ): Promise<boolean> {
     /**
      * Matches source+target constraints for link WIQL.
@@ -1992,7 +2040,7 @@ export default class TicketsDataProvider {
       wiql,
       'Source',
       source,
-      workItemTypeCache
+      workItemTypeCache,
     );
     if (!sourceOk) return false;
     const targetOk = await this.isLinkSideAllowedByTypeOrId(
@@ -2000,7 +2048,7 @@ export default class TicketsDataProvider {
       wiql,
       'Target',
       target,
-      workItemTypeCache
+      workItemTypeCache,
     );
     return targetOk;
   }
@@ -2009,7 +2057,7 @@ export default class TicketsDataProvider {
     queryNode: any,
     wiql: string,
     allowedTypes: string[],
-    workItemTypeCache: Map<string, string | null>
+    workItemTypeCache: Map<string, string | null>,
   ): Promise<boolean> {
     return this.isFlatQueryAllowedByTypeOrId(queryNode, wiql, allowedTypes, workItemTypeCache);
   }
@@ -2149,7 +2197,7 @@ export default class TicketsDataProvider {
     wiql: string,
     context: 'Source' | 'Target',
     allowedTypes: string[],
-    workItemTypeCache: Map<string, string | null>
+    workItemTypeCache: Map<string, string | null>,
   ): Promise<boolean> {
     const wiqlStr = String(wiql || '');
 
@@ -2157,7 +2205,7 @@ export default class TicketsDataProvider {
     if (!allowedTypes || allowedTypes.length === 0) {
       const fieldPresenceRegex = new RegExp(
         `${this.buildWiqlFieldPattern(context, 'System.WorkItemType')}`,
-        'i'
+        'i',
       );
       return fieldPresenceRegex.test(wiqlStr);
     }
@@ -2197,7 +2245,7 @@ export default class TicketsDataProvider {
     queryNode: any,
     wiql: string,
     allowedTypes: string[],
-    workItemTypeCache: Map<string, string | null>
+    workItemTypeCache: Map<string, string | null>,
   ): Promise<boolean> {
     const wiqlStr = String(wiql || '');
 
@@ -2240,7 +2288,7 @@ export default class TicketsDataProvider {
   private async getWorkItemTypeById(
     project: string,
     id: string,
-    workItemTypeCache: Map<string, string | null>
+    workItemTypeCache: Map<string, string | null>,
   ): Promise<string | null> {
     const cacheKey = `${project}:${id}`;
     if (workItemTypeCache.has(cacheKey)) {
@@ -2298,7 +2346,7 @@ export default class TicketsDataProvider {
   private filterFieldsByColumns(
     item: any,
     columnsToFilterMap: Map<string, string>,
-    resultedRefNameMap: Map<string, string>
+    resultedRefNameMap: Map<string, string>,
   ) {
     try {
       const parsedFields: any = {};
@@ -2345,14 +2393,14 @@ export default class TicketsDataProvider {
                   this.token,
                   'get',
                   {},
-                  { Accept: accept }
+                  { Accept: accept },
                 );
                 if (iconDataUrl) break;
               } catch (error: any) {
                 logger.warn(
                   `Failed to download icon (${accept}) for work item type ${
                     workItemType?.name ?? 'unknown'
-                  }: ${error?.message || error}`
+                  }: ${error?.message || error}`,
                 );
               }
             }
@@ -2361,8 +2409,8 @@ export default class TicketsDataProvider {
           const iconPayload = workItemType.icon
             ? { ...workItemType.icon, dataUrl: iconDataUrl }
             : iconDataUrl
-            ? { id: undefined, url: undefined, dataUrl: iconDataUrl }
-            : workItemType.icon;
+              ? { id: undefined, url: undefined, dataUrl: iconDataUrl }
+              : workItemType.icon;
 
           return {
             name: workItemType.name,
@@ -2371,7 +2419,7 @@ export default class TicketsDataProvider {
             icon: iconPayload,
             states: workItemType.states,
           };
-        })
+        }),
       );
 
       return workItemTypesWithIcons;
@@ -2543,7 +2591,7 @@ export default class TicketsDataProvider {
       });
 
       logger.debug(
-        `Categorized ${workItemIds.length} work items into ${Object.keys(finalCategories).length} categories`
+        `Categorized ${workItemIds.length} work items into ${Object.keys(finalCategories).length} categories`,
       );
 
       return {
