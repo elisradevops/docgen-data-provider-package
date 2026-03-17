@@ -27,7 +27,7 @@ describe('TicketsDataProvider', () => {
         wiql,
         'Source',
         [],
-        new Map()
+        new Map(),
       );
       expect(result).toBe(true);
     });
@@ -39,7 +39,7 @@ describe('TicketsDataProvider', () => {
         wiql,
         'Source',
         [],
-        new Map()
+        new Map(),
       );
       expect(result).toBe(false);
     });
@@ -51,7 +51,7 @@ describe('TicketsDataProvider', () => {
         wiql,
         'Source',
         ['Epic', 'Feature'],
-        new Map()
+        new Map(),
       );
       expect(result).toBe(false);
     });
@@ -63,7 +63,7 @@ describe('TicketsDataProvider', () => {
         wiql,
         'Target',
         ['Requirement', 'Bug'],
-        new Map()
+        new Map(),
       );
       expect(result).toBe(true);
     });
@@ -75,7 +75,7 @@ describe('TicketsDataProvider', () => {
         wiql,
         'Target',
         ['Bug'],
-        new Map()
+        new Map(),
       );
       expect(result).toBe(false);
     });
@@ -93,13 +93,98 @@ describe('TicketsDataProvider', () => {
     });
   });
 
+  describe('fetchSysRsQueries', () => {
+    it('should use sysrs root, exclude trace folders from system requirements and resolve both trace directions', async () => {
+      const rootQueries = { id: 'root' };
+      const sysRsRoot = { id: 'sysrs-root', name: 'SYSRS' };
+      const subsystemToSystemFolder = { id: 'fwd-folder', name: 'System To Customer' };
+      const systemToSubsystemFolder = { id: 'rev-folder', name: 'System To Subsystem' };
+
+      const getDocTypeRootSpy = jest
+        .spyOn(ticketsDataProvider as any, 'getDocTypeRoot')
+        .mockResolvedValue({ root: sysRsRoot, found: true });
+      const fetchSystemRequirementQueriesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchSystemRequirementQueries')
+        .mockResolvedValue({ systemRequirementsQueryTree: { id: 'system-tree' } });
+      const findChildFolderByPossibleNamesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'findChildFolderByPossibleNames')
+        .mockResolvedValueOnce(subsystemToSystemFolder)
+        .mockResolvedValueOnce(systemToSubsystemFolder);
+      const fetchRequirementsTraceQueriesForFolderSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchRequirementsTraceQueriesForFolder')
+        .mockResolvedValueOnce({ id: 'fwd-trace-tree' })
+        .mockResolvedValueOnce({ id: 'rev-trace-tree' });
+
+      const result = await (ticketsDataProvider as any).fetchSysRsQueries(rootQueries);
+
+      expect(getDocTypeRootSpy).toHaveBeenCalledWith(rootQueries, 'sysrs');
+      expect(fetchSystemRequirementQueriesSpy).toHaveBeenCalledWith(sysRsRoot, [
+        'System To Customer',
+        'System To Subsystem',
+      ]);
+
+      expect(findChildFolderByPossibleNamesSpy).toHaveBeenNthCalledWith(
+        1,
+        sysRsRoot,
+        expect.arrayContaining(['system to customer', 'subsystem to system', 'customer to system']),
+      );
+      expect(findChildFolderByPossibleNamesSpy).toHaveBeenNthCalledWith(
+        2,
+        sysRsRoot,
+        expect.arrayContaining(['system to subsystem', 'system-to-subsystem']),
+      );
+
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(1, subsystemToSystemFolder);
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(2, systemToSubsystemFolder);
+
+      expect(result).toEqual({
+        systemRequirementsQueries: { systemRequirementsQueryTree: { id: 'system-tree' } },
+        subsystemToSystemRequirementsQueries: { id: 'fwd-trace-tree' },
+        systemToSubsystemRequirementsQueries: { id: 'rev-trace-tree' },
+      });
+    });
+
+    it('should fall back to root queries and return null trace trees when trace folders are missing', async () => {
+      const rootQueries = { id: 'root' };
+
+      jest
+        .spyOn(ticketsDataProvider as any, 'getDocTypeRoot')
+        .mockResolvedValue({ root: rootQueries, found: false });
+      const fetchSystemRequirementQueriesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchSystemRequirementQueries')
+        .mockResolvedValue({ systemRequirementsQueryTree: { id: 'system-tree' } });
+      jest
+        .spyOn(ticketsDataProvider as any, 'findChildFolderByPossibleNames')
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
+      const fetchRequirementsTraceQueriesForFolderSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchRequirementsTraceQueriesForFolder')
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null);
+
+      const result = await (ticketsDataProvider as any).fetchSysRsQueries(rootQueries);
+
+      expect(fetchSystemRequirementQueriesSpy).toHaveBeenCalledWith(rootQueries, [
+        'System To Customer',
+        'System To Subsystem',
+      ]);
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(1, null);
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(2, null);
+      expect(result).toEqual({
+        systemRequirementsQueries: { systemRequirementsQueryTree: { id: 'system-tree' } },
+        subsystemToSystemRequirementsQueries: null,
+        systemToSubsystemRequirementsQueries: null,
+      });
+    });
+  });
+
   describe('findChildFolderByPossibleNames', () => {
     it('should return null when parent is missing or possibleNames is empty', async () => {
       await expect(
-        (ticketsDataProvider as any).findChildFolderByPossibleNames(null, ['a'])
+        (ticketsDataProvider as any).findChildFolderByPossibleNames(null, ['a']),
       ).resolves.toBeNull();
       await expect(
-        (ticketsDataProvider as any).findChildFolderByPossibleNames({ hasChildren: false }, [])
+        (ticketsDataProvider as any).findChildFolderByPossibleNames({ hasChildren: false }, []),
       ).resolves.toBeNull();
     });
 
@@ -194,7 +279,7 @@ describe('TicketsDataProvider', () => {
         starting,
         fetcher,
         'ctx',
-        validator
+        validator,
       );
       expect(res.usedFolder).toBe(starting);
       expect(fetcher).toHaveBeenCalledTimes(1);
@@ -221,7 +306,7 @@ describe('TicketsDataProvider', () => {
         a,
         fetcher,
         'ctx',
-        validator
+        validator,
       );
       expect(res.usedFolder).toBe(root);
       expect(res.result).toEqual({ last: true });
@@ -258,7 +343,7 @@ describe('TicketsDataProvider', () => {
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/_apis/wit/workitems/${mockId}?$expand=All`,
-        mockToken
+        mockToken,
       );
       expect(result).toEqual(mockWorkItem);
     });
@@ -325,7 +410,7 @@ describe('TicketsDataProvider', () => {
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all`,
-        mockToken
+        mockToken,
       );
       expect(result).toEqual({
         reqTestQueries: { reqTestTree: {}, testReqTree: {} },
@@ -358,7 +443,7 @@ describe('TicketsDataProvider', () => {
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/_apis/wit/queries/${mockPath}?$depth=2&$expand=all`,
-        mockToken
+        mockToken,
       );
       expect(result).toEqual({
         systemOverviewQueryTree: {},
@@ -564,8 +649,8 @@ describe('TicketsDataProvider', () => {
       await expect(
         (ticketsDataProvider as any).parseDirectLinkedQueryResultForTableFormat(
           { columns: [], workItemRelations: [], queryType: QueryType.OneHop } as any,
-          new Map()
-        )
+          new Map(),
+        ),
       ).rejects.toThrow('No related work items were found');
     });
 
@@ -600,7 +685,7 @@ describe('TicketsDataProvider', () => {
           columns: [{ referenceName: 'CustomerRequirementId', name: 'CustomerRequirementId' }],
           workItemRelations,
         } as any,
-        testCaseToRelatedWiMap
+        testCaseToRelatedWiMap,
       );
 
       expect(fetchSpy).toHaveBeenCalled();
@@ -627,8 +712,8 @@ describe('TicketsDataProvider', () => {
             columns: [],
             workItemRelations: [{ source: { id: 1 }, target: null }],
           } as any,
-          new Map()
-        )
+          new Map(),
+        ),
       ).rejects.toThrow('Target relation is missing');
     });
   });
@@ -646,7 +731,7 @@ describe('TicketsDataProvider', () => {
         {},
         wiql,
         ['Bug'],
-        new Map()
+        new Map(),
       );
       expect(res).toBe(false);
     });
@@ -657,7 +742,7 @@ describe('TicketsDataProvider', () => {
         {},
         wiql,
         ['Bug'],
-        new Map()
+        new Map(),
       );
       expect(res).toBe(false);
     });
@@ -710,7 +795,7 @@ describe('TicketsDataProvider', () => {
       const resultedRefNameMap = new Map<string, string>();
 
       expect(() =>
-        (ticketsDataProvider as any).filterFieldsByColumns(item, columnsToFilterMap, resultedRefNameMap)
+        (ticketsDataProvider as any).filterFieldsByColumns(item, columnsToFilterMap, resultedRefNameMap),
       ).toThrow();
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Cannot filter columns'));
     });
@@ -747,7 +832,7 @@ describe('TicketsDataProvider', () => {
         expect.objectContaining({
           name: 'Bug',
           icon: expect.objectContaining({ dataUrl: 'data:image/png;base64,xxx' }),
-        })
+        }),
       );
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to download icon'));
     });
@@ -830,7 +915,7 @@ describe('TicketsDataProvider', () => {
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/${mockTeamName}/_apis/work/teamsettings/iterations`,
         mockToken,
-        'get'
+        'get',
       );
       expect(result).toEqual(mockIterations);
     });
@@ -849,7 +934,7 @@ describe('TicketsDataProvider', () => {
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/_apis/work/teamsettings/iterations`,
         mockToken,
-        'get'
+        'get',
       );
       expect(result).toEqual(mockIterations);
     });
@@ -870,7 +955,7 @@ describe('TicketsDataProvider', () => {
         mockProject,
         mockWiBody,
         mockWiType,
-        mockByPass
+        mockByPass,
       );
 
       // Assert
@@ -881,7 +966,7 @@ describe('TicketsDataProvider', () => {
         mockWiBody,
         {
           'Content-Type': 'application/json-patch+json',
-        }
+        },
       );
       expect(result).toEqual(mockResponse);
     });
@@ -902,7 +987,7 @@ describe('TicketsDataProvider', () => {
         mockProject,
         mockWiBody,
         mockWorkItemId,
-        mockByPass
+        mockByPass,
       );
 
       // Assert
@@ -913,7 +998,7 @@ describe('TicketsDataProvider', () => {
         mockWiBody,
         {
           'Content-Type': 'application/json-patch+json',
-        }
+        },
       );
       expect(result).toEqual(mockResponse);
     });
@@ -943,7 +1028,7 @@ describe('TicketsDataProvider', () => {
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/_apis/wit/workitems/${mockId}?$expand=All`,
-        mockToken
+        mockToken,
       );
       expect(result.length).toBe(1);
 
@@ -1008,7 +1093,7 @@ describe('TicketsDataProvider', () => {
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/_apis/wit/workitems/${mockId}?$expand=All`,
-        mockToken
+        mockToken,
       );
       expect(result.length).toBe(1);
       expect(result[0].rel).toBe('AttachedFile');
@@ -1156,7 +1241,7 @@ describe('TicketsDataProvider', () => {
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl}${mockProject}/_apis/wit/workitemtypes/${mockItemType}/fields`,
-        mockToken
+        mockToken,
       );
       // Should filter out ID and Title
       expect(result).toHaveLength(2);
@@ -1254,7 +1339,7 @@ describe('TicketsDataProvider', () => {
       const res = await ticketsDataProvider.GetQueryResultsFromWiql(
         'https://example.com/wiql',
         false,
-        new Map()
+        new Map(),
       );
       expect(res).toBeUndefined();
     });
@@ -1407,7 +1492,7 @@ describe('TicketsDataProvider', () => {
         undefined,
         false,
         ['skipme'],
-        false
+        false,
       );
       expect(res).toEqual({ tree1: null, tree2: null });
     });
@@ -1438,12 +1523,12 @@ describe('TicketsDataProvider', () => {
         false,
         null,
         ['Epic'],
-        ['Feature']
+        ['Feature'],
       );
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         'https://example.com/q?$depth=2&$expand=all',
-        mockToken
+        mockToken,
       );
       expect(res.tree1).toEqual({ id: 'root', pId: 'root' });
       expect(res.tree2).toBeNull();
@@ -1466,7 +1551,7 @@ describe('TicketsDataProvider', () => {
         'missing',
         false,
         [],
-        true
+        true,
       );
 
       expect(res.tree1).toEqual({ id: 'q', pId: null });
@@ -1489,7 +1574,7 @@ describe('TicketsDataProvider', () => {
         false,
         null,
         ['Epic'],
-        ['Feature']
+        ['Feature'],
       );
 
       expect(res.tree1).toBeNull();
@@ -1534,7 +1619,7 @@ describe('TicketsDataProvider', () => {
           [],
           undefined,
           undefined,
-          true
+          true,
         );
 
         expect(res.tree1).not.toBeNull();
@@ -1564,7 +1649,7 @@ describe('TicketsDataProvider', () => {
           [],
           undefined,
           undefined,
-          true
+          true,
         );
 
         expect(res.tree1).toBeNull();
@@ -1591,7 +1676,7 @@ describe('TicketsDataProvider', () => {
           false,
           null,
           allowedTypes,
-          allowedTypes
+          allowedTypes,
         );
 
         expect(res.tree1).not.toBeNull();
@@ -1622,7 +1707,7 @@ describe('TicketsDataProvider', () => {
           undefined,
           false,
           [],
-          true
+          true,
         );
 
         expect(res.tree1).not.toBeNull();
@@ -1647,7 +1732,7 @@ describe('TicketsDataProvider', () => {
           [],
           undefined,
           undefined,
-          true
+          true,
         );
 
         expect(res.tree1).toBeNull();
@@ -1719,7 +1804,7 @@ describe('TicketsDataProvider', () => {
 
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         'https://example.com/q3?$depth=2&$expand=all',
-        mockToken
+        mockToken,
       );
       expect(res.tree1).toEqual(expect.objectContaining({ id: 'q3', pId: 'q3' }));
     });
@@ -1806,6 +1891,70 @@ describe('TicketsDataProvider', () => {
       expect(res.allItems[11]).toBeDefined();
       expect(res.allItems[10].children).toHaveLength(1);
       expect(res.allItems[10].children[0].id).toBe(11);
+    });
+  });
+
+  describe('init query result items', () => {
+    it('should include fields and workItemType in tree query item mapping', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        fields: {
+          'System.Title': 'REQ-42',
+          'Microsoft.VSTS.CMMI.Symptom': 'Symptom description',
+          'System.Description': 'Fallback description',
+          'System.WorkItemType': 'Requirement',
+        },
+        _links: { html: { href: 'https://example.com/wi/42' } },
+      });
+
+      const allItems: Record<number, any> = {};
+      await (ticketsDataProvider as any).initTreeQueryResultItem(
+        { id: 42, url: 'https://example.com/wi/42' },
+        allItems,
+      );
+
+      expect(allItems[42]).toEqual(
+        expect.objectContaining({
+          id: 42,
+          title: 'REQ-42',
+          description: 'Symptom description',
+          htmlUrl: 'https://example.com/wi/42',
+          fields: expect.objectContaining({
+            'System.WorkItemType': 'Requirement',
+          }),
+          workItemType: 'Requirement',
+          children: [],
+        }),
+      );
+    });
+
+    it('should include fields and fallback description in flat query item mapping', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        fields: {
+          'System.Title': 'REQ-84',
+          'System.Description': 'System description',
+          'System.WorkItemType': 'Feature',
+        },
+        _links: { html: { href: 'https://example.com/wi/84' } },
+      });
+
+      const workItemMap = new Map<number, any>();
+      await (ticketsDataProvider as any).initFlatQueryResultItem(
+        { id: 84, url: 'https://example.com/wi/84' },
+        workItemMap,
+      );
+
+      expect(workItemMap.get(84)).toEqual(
+        expect.objectContaining({
+          id: 84,
+          title: 'REQ-84',
+          description: 'System description',
+          htmlUrl: 'https://example.com/wi/84',
+          fields: expect.objectContaining({
+            'System.WorkItemType': 'Feature',
+          }),
+          workItemType: 'Feature',
+        }),
+      );
     });
   });
 
@@ -1963,6 +2112,23 @@ describe('TicketsDataProvider', () => {
 
       // Assert
       expect(result).toBeDefined();
+    });
+
+    it('should handle SYSRS docType', async () => {
+      // Arrange
+      const mockQueries = {
+        children: [{ name: 'SYSRS', isFolder: true, children: [] }],
+      };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(mockQueries);
+
+      // Act
+      const result = await ticketsDataProvider.GetSharedQueries(mockProject, '', 'sysrs');
+
+      // Assert
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('systemRequirementsQueries');
+      expect(result).toHaveProperty('subsystemToSystemRequirementsQueries');
+      expect(result).toHaveProperty('systemToSubsystemRequirementsQueries');
     });
 
     it('should handle unknown docType', async () => {
@@ -2270,7 +2436,7 @@ describe('TicketsDataProvider', () => {
       const res = await ticketsDataProvider.GetCategorizedRequirementsByType(wiqlHref);
       expect(res).toEqual({ categories: {}, totalCount: 0 });
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('No work items found in query result')
+        expect.stringContaining('No work items found in query result'),
       );
     });
   });
