@@ -27,6 +27,54 @@ type DocTypeBranchConfig = {
   fallbackStart?: any;
 };
 
+type HistoricalQueryListItem = {
+  id: string;
+  queryName: string;
+  path: string;
+};
+
+type HistoricalWorkItemSnapshot = {
+  id: number;
+  workItemType: string;
+  title: string;
+  state: string;
+  areaPath: string;
+  iterationPath: string;
+  versionId: number | null;
+  versionTimestamp: string;
+  description: string;
+  steps: string;
+  testPhase: string;
+  relatedLinkCount: number;
+  workItemUrl: string;
+};
+
+type HistoricalSnapshotResult = {
+  queryId: string;
+  queryName: string;
+  asOf: string;
+  total: number;
+  rows: HistoricalWorkItemSnapshot[];
+  snapshotMap: Map<number, HistoricalWorkItemSnapshot>;
+};
+
+const HISTORICAL_WIT_API_VERSIONS: Array<string | null> = ['7.1', '5.1', null];
+const HISTORICAL_BATCH_MAX_IDS = 200;
+const HISTORICAL_WORK_ITEM_FIELDS = [
+  'System.Id',
+  'System.WorkItemType',
+  'System.Title',
+  'System.State',
+  'System.AreaPath',
+  'System.IterationPath',
+  'System.Rev',
+  'System.ChangedDate',
+  'System.Description',
+  'Microsoft.VSTS.TCM.Steps',
+  'Elisra.TestPhase',
+  'Custom.TestPhase',
+];
+
 /** Default fields fetched per work item in tree/flat query parsing. */
 const WI_DEFAULT_FIELDS =
   'System.Description,System.Title,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom';
@@ -191,12 +239,21 @@ export default class TicketsDataProvider {
    * @param docType document type
    * @returns
    */
+  private normalizeSharedQueriesPath(path: string): string {
+    const raw = String(path || '').trim();
+    if (!raw) return '';
+    const normalized = raw.toLowerCase();
+    if (normalized === 'shared' || normalized === 'shared queries') return '';
+    return raw;
+  }
+
   async GetSharedQueries(project: string, path: string, docType: string = ''): Promise<any> {
     let url;
     try {
-      if (path === '')
+      const normalizedPath = this.normalizeSharedQueriesPath(path);
+      if (normalizedPath === '')
         url = `${this.orgUrl}${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all`;
-      else url = `${this.orgUrl}${project}/_apis/wit/queries/${path}?$depth=2&$expand=all`;
+      else url = `${this.orgUrl}${project}/_apis/wit/queries/${normalizedPath}?$depth=2&$expand=all`;
       let queries: any = await TFSServices.getItemContent(url, this.token);
       logger.debug(`doctype: ${docType}`);
       const normalizedDocType = (docType || '').toLowerCase();
@@ -402,6 +459,13 @@ export default class TicketsDataProvider {
           return {
             systemOverviewQueryTree: systemOverviewFetch?.result ?? null,
             knownBugsQueryTree: knownBugsFetch?.result ?? null,
+          };
+        }
+        case 'historical-query':
+        case 'historical': {
+          const { tree1 } = await this.structureAllQueryPath(queriesWithChildren);
+          return {
+            historicalQueryTree: tree1 ? [tree1] : [],
           };
         }
         default:
@@ -1488,6 +1552,597 @@ export default class TicketsDataProvider {
     let querie: any = await TFSServices.getItemContent(url, this.token);
     var wiql = querie._links.wiql;
     return await this.GetQueryResultsByWiqlHref(wiql.href, project);
+  }
+
+  private normalizeHistoricalAsOf(value: string): string {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      throw new Error('asOf date-time is required');
+    }
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error(`Invalid date-time value: ${raw}`);
+    }
+    return parsed.toISOString();
+  }
+
+  private normalizeHistoricalCompareValue(value: unknown): string {
+    if (value == null) {
+      return '';
+    }
+    if (typeof value === 'string') {
+      return value.replace(/\s+/g, ' ').trim();
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => this.normalizeHistoricalCompareValue(item))
+        .filter((item) => item !== '')
+        .sort((a, b) => a.localeCompare(b))
+        .join('; ');
+    }
+    if (typeof value === 'object') {
+      const fallback = value as Record<string, unknown>;
+      if (typeof fallback.displayName === 'string') {
+        return this.normalizeHistoricalCompareValue(fallback.displayName);
+      }
+      if (typeof fallback.name === 'string') {
+        return this.normalizeHistoricalCompareValue(fallback.name);
+      }
+      return this.normalizeHistoricalCompareValue(JSON.stringify(value));
+    }
+    return String(value).trim();
+  }
+
+  private normalizeTestPhaseValue(value: unknown): string {
+    const rendered = this.normalizeHistoricalCompareValue(value);
+    if (!rendered) {
+      return '';
+    }
+    const parts = rendered
+      .split(/[;,]/)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    if (parts.length <= 1) {
+      return rendered;
+    }
+    const unique = Array.from(new Set(parts));
+    unique.sort((a, b) => a.localeCompare(b));
+    return unique.join('; ');
+  }
+
+  private isTestCaseType(workItemType: string): boolean {
+    const normalized = String(workItemType || '').trim().toLowerCase();
+    return normalized === 'test case' || normalized === 'testcase';
+  }
+
+  private toHistoricalRevision(value: unknown): number | null {
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      return null;
+    }
+    return n;
+  }
+
+  private extractHistoricalWorkItemIds(queryResult: any): number[] {
+    const ids = new Set<number>();
+
+    const pushId = (candidate: unknown) => {
+      const n = Number(candidate);
+      if (Number.isFinite(n)) {
+        ids.add(n);
+      }
+    };
+
+    const workItems = Array.isArray(queryResult?.workItems) ? queryResult.workItems : [];
+    for (const workItem of workItems) {
+      pushId(workItem?.id);
+    }
+
+    const workItemRelations = Array.isArray(queryResult?.workItemRelations)
+      ? queryResult.workItemRelations
+      : [];
+    for (const relation of workItemRelations) {
+      pushId(relation?.source?.id);
+      pushId(relation?.target?.id);
+    }
+
+    return Array.from(ids.values()).sort((a, b) => a - b);
+  }
+
+  private appendAsOfToWiql(wiql: string, asOfIso: string): string {
+    const raw = String(wiql || '').trim();
+    if (!raw) {
+      return '';
+    }
+    const withoutAsOf = raw.replace(/\s+ASOF\s+'[^']*'/i, '');
+    return `${withoutAsOf} ASOF '${asOfIso}'`;
+  }
+
+  private appendApiVersion(url: string, apiVersion: string | null): string {
+    if (!apiVersion) {
+      return url;
+    }
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}api-version=${encodeURIComponent(apiVersion)}`;
+  }
+
+  private shouldRetryHistoricalWithLowerVersion(error: any): boolean {
+    const status = Number(error?.response?.status || 0);
+    if (status === 401 || status === 403) {
+      return false;
+    }
+    if (status >= 500) {
+      return true;
+    }
+    if ([400, 404, 405, 406, 410].includes(status)) {
+      return true;
+    }
+    const message = String(error?.response?.data?.message || error?.message || '');
+    return /api[- ]?version/i.test(message);
+  }
+
+  private async withHistoricalApiVersionFallback<T>(
+    operation: string,
+    task: (apiVersion: string | null) => Promise<T>,
+  ): Promise<{ apiVersion: string | null; result: T }> {
+    let lastError: any = null;
+    for (const apiVersion of HISTORICAL_WIT_API_VERSIONS) {
+      try {
+        const result = await task(apiVersion);
+        return { apiVersion, result };
+      } catch (error: any) {
+        lastError = error;
+        const status = Number(error?.response?.status || 0);
+        const apiVersionLabel = apiVersion || 'default';
+        logger.warn(
+          `[${operation}] failed with api-version=${apiVersionLabel}${status ? ` (status ${status})` : ''}`,
+        );
+        if (
+          !this.shouldRetryHistoricalWithLowerVersion(error) ||
+          apiVersion === HISTORICAL_WIT_API_VERSIONS[HISTORICAL_WIT_API_VERSIONS.length - 1]
+        ) {
+          throw error;
+        }
+      }
+    }
+    throw lastError || new Error(`[${operation}] Failed to execute historical request`);
+  }
+
+  private chunkHistoricalWorkItemIds(ids: number[]): number[][] {
+    const chunks: number[][] = [];
+    for (let i = 0; i < ids.length; i += HISTORICAL_BATCH_MAX_IDS) {
+      chunks.push(ids.slice(i, i + HISTORICAL_BATCH_MAX_IDS));
+    }
+    return chunks;
+  }
+
+  private normalizeHistoricalQueryPath(path: string): string {
+    const rawPath = String(path || '').trim();
+    const normalizedRoot = rawPath.toLowerCase();
+    if (
+      rawPath === '' ||
+      normalizedRoot === 'shared' ||
+      normalizedRoot === 'shared queries'
+    ) {
+      return 'Shared%20Queries';
+    }
+
+    const segments = rawPath
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter((segment) => segment.trim() !== '')
+      .map((segment) => {
+        try {
+          return encodeURIComponent(decodeURIComponent(segment));
+        } catch (error) {
+          return encodeURIComponent(segment);
+        }
+      });
+    return segments.join('/');
+  }
+
+  private normalizeHistoricalQueryRoot(root: any): any {
+    if (!root) return root;
+    if (Array.isArray(root?.children) || typeof root?.isFolder === 'boolean') {
+      return root;
+    }
+    if (Array.isArray(root?.value)) {
+      return {
+        id: 'root',
+        name: 'Shared Queries',
+        isFolder: true,
+        children: root.value,
+      };
+    }
+    return root;
+  }
+
+  private async fetchHistoricalWorkItemsBatch(
+    project: string,
+    ids: number[],
+    asOf: string,
+    apiVersion: string | null,
+  ): Promise<any[]> {
+    const workItemsBatchUrl = this.appendApiVersion(
+      `${this.orgUrl}${project}/_apis/wit/workitemsbatch`,
+      apiVersion,
+    );
+    const idChunks = this.chunkHistoricalWorkItemIds(ids);
+    try {
+      const batchResponses = await Promise.all(
+        idChunks.map((idChunk) =>
+          this.limit(() =>
+            TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
+              ids: idChunk,
+              asOf,
+              $expand: 'Relations',
+              fields: HISTORICAL_WORK_ITEM_FIELDS,
+            }),
+          ),
+        ),
+      );
+      return batchResponses.flatMap((batch) => (Array.isArray(batch?.value) ? batch.value : []));
+    } catch (error: any) {
+      logger.warn(
+        `[historical-workitems] workitemsbatch failed${
+          apiVersion ? ` (api-version=${apiVersion})` : ''
+        }, falling back to per-item retrieval: ${error?.message || error}`,
+      );
+      const asOfParam = encodeURIComponent(asOf);
+      const responses = await Promise.all(
+        ids.map((id) =>
+          this.limit(() => {
+            const itemUrl = this.appendApiVersion(
+              `${this.orgUrl}${project}/_apis/wit/workitems/${id}?$expand=Relations&asOf=${asOfParam}`,
+              apiVersion,
+            );
+            return TFSServices.getItemContent(itemUrl, this.token);
+          }),
+        ),
+      );
+      return responses.filter((item) => item && typeof item === 'object');
+    }
+  }
+
+  private async executeHistoricalQueryAtAsOf(
+    project: string,
+    queryId: string,
+    asOfIso: string,
+  ): Promise<{ queryDefinition: any; queryResult: any; apiVersion: string | null }> {
+    const { apiVersion, result } = await this.withHistoricalApiVersionFallback(
+      'historical-query-execution',
+      async (resolvedApiVersion) => {
+        const queryDefUrl = this.appendApiVersion(
+          `${this.orgUrl}${project}/_apis/wit/queries/${encodeURIComponent(queryId)}?$expand=all`,
+          resolvedApiVersion,
+        );
+        const queryDefinition = await TFSServices.getItemContent(queryDefUrl, this.token);
+
+        const wiqlText = String(queryDefinition?.wiql || '').trim();
+        let queryResult: any = null;
+        try {
+          if (!wiqlText) {
+            throw new Error(`Could not resolve WIQL text for query ${queryId}`);
+          }
+          const wiqlWithAsOf = this.appendAsOfToWiql(wiqlText, asOfIso);
+          if (!wiqlWithAsOf) {
+            throw new Error(`Could not build WIQL for historical query ${queryId}`);
+          }
+          const executeUrl = this.appendApiVersion(
+            `${this.orgUrl}${project}/_apis/wit/wiql?$top=2147483646&timePrecision=true`,
+            resolvedApiVersion,
+          );
+          queryResult = await TFSServices.getItemContent(executeUrl, this.token, 'post', {
+            query: wiqlWithAsOf,
+          });
+        } catch (inlineWiqlError: any) {
+          logger.warn(
+            `[historical-query-execution] inline WIQL failed for query ${queryId}${
+              resolvedApiVersion ? ` (api-version=${resolvedApiVersion})` : ''
+            }, trying WIQL-by-id fallback: ${inlineWiqlError?.message || inlineWiqlError}`,
+          );
+          const executeByIdUrl = this.appendApiVersion(
+            `${this.orgUrl}${project}/_apis/wit/wiql/${encodeURIComponent(
+              queryId,
+            )}?$top=2147483646&timePrecision=true&asOf=${encodeURIComponent(asOfIso)}`,
+            resolvedApiVersion,
+          );
+          queryResult = await TFSServices.getItemContent(executeByIdUrl, this.token);
+        }
+        return { queryDefinition, queryResult };
+      },
+    );
+    return { ...result, apiVersion };
+  }
+
+  private toHistoricalWorkItemSnapshot(project: string, workItem: any): HistoricalWorkItemSnapshot {
+    const fields = (workItem?.fields || {}) as Record<string, unknown>;
+    const id = Number(workItem?.id || fields['System.Id'] || 0);
+    const workItemType = this.normalizeHistoricalCompareValue(fields['System.WorkItemType']);
+    const testPhaseRaw =
+      fields['Elisra.TestPhase'] ??
+      fields['Custom.TestPhase'] ??
+      fields['Elisra.Testphase'] ??
+      fields['Custom.Testphase'];
+    const relatedLinkCount = Array.isArray(workItem?.relations) ? workItem.relations.length : 0;
+
+    return {
+      id,
+      workItemType,
+      title: this.normalizeHistoricalCompareValue(fields['System.Title']),
+      state: this.normalizeHistoricalCompareValue(fields['System.State']),
+      areaPath: this.normalizeHistoricalCompareValue(fields['System.AreaPath']),
+      iterationPath: this.normalizeHistoricalCompareValue(fields['System.IterationPath']),
+      versionId: this.toHistoricalRevision(workItem?.rev ?? fields['System.Rev']),
+      versionTimestamp: this.normalizeHistoricalCompareValue(fields['System.ChangedDate']),
+      description: this.normalizeHistoricalCompareValue(fields['System.Description']),
+      steps: this.normalizeHistoricalCompareValue(fields['Microsoft.VSTS.TCM.Steps']),
+      testPhase: this.normalizeTestPhaseValue(testPhaseRaw),
+      relatedLinkCount,
+      workItemUrl: `${this.orgUrl}${project}/_workitems/edit/${id}`,
+    };
+  }
+
+  private async getHistoricalSnapshot(
+    project: string,
+    queryId: string,
+    asOfInput: string,
+  ): Promise<HistoricalSnapshotResult> {
+    const asOf = this.normalizeHistoricalAsOf(asOfInput);
+    const { queryDefinition, queryResult, apiVersion } = await this.executeHistoricalQueryAtAsOf(
+      project,
+      queryId,
+      asOf,
+    );
+    const ids = this.extractHistoricalWorkItemIds(queryResult);
+
+    if (ids.length === 0) {
+      return {
+        queryId,
+        queryName: String(queryDefinition?.name || queryId),
+        asOf,
+        total: 0,
+        rows: [],
+        snapshotMap: new Map<number, HistoricalWorkItemSnapshot>(),
+      };
+    }
+
+    const values = await this.fetchHistoricalWorkItemsBatch(project, ids, asOf, apiVersion);
+    const rows = values
+      .map((workItem: any) => this.toHistoricalWorkItemSnapshot(project, workItem))
+      .sort((a: HistoricalWorkItemSnapshot, b: HistoricalWorkItemSnapshot) => a.id - b.id);
+    const snapshotMap = new Map<number, HistoricalWorkItemSnapshot>();
+    for (const row of rows) {
+      snapshotMap.set(row.id, row);
+    }
+
+    return {
+      queryId,
+      queryName: String(queryDefinition?.name || queryId),
+      asOf,
+      total: rows.length,
+      rows,
+      snapshotMap,
+    };
+  }
+
+  private collectHistoricalQueries(root: any, parentPath = ''): HistoricalQueryListItem[] {
+    const items: HistoricalQueryListItem[] = [];
+    if (!root) {
+      return items;
+    }
+
+    const name = String(root?.name || '').trim();
+    const currentPath = parentPath && name ? `${parentPath}/${name}` : name || parentPath;
+
+    if (!root?.isFolder) {
+      const id = String(root?.id || '').trim();
+      if (id) {
+        items.push({
+          id,
+          queryName: name || id,
+          path: parentPath || 'Shared Queries',
+        });
+      }
+      return items;
+    }
+
+    const children = Array.isArray(root?.children) ? root.children : [];
+    for (const child of children) {
+      items.push(...this.collectHistoricalQueries(child, currentPath || 'Shared Queries'));
+    }
+    return items;
+  }
+
+  /**
+   * Returns a flat list of shared queries for historical/as-of execution.
+   */
+  async GetHistoricalQueries(project: string, path: string = 'shared'): Promise<HistoricalQueryListItem[]> {
+    const normalizedPath = this.normalizeHistoricalQueryPath(path);
+    // Azure DevOps WIT query tree endpoint enforces $depth range 0..2.
+    const depth = 2;
+    const { result: root } = await this.withHistoricalApiVersionFallback('historical-queries-list', (apiVersion) => {
+      const url = this.appendApiVersion(
+        `${this.orgUrl}${project}/_apis/wit/queries/${normalizedPath}?$depth=${depth}&$expand=all`,
+        apiVersion,
+      );
+      return TFSServices.getItemContent(url, this.token);
+    });
+    const normalizedRoot = this.normalizeHistoricalQueryRoot(root);
+    const items = this.collectHistoricalQueries(normalizedRoot).filter((query) => query.id !== '');
+    items.sort((a, b) => {
+      const byPath = a.path.localeCompare(b.path);
+      if (byPath !== 0) return byPath;
+      return a.queryName.localeCompare(b.queryName);
+    });
+    return items;
+  }
+
+  /**
+   * Runs a shared query as-of a specific date-time and returns a flat work-item table snapshot.
+   */
+  async GetHistoricalQueryResults(queryId: string, project: string, asOfInput: string): Promise<any> {
+    const snapshot = await this.getHistoricalSnapshot(project, queryId, asOfInput);
+    return {
+      queryId: snapshot.queryId,
+      queryName: snapshot.queryName,
+      asOf: snapshot.asOf,
+      total: snapshot.total,
+      rows: snapshot.rows.map((row) => ({
+        id: row.id,
+        workItemType: row.workItemType,
+        title: row.title,
+        state: row.state,
+        areaPath: row.areaPath,
+        iterationPath: row.iterationPath,
+        versionId: row.versionId,
+        versionTimestamp: row.versionTimestamp,
+        workItemUrl: row.workItemUrl,
+      })),
+    };
+  }
+
+  /**
+   * Compares a shared query between two date-time baselines using the feature's noise-control fields.
+   */
+  async CompareHistoricalQueryResults(
+    queryId: string,
+    project: string,
+    baselineAsOfInput: string,
+    compareToAsOfInput: string,
+  ): Promise<any> {
+    const [baseline, compareTo] = await Promise.all([
+      this.getHistoricalSnapshot(project, queryId, baselineAsOfInput),
+      this.getHistoricalSnapshot(project, queryId, compareToAsOfInput),
+    ]);
+
+    const allIds = new Set<number>([
+      ...Array.from(baseline.snapshotMap.keys()),
+      ...Array.from(compareTo.snapshotMap.keys()),
+    ]);
+    const sortedIds = Array.from(allIds.values()).sort((a, b) => a - b);
+
+    const rows = sortedIds.map((id) => {
+      const baselineRow = baseline.snapshotMap.get(id) || null;
+      const compareToRow = compareTo.snapshotMap.get(id) || null;
+      const workItemType = compareToRow?.workItemType || baselineRow?.workItemType || '';
+      const isTestCase = this.isTestCaseType(workItemType);
+
+      if (baselineRow && !compareToRow) {
+        return {
+          id,
+          workItemType,
+          title: baselineRow.title,
+          baselineRevisionId: baselineRow.versionId,
+          compareToRevisionId: null,
+          compareStatus: 'Deleted',
+          changedFields: [],
+          differences: [],
+          workItemUrl: baselineRow.workItemUrl,
+        };
+      }
+
+      if (!baselineRow && compareToRow) {
+        return {
+          id,
+          workItemType,
+          title: compareToRow.title,
+          baselineRevisionId: null,
+          compareToRevisionId: compareToRow.versionId,
+          compareStatus: 'Added',
+          changedFields: [],
+          differences: [],
+          workItemUrl: compareToRow.workItemUrl,
+        };
+      }
+
+      const safeBaseline = baselineRow as HistoricalWorkItemSnapshot;
+      const safeCompareTo = compareToRow as HistoricalWorkItemSnapshot;
+      const changedFields: string[] = [];
+
+      if (safeBaseline.description !== safeCompareTo.description) {
+        changedFields.push('Description');
+      }
+      if (safeBaseline.title !== safeCompareTo.title) {
+        changedFields.push('Title');
+      }
+      if (safeBaseline.state !== safeCompareTo.state) {
+        changedFields.push('State');
+      }
+      if (isTestCase && safeBaseline.steps !== safeCompareTo.steps) {
+        changedFields.push('Steps');
+      }
+      if (safeBaseline.testPhase !== safeCompareTo.testPhase) {
+        changedFields.push('Test Phase');
+      }
+      if (isTestCase && safeBaseline.relatedLinkCount !== safeCompareTo.relatedLinkCount) {
+        changedFields.push('Related Link Count');
+      }
+
+      const differences = changedFields.map((field) => {
+        switch (field) {
+          case 'Description':
+            return { field, baseline: safeBaseline.description, compareTo: safeCompareTo.description };
+          case 'Title':
+            return { field, baseline: safeBaseline.title, compareTo: safeCompareTo.title };
+          case 'State':
+            return { field, baseline: safeBaseline.state, compareTo: safeCompareTo.state };
+          case 'Steps':
+            return { field, baseline: safeBaseline.steps, compareTo: safeCompareTo.steps };
+          case 'Test Phase':
+            return { field, baseline: safeBaseline.testPhase, compareTo: safeCompareTo.testPhase };
+          case 'Related Link Count':
+            return {
+              field,
+              baseline: String(safeBaseline.relatedLinkCount),
+              compareTo: String(safeCompareTo.relatedLinkCount),
+            };
+          default:
+            return { field, baseline: '', compareTo: '' };
+        }
+      });
+
+      return {
+        id,
+        workItemType,
+        title: safeCompareTo.title || safeBaseline.title,
+        baselineRevisionId: safeBaseline.versionId,
+        compareToRevisionId: safeCompareTo.versionId,
+        compareStatus: changedFields.length > 0 ? 'Changed' : 'No changes',
+        changedFields,
+        differences,
+        workItemUrl: safeCompareTo.workItemUrl || safeBaseline.workItemUrl,
+      };
+    });
+
+    const summary = rows.reduce(
+      (acc, row) => {
+        if (row.compareStatus === 'Added') acc.addedCount += 1;
+        else if (row.compareStatus === 'Deleted') acc.deletedCount += 1;
+        else if (row.compareStatus === 'Changed') acc.changedCount += 1;
+        else acc.noChangeCount += 1;
+        return acc;
+      },
+      { addedCount: 0, deletedCount: 0, changedCount: 0, noChangeCount: 0 },
+    );
+
+    return {
+      queryId,
+      queryName: compareTo.queryName || baseline.queryName || queryId,
+      baseline: {
+        asOf: baseline.asOf,
+        total: baseline.total,
+      },
+      compareTo: {
+        asOf: compareTo.asOf,
+        total: compareTo.total,
+      },
+      summary: {
+        ...summary,
+        updatedCount: summary.changedCount,
+      },
+      rows,
+    };
   }
 
   async PopulateWorkItemsByIds(workItemsArray: any[] = [], projectName: string = ''): Promise<any[]> {

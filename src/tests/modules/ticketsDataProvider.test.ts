@@ -451,6 +451,25 @@ describe('TicketsDataProvider', () => {
       });
     });
 
+    it('should fetch historical shared queries as a generic query tree', async () => {
+      const mockPath = '';
+      const mockDocType = 'historical-query';
+      const mockQueries = { id: 'root', name: 'Shared Queries' } as any;
+      const mockHistoricalTree = { id: 'root', title: 'Shared Queries', children: [] } as any;
+
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockQueries);
+      jest.spyOn(ticketsDataProvider as any, 'ensureQueryChildren').mockResolvedValueOnce(mockQueries);
+      jest
+        .spyOn(ticketsDataProvider as any, 'structureAllQueryPath')
+        .mockResolvedValueOnce({ tree1: mockHistoricalTree, tree2: null });
+
+      const result = await ticketsDataProvider.GetSharedQueries(mockProject, mockPath, mockDocType);
+
+      expect(result).toEqual({
+        historicalQueryTree: [mockHistoricalTree],
+      });
+    });
+
     it('should handle errors', async () => {
       // Arrange
       const mockPath = '';
@@ -2220,7 +2239,7 @@ describe('TicketsDataProvider', () => {
   describe('GetSharedQueries - path variations', () => {
     it('should use path in URL when provided', async () => {
       // Arrange
-      const mockPath = 'My Queries/Test';
+      const mockPath = 'Custom Folder/Test';
       const mockQueries = { children: [] };
       (TFSServices.getItemContent as jest.Mock).mockResolvedValue(mockQueries);
 
@@ -2229,6 +2248,36 @@ describe('TicketsDataProvider', () => {
 
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(expect.stringContaining(mockPath), mockToken);
+    });
+
+    it('should treat "Shared Queries" alias as shared root by default', async () => {
+      // Arrange
+      const mockQueries = { children: [] };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(mockQueries);
+
+      // Act
+      await ticketsDataProvider.GetSharedQueries(mockProject, 'Shared Queries', '');
+
+      // Assert
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        expect.stringContaining('/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all'),
+        mockToken,
+      );
+    });
+
+    it('should treat symbolic "shared" path as shared root', async () => {
+      // Arrange
+      const mockQueries = { children: [] };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(mockQueries);
+
+      // Act
+      await ticketsDataProvider.GetSharedQueries(mockProject, 'shared', '');
+
+      // Assert
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        expect.stringContaining('/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all'),
+        mockToken,
+      );
     });
   });
 
