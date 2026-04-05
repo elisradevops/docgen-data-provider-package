@@ -1,4 +1,4 @@
-name: "🚀 publish"
+name: '🚀 publish'
 
 on:
   push:
@@ -7,9 +7,13 @@ on:
     paths-ignore:
       - '.github/**'
   workflow_dispatch:
-      
+
 permissions:
   contents: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -20,8 +24,10 @@ jobs:
       - name: 📚 checkout
         uses: actions/checkout@v4
         with:
-          token:  ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
-          
+          token: ${{ secrets.ELISRADEVOPS_ACCESS_TOKEN }}
+          ref: main
+          fetch-depth: 0
+
       - name: 🟢 node
         uses: actions/setup-node@v4
         with:
@@ -35,12 +41,26 @@ jobs:
 
       - run: npm run build
 
-      - name: 'Automated Version Bump'
-        uses: 'phips28/gh-action-bump-version@master'
-        with:
-          commit-message: 'CI: bumps version to {{version}} [skip ci]'
+      - name: Check if current version exists on npm
+        id: check_npm_version
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on npm. Skipping publish and version bump."
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 🚀 publish
+        if: steps.check_npm_version.outputs.already_published != 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
+
+      - name: 'Automated Version Bump'
+        if: steps.check_npm_version.outputs.already_published != 'true'
+        uses: 'phips28/gh-action-bump-version@master'
+        with:
+          commit-message: 'CI: bumps version to {{version}} [skip ci]'
