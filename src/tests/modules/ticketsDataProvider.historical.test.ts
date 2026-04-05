@@ -1,5 +1,6 @@
 import { TFSServices } from '../../helpers/tfs';
 import TicketsDataProvider from '../../modules/TicketsDataProvider';
+import logger from '../../utils/logger';
 
 jest.mock('../../helpers/tfs');
 jest.mock('../../utils/logger', () => ({
@@ -47,7 +48,9 @@ describe('TicketsDataProvider historical queries', () => {
     const result = await provider.GetHistoricalQueries(project);
 
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-      expect.stringContaining(`/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=7.1`),
+      expect.stringContaining(
+        `/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=7.1`,
+      ),
       token,
     );
     expect(result).toEqual([
@@ -110,11 +113,15 @@ describe('TicketsDataProvider historical queries', () => {
 
     expect(result).toEqual([{ id: 'q-51', queryName: 'V5 Query', path: 'Shared Queries' }]);
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-      expect.stringContaining(`/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=7.1`),
+      expect.stringContaining(
+        `/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=7.1`,
+      ),
       token,
     );
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-      expect.stringContaining(`/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=5.1`),
+      expect.stringContaining(
+        `/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=5.1`,
+      ),
       token,
     );
   });
@@ -130,7 +137,9 @@ describe('TicketsDataProvider historical queries', () => {
     await provider.GetHistoricalQueries(project, 'Shared Queries');
 
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-      expect.stringContaining(`/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=7.1`),
+      expect.stringContaining(
+        `/${project}/_apis/wit/queries/Shared%20Queries?$depth=2&$expand=all&api-version=7.1`,
+      ),
       token,
     );
   });
@@ -146,7 +155,11 @@ describe('TicketsDataProvider historical queries', () => {
           expect(String(data?.query || '')).toContain(`ASOF '${asOfIso}'`);
           return { workItems: [{ id: 101 }, { id: 102 }] };
         }
-        if (url.includes('/_apis/wit/workitemsbatch') && url.includes('api-version=7.1') && method === 'post') {
+        if (
+          url.includes('/_apis/wit/workitemsbatch') &&
+          url.includes('api-version=7.1') &&
+          method === 'post'
+        ) {
           expect(data.asOf).toBe(asOfIso);
           return {
             value: [
@@ -222,7 +235,11 @@ describe('TicketsDataProvider historical queries', () => {
           expect(String(data?.query || '')).toContain(`ASOF '${asOfIso}'`);
           return { workItems: allIds.map((id) => ({ id })) };
         }
-        if (url.includes('/_apis/wit/workitemsbatch') && url.includes('api-version=5.1') && method === 'post') {
+        if (
+          url.includes('/_apis/wit/workitemsbatch') &&
+          url.includes('api-version=5.1') &&
+          method === 'post'
+        ) {
           return {
             value: (Array.isArray(data?.ids) ? data.ids : []).map((id: number) => ({
               id,
@@ -268,7 +285,11 @@ describe('TicketsDataProvider historical queries', () => {
           expect(String(data?.query || '')).toContain(`ASOF '${asOfIso}'`);
           return { workItems: [{ id: 101 }, { id: 102 }] };
         }
-        if (url.includes('/_apis/wit/workitemsbatch') && url.includes('api-version=7.1') && method === 'post') {
+        if (
+          url.includes('/_apis/wit/workitemsbatch') &&
+          url.includes('api-version=7.1') &&
+          method === 'post'
+        ) {
           throw {
             response: {
               status: 500,
@@ -322,6 +343,146 @@ describe('TicketsDataProvider historical queries', () => {
     expect(result.rows.map((row: any) => row.id)).toEqual([101, 102]);
   });
 
+  it('GetHistoricalQueryResults skips work items that do not exist at as-of time and logs warning', async () => {
+    const asOfIso = '2026-01-01T10:00:00.000Z';
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-missing-asof') && url.includes('api-version=7.1')) {
+          return { name: 'Missing AsOf Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && url.includes('api-version=7.1') && method === 'post') {
+          expect(String(data?.query || '')).toContain(`ASOF '${asOfIso}'`);
+          return { workItems: [{ id: 101 }, { id: 102 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          throw {
+            response: {
+              status: 500,
+              data: { message: 'workitemsbatch failed' },
+            },
+          };
+        }
+        if (url.includes('/_apis/wit/workitems/101')) {
+          return {
+            id: 101,
+            rev: 3,
+            fields: {
+              'System.WorkItemType': 'Requirement',
+              'System.Title': 'Req 101',
+              'System.State': 'Active',
+              'System.AreaPath': 'Proj\\Area',
+              'System.IterationPath': 'Proj\\Iter',
+              'System.ChangedDate': '2025-12-30T10:00:00Z',
+            },
+            relations: [],
+          };
+        }
+        if (url.includes('/_apis/wit/workitems/102')) {
+          throw {
+            response: {
+              status: 404,
+              data: {
+                message:
+                  'The work item 102 does not exist at time 12/31/2025 11:56:00 PM. It might have been deleted.',
+              },
+            },
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.GetHistoricalQueryResults('q-missing-asof', project, asOfIso);
+
+    expect(result.total).toBe(1);
+    expect(result.skippedWorkItemsCount).toBe(1);
+    expect(result.rows.map((row: any) => row.id)).toEqual([101]);
+    expect(
+      (logger.warn as jest.Mock).mock.calls.some((call) =>
+        String(call[0]).includes('skipping work item 102'),
+      ),
+    ).toBe(true);
+  });
+
+  it('GetHistoricalQueryResults returns empty result when all work items are missing at as-of time', async () => {
+    const asOfIso = '2026-01-01T10:00:00.000Z';
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-all-missing-asof') && url.includes('api-version=7.1')) {
+          return { name: 'All Missing AsOf Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          expect(String(data?.query || '')).toContain(`ASOF '${asOfIso}'`);
+          return { workItems: [{ id: 201 }, { id: 202 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          throw {
+            response: {
+              status: 500,
+              data: { message: 'workitemsbatch failed' },
+            },
+          };
+        }
+        if (url.includes('/_apis/wit/workitems/201') || url.includes('/_apis/wit/workitems/202')) {
+          const id = url.includes('/201') ? 201 : 202;
+          throw {
+            response: {
+              status: 404,
+              data: {
+                message: `The work item ${id} does not exist at time 12/31/2025 11:56:00 PM.`,
+              },
+            },
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.GetHistoricalQueryResults('q-all-missing-asof', project, asOfIso);
+
+    expect(result.total).toBe(0);
+    expect(result.rows).toEqual([]);
+    expect(result.skippedWorkItemsCount).toBe(2);
+  });
+
+  it('GetHistoricalQueryResults still throws for non-missing historical errors', async () => {
+    const asOfIso = '2026-01-01T10:00:00.000Z';
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-auth-error') && url.includes('api-version=7.1')) {
+          return { name: 'Auth Error Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          expect(String(data?.query || '')).toContain(`ASOF '${asOfIso}'`);
+          return { workItems: [{ id: 901 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          throw {
+            response: {
+              status: 500,
+              data: { message: 'workitemsbatch failed' },
+            },
+          };
+        }
+        if (url.includes('/_apis/wit/workitems/901')) {
+          throw {
+            response: {
+              status: 401,
+              data: { message: 'Unauthorized' },
+            },
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    await expect(provider.GetHistoricalQueryResults('q-auth-error', project, asOfIso)).rejects.toEqual(
+      expect.objectContaining({
+        response: expect.objectContaining({ status: 401 }),
+      }),
+    );
+  });
+
   it('GetHistoricalQueryResults falls back to WIQL-by-id when inline WIQL fails', async () => {
     const asOfIso = '2026-01-01T10:00:00.000Z';
     (TFSServices.getItemContent as jest.Mock).mockImplementation(
@@ -342,7 +503,11 @@ describe('TicketsDataProvider historical queries', () => {
           expect(url).toContain(`asOf=${encodeURIComponent(asOfIso)}`);
           return { workItems: [{ id: 3001 }] };
         }
-        if (url.includes('/_apis/wit/workitemsbatch') && url.includes('api-version=7.1') && method === 'post') {
+        if (
+          url.includes('/_apis/wit/workitemsbatch') &&
+          url.includes('api-version=7.1') &&
+          method === 'post'
+        ) {
           return {
             value: [
               {
@@ -539,5 +704,173 @@ describe('TicketsDataProvider historical queries', () => {
       noChangeCount: 1,
       updatedCount: 2,
     });
+  });
+
+  it('CompareHistoricalQueryResults supports missing work items on one side and reports Added/Deleted', async () => {
+    const baselineIso = '2025-12-20T00:00:00.000Z';
+    const compareIso = '2025-12-30T00:00:00.000Z';
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-compare-missing-side') && url.includes('api-version=7.1')) {
+          return { name: 'Compare Missing Side', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          const query = String(data?.query || '');
+          if (query.includes(baselineIso)) {
+            return { workItems: [{ id: 1001 }, { id: 1002 }, { id: 1003 }] };
+          }
+          if (query.includes(compareIso)) {
+            return { workItems: [{ id: 1001 }, { id: 1002 }, { id: 1003 }] };
+          }
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          throw {
+            response: {
+              status: 500,
+              data: { message: 'workitemsbatch failed' },
+            },
+          };
+        }
+        if (url.includes('/_apis/wit/workitems/1001')) {
+          return {
+            id: 1001,
+            rev: 1,
+            fields: {
+              'System.WorkItemType': 'Requirement',
+              'System.Title': 'Stable Item',
+              'System.State': 'Active',
+              'System.ChangedDate': compareIso,
+            },
+            relations: [],
+          };
+        }
+        if (
+          url.includes(`asOf=${encodeURIComponent(baselineIso)}`) &&
+          url.includes('/_apis/wit/workitems/1002')
+        ) {
+          throw {
+            response: {
+              status: 404,
+              data: { message: 'The work item 1002 does not exist at time 12/20/2025 12:00:00 AM.' },
+            },
+          };
+        }
+        if (
+          url.includes(`asOf=${encodeURIComponent(compareIso)}`) &&
+          url.includes('/_apis/wit/workitems/1002')
+        ) {
+          return {
+            id: 1002,
+            rev: 4,
+            fields: {
+              'System.WorkItemType': 'Bug',
+              'System.Title': 'Added Later',
+              'System.State': 'New',
+              'System.ChangedDate': compareIso,
+            },
+            relations: [],
+          };
+        }
+        if (
+          url.includes(`asOf=${encodeURIComponent(baselineIso)}`) &&
+          url.includes('/_apis/wit/workitems/1003')
+        ) {
+          return {
+            id: 1003,
+            rev: 2,
+            fields: {
+              'System.WorkItemType': 'Bug',
+              'System.Title': 'Deleted Later',
+              'System.State': 'Active',
+              'System.ChangedDate': baselineIso,
+            },
+            relations: [],
+          };
+        }
+        if (
+          url.includes(`asOf=${encodeURIComponent(compareIso)}`) &&
+          url.includes('/_apis/wit/workitems/1003')
+        ) {
+          throw {
+            response: {
+              status: 404,
+              data: { message: 'The work item 1003 does not exist at time 12/30/2025 12:00:00 AM.' },
+            },
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.CompareHistoricalQueryResults(
+      'q-compare-missing-side',
+      project,
+      baselineIso,
+      compareIso,
+    );
+
+    const byId = new Map<number, any>(result.rows.map((row: any) => [row.id, row]));
+    expect(byId.get(1001)?.compareStatus).toBe('No changes');
+    expect(byId.get(1002)?.compareStatus).toBe('Added');
+    expect(byId.get(1003)?.compareStatus).toBe('Deleted');
+    expect(result.skippedWorkItems).toEqual(
+      expect.objectContaining({ baselineCount: 1, compareToCount: 1, totalDistinct: 2 }),
+    );
+  });
+
+  it('CompareHistoricalQueryResults excludes work items missing at both dates and can return empty set', async () => {
+    const baselineIso = '2025-01-01T00:00:00.000Z';
+    const compareIso = '2025-01-02T00:00:00.000Z';
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-compare-all-missing') && url.includes('api-version=7.1')) {
+          return { name: 'Compare All Missing', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          const query = String(data?.query || '');
+          if (query.includes(baselineIso) || query.includes(compareIso)) {
+            return { workItems: [{ id: 777 }] };
+          }
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          throw {
+            response: {
+              status: 500,
+              data: { message: 'workitemsbatch failed' },
+            },
+          };
+        }
+        if (url.includes('/_apis/wit/workitems/777')) {
+          throw {
+            response: {
+              status: 404,
+              data: { message: 'The work item 777 does not exist at time 01/01/2025 12:00:00 AM.' },
+            },
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.CompareHistoricalQueryResults(
+      'q-compare-all-missing',
+      project,
+      baselineIso,
+      compareIso,
+    );
+
+    expect(result.rows).toEqual([]);
+    expect(result.summary).toEqual({
+      addedCount: 0,
+      deletedCount: 0,
+      changedCount: 0,
+      noChangeCount: 0,
+      updatedCount: 0,
+    });
+    expect(result.skippedWorkItems).toEqual(
+      expect.objectContaining({ baselineCount: 1, compareToCount: 1, totalDistinct: 1 }),
+    );
   });
 });
