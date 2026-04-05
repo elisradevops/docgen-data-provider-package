@@ -56,6 +56,7 @@ type HistoricalSnapshotResult = {
   total: number;
   rows: HistoricalWorkItemSnapshot[];
   snapshotMap: Map<number, HistoricalWorkItemSnapshot>;
+  skippedWorkItemIds: number[];
 };
 
 const HISTORICAL_WIT_API_VERSIONS: Array<string | null> = ['7.1', '5.1', null];
@@ -1611,7 +1612,9 @@ export default class TicketsDataProvider {
   }
 
   private isTestCaseType(workItemType: string): boolean {
-    const normalized = String(workItemType || '').trim().toLowerCase();
+    const normalized = String(workItemType || '')
+      .trim()
+      .toLowerCase();
     return normalized === 'test case' || normalized === 'testcase';
   }
 
@@ -1719,11 +1722,7 @@ export default class TicketsDataProvider {
   private normalizeHistoricalQueryPath(path: string): string {
     const rawPath = String(path || '').trim();
     const normalizedRoot = rawPath.toLowerCase();
-    if (
-      rawPath === '' ||
-      normalizedRoot === 'shared' ||
-      normalizedRoot === 'shared queries'
-    ) {
+    if (rawPath === '' || normalizedRoot === 'shared' || normalizedRoot === 'shared queries') {
       return 'Shared%20Queries';
     }
 
@@ -1757,12 +1756,39 @@ export default class TicketsDataProvider {
     return root;
   }
 
+  private historicalErrorMessage(error: any): string {
+    return String(error?.response?.data?.message || error?.message || error || '').trim();
+  }
+
+  private isHistoricalMissingWorkItemError(error: any, workItemId: number): boolean {
+    const status = Number(error?.response?.status || error?.status || 0);
+    const message = this.historicalErrorMessage(error);
+    if (!message) {
+      return false;
+    }
+
+    const mentionsWorkItem = /\bwork\s*item\b/i.test(message);
+    const mentionsId = message.includes(String(workItemId));
+    const missingPattern = /does not exist(?: at time)?|not found|has been deleted|was deleted/i;
+    const hasMissingIndicator = missingPattern.test(message);
+
+    if (!mentionsWorkItem || !mentionsId || !hasMissingIndicator) {
+      return false;
+    }
+
+    if (/at time/i.test(message)) {
+      return true;
+    }
+
+    return status === 404 || status === 410;
+  }
+
   private async fetchHistoricalWorkItemsBatch(
     project: string,
     ids: number[],
     asOf: string,
     apiVersion: string | null,
-  ): Promise<any[]> {
+  ): Promise<{ items: any[]; skippedWorkItemIds: number[] }> {
     const workItemsBatchUrl = this.appendApiVersion(
       `${this.orgUrl}${project}/_apis/wit/workitemsbatch`,
       apiVersion,
@@ -1781,7 +1807,10 @@ export default class TicketsDataProvider {
           ),
         ),
       );
-      return batchResponses.flatMap((batch) => (Array.isArray(batch?.value) ? batch.value : []));
+      return {
+        items: batchResponses.flatMap((batch) => (Array.isArray(batch?.value) ? batch.value : [])),
+        skippedWorkItemIds: [],
+      };
     } catch (error: any) {
       logger.warn(
         `[historical-workitems] workitemsbatch failed${
@@ -1791,16 +1820,32 @@ export default class TicketsDataProvider {
       const asOfParam = encodeURIComponent(asOf);
       const responses = await Promise.all(
         ids.map((id) =>
-          this.limit(() => {
+          this.limit(async () => {
             const itemUrl = this.appendApiVersion(
               `${this.orgUrl}${project}/_apis/wit/workitems/${id}?$expand=Relations&asOf=${asOfParam}`,
               apiVersion,
             );
-            return TFSServices.getItemContent(itemUrl, this.token);
+            try {
+              const item = await TFSServices.getItemContent(itemUrl, this.token);
+              return { id, item, skipped: false };
+            } catch (itemError: any) {
+              if (this.isHistoricalMissingWorkItemError(itemError, id)) {
+                logger.warn(
+                  `[historical-workitems] skipping work item ${id} for asOf ${asOf}: ${this.historicalErrorMessage(itemError)}`,
+                );
+                return { id, item: null, skipped: true };
+              }
+              throw itemError;
+            }
           }),
         ),
       );
-      return responses.filter((item) => item && typeof item === 'object');
+      return {
+        items: responses
+          .filter((entry) => !entry.skipped && entry.item && typeof entry.item === 'object')
+          .map((entry) => entry.item),
+        skippedWorkItemIds: responses.filter((entry) => entry.skipped).map((entry) => entry.id),
+      };
     }
   }
 
@@ -1904,10 +1949,16 @@ export default class TicketsDataProvider {
         total: 0,
         rows: [],
         snapshotMap: new Map<number, HistoricalWorkItemSnapshot>(),
+        skippedWorkItemIds: [],
       };
     }
 
-    const values = await this.fetchHistoricalWorkItemsBatch(project, ids, asOf, apiVersion);
+    const { items: values, skippedWorkItemIds } = await this.fetchHistoricalWorkItemsBatch(
+      project,
+      ids,
+      asOf,
+      apiVersion,
+    );
     const rows = values
       .map((workItem: any) => this.toHistoricalWorkItemSnapshot(project, workItem))
       .sort((a: HistoricalWorkItemSnapshot, b: HistoricalWorkItemSnapshot) => a.id - b.id);
@@ -1923,6 +1974,7 @@ export default class TicketsDataProvider {
       total: rows.length,
       rows,
       snapshotMap,
+      skippedWorkItemIds,
     };
   }
 
@@ -1961,13 +2013,16 @@ export default class TicketsDataProvider {
     const normalizedPath = this.normalizeHistoricalQueryPath(path);
     // Azure DevOps WIT query tree endpoint enforces $depth range 0..2.
     const depth = 2;
-    const { result: root } = await this.withHistoricalApiVersionFallback('historical-queries-list', (apiVersion) => {
-      const url = this.appendApiVersion(
-        `${this.orgUrl}${project}/_apis/wit/queries/${normalizedPath}?$depth=${depth}&$expand=all`,
-        apiVersion,
-      );
-      return TFSServices.getItemContent(url, this.token);
-    });
+    const { result: root } = await this.withHistoricalApiVersionFallback(
+      'historical-queries-list',
+      (apiVersion) => {
+        const url = this.appendApiVersion(
+          `${this.orgUrl}${project}/_apis/wit/queries/${normalizedPath}?$depth=${depth}&$expand=all`,
+          apiVersion,
+        );
+        return TFSServices.getItemContent(url, this.token);
+      },
+    );
     const normalizedRoot = this.normalizeHistoricalQueryRoot(root);
     const items = this.collectHistoricalQueries(normalizedRoot).filter((query) => query.id !== '');
     items.sort((a, b) => {
@@ -1988,6 +2043,7 @@ export default class TicketsDataProvider {
       queryName: snapshot.queryName,
       asOf: snapshot.asOf,
       total: snapshot.total,
+      skippedWorkItemsCount: snapshot.skippedWorkItemIds.length,
       rows: snapshot.rows.map((row) => ({
         id: row.id,
         workItemType: row.workItemType,
@@ -2140,6 +2196,12 @@ export default class TicketsDataProvider {
       summary: {
         ...summary,
         updatedCount: summary.changedCount,
+      },
+      skippedWorkItems: {
+        baselineCount: baseline.skippedWorkItemIds.length,
+        compareToCount: compareTo.skippedWorkItemIds.length,
+        totalDistinct: new Set<number>([...baseline.skippedWorkItemIds, ...compareTo.skippedWorkItemIds])
+          .size,
       },
       rows,
     };
