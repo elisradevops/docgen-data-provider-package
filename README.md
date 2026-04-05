@@ -63,3 +63,10 @@ The default export is `DgDataProviderAzureDevOps`, which creates module-specific
 - This library uses `axios` and retries some transient failures (timeouts/429/5xx).
 - `TicketsDataProvider.GetSharedQueries()` supports doc-type specific query layouts (e.g. `std`, `str`, `svd`, `srs`, `test-reporter`) and falls back to the provided root path when a dedicated folder is missing.
 - In Node.js, the HTTP client is configured with `rejectUnauthorized: false` in `src/helpers/tfs.ts`, which may be required for some internal setups but is a security tradeoff.
+
+## Release pipeline notes
+
+- GitHub Actions publish workflow runs on `main` pushes (and manual dispatch).
+- `npm publish` runs before version bump/tag.
+- If current `package.json` version already exists on npm, publish and bump are skipped.
+- On failed historical runs, prefer triggering a new run from latest `main` instead of rerunning an old workflow execution.
