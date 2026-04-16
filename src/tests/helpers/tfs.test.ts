@@ -438,10 +438,8 @@ describe('TFSServices', () => {
         method: 'post',
         data,
         headers: {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer abc123',
-          },
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer abc123',
         },
       });
     });
