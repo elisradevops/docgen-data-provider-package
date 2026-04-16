@@ -415,7 +415,7 @@ describe('TFSServices', () => {
         method: 'post',
         auth: { username: '', password: pat },
         data,
-        headers: { headers: { 'Content-Type': 'application/json' } },
+        headers: { 'Content-Type': 'application/json' },
       });
     });
 
@@ -438,10 +438,8 @@ describe('TFSServices', () => {
         method: 'post',
         data,
         headers: {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer abc123',
-          },
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer abc123',
         },
       });
     });

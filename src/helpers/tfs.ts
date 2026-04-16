@@ -57,15 +57,6 @@ export class TFSServices {
 
   private static addAuthHeader(config: AxiosRequestConfig, headerName: string, value: string) {
     const existing = (config.headers ?? {}) as any;
-    if (
-      existing &&
-      typeof existing === 'object' &&
-      existing.headers &&
-      typeof existing.headers === 'object'
-    ) {
-      config.headers = { ...existing, headers: { ...existing.headers, [headerName]: value } };
-      return;
-    }
     config.headers = { ...existing, [headerName]: value };
   }
 
@@ -197,7 +188,7 @@ export class TFSServices {
     pat: string,
     requestMethod: string = 'post',
     data: any,
-    customHeaders: any = { headers: { 'Content-Type': 'application/json' } }
+    customHeaders: any = { 'Content-Type': 'application/json' }
   ): Promise<any> {
     const config: AxiosRequestConfig = {
       url: url,
