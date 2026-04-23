@@ -666,6 +666,31 @@ export default class TicketsDataProvider {
     return { systemRequirementsQueryTree };
   }
 
+  /**
+   * Fetches flat Customer/System requirement queries for SysRS traceability.
+   * OneHop/tree queries are intentionally excluded for this picker.
+   */
+  private async fetchFlatUpstreamQueries(
+    queries: any,
+    excludedFolderNames: string[] = [],
+    allowedTypes: string[] = ['requirement'],
+  ) {
+    const { tree1: systemRequirementsQueryTree } = await this.structureFetchedQueries(
+      queries,
+      false,
+      null,
+      allowedTypes,
+      [],
+      undefined,
+      undefined,
+      false,
+      excludedFolderNames,
+      true,
+      false,
+    );
+    return { systemRequirementsQueryTree };
+  }
+
   private async fetchSrsQueries(rootQueries: any) {
     const srsFolder = await this.findQueryFolderByName(rootQueries, 'srs');
     if (!srsFolder) {
@@ -710,31 +735,54 @@ export default class TicketsDataProvider {
     const { root: sysRsRoot, found: sysRsRootFound } = await this.getDocTypeRoot(rootQueries, 'sysrs');
     logger.debug(`[GetSharedQueries][sysrs] using ${sysRsRootFound ? 'dedicated folder' : 'root queries'}`);
 
-    const systemRequirementsQueries = await this.fetchSystemRequirementQueries(sysRsRoot, [
-      'System To Customer',
-      'System To Subsystem',
-    ]);
-
-    const systemToCustomerFolder = await this.findChildFolderByPossibleNames(sysRsRoot, [
+    const systemToCustomerFolderNames = [
       'system to customer',
       'system-to-customer',
       'system customer',
       'subsystem to system',
       'customer to system',
+    ];
+    const systemToSubsystemFolderNames = ['system to subsystem', 'system-to-subsystem', 'system subsystem'];
+
+    const systemRequirementsQueries = await this.fetchSystemRequirementQueries(sysRsRoot, [
+      ...systemToCustomerFolderNames,
+      ...systemToSubsystemFolderNames,
     ]);
-    const systemToSubsystemFolder = await this.findChildFolderByPossibleNames(sysRsRoot, [
-      'system to subsystem',
-      'system-to-subsystem',
-      'system subsystem',
-    ]);
+
+    const systemToCustomerFolder = await this.findChildFolderByPossibleNames(
+      sysRsRoot,
+      systemToCustomerFolderNames,
+    );
+    const systemToSubsystemFolder = await this.findChildFolderByPossibleNames(
+      sysRsRoot,
+      systemToSubsystemFolderNames,
+    );
 
     const subsystemToSystemRequirementsQueries =
       await this.fetchRequirementsTraceQueriesForFolder(systemToCustomerFolder);
     const systemToSubsystemRequirementsQueries =
       await this.fetchRequirementsTraceQueriesForFolder(systemToSubsystemFolder);
 
+    // Customer/System requirements (traceability table) picker: only scan the dedicated
+    // System-to-Customer folder. If it doesn't exist in the tenant, return null
+    // rather than scanning the whole SysRS root, which would surface unrelated
+    // flat queries into the picker.
+    let customerRequirementsQueries: any = null;
+    if (systemToCustomerFolder) {
+      customerRequirementsQueries = await this.fetchFlatUpstreamQueries(
+        systemToCustomerFolder,
+        [],
+        ['requirement'],
+      );
+    } else {
+      logger.debug(
+        '[GetSharedQueries][sysrs] System-to-Customer folder not found; skipping customer-requirements picker',
+      );
+    }
+
     return {
       systemRequirementsQueries,
+      customerRequirementsQueries,
       subsystemToSystemRequirementsQueries,
       systemToSubsystemRequirementsQueries,
     };
@@ -2494,7 +2542,7 @@ export default class TicketsDataProvider {
    * Recursively structures fetched queries into two hierarchical trees (tree1 and tree2)
    * by matching WIQL against allowed Source/Target types and optional area filters.
    * Supports leaf queries of type:
-   * - oneHop (always)
+   * - oneHop (when includeOneHopQueries === true)
    * - tree (when includeTreeQueries === true)
    * - flat (when includeFlatQueries === true)
    *
@@ -2508,6 +2556,7 @@ export default class TicketsDataProvider {
    * @param includeTreeQueries - Include 'tree' queries in addition to 'oneHop'. Defaults to `false`.
    * @param excludedFolderNames - Optional list of folder names to skip entirely (case-insensitive exact match).
    * @param includeFlatQueries - Include 'flat' queries (matched by [System.WorkItemType] and [System.AreaPath]). Defaults to `false`.
+   * @param includeOneHopQueries - Include 'oneHop' queries. Defaults to `true` for legacy callers.
    * @returns A promise resolving to an object with `tree1` and `tree2` nodes, or `null` for each when none match.
    * @throws Logs an error if an exception occurs during processing.
    */
@@ -2522,6 +2571,7 @@ export default class TicketsDataProvider {
     includeTreeQueries: boolean = false,
     excludedFolderNames: string[] = [],
     includeFlatQueries: boolean = false,
+    includeOneHopQueries: boolean = true,
     workItemTypeCache?: Map<string, string | null>,
   ): Promise<any> {
     try {
@@ -2540,7 +2590,7 @@ export default class TicketsDataProvider {
       if (!rootQuery.hasChildren) {
         const isLeafCandidate =
           !rootQuery.isFolder &&
-          (rootQuery.queryType === 'oneHop' ||
+          ((includeOneHopQueries && rootQuery.queryType === 'oneHop') ||
             (includeTreeQueries && rootQuery.queryType === 'tree') ||
             (includeFlatQueries && rootQuery.queryType === 'flat'));
         if (isLeafCandidate) {
@@ -2636,6 +2686,7 @@ export default class TicketsDataProvider {
           includeTreeQueries,
           excludedFolderNames,
           includeFlatQueries,
+          includeOneHopQueries,
           typeCache,
         );
       }
@@ -2654,6 +2705,7 @@ export default class TicketsDataProvider {
             includeTreeQueries,
             excludedFolderNames,
             includeFlatQueries,
+            includeOneHopQueries,
             typeCache,
           ),
         ),

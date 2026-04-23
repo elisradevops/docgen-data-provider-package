@@ -93,6 +93,66 @@ describe('TicketsDataProvider', () => {
     });
   });
 
+  describe('fetchFlatUpstreamQueries', () => {
+    it('should allow only Requirement flat queries and exclude oneHop/tree query types', async () => {
+      const structureSpy = jest
+        .spyOn(ticketsDataProvider as any, 'structureFetchedQueries')
+        .mockResolvedValue({ tree1: { id: 't1' }, tree2: null });
+
+      await (ticketsDataProvider as any).fetchFlatUpstreamQueries({ hasChildren: false }, []);
+
+      expect(structureSpy.mock.calls[0][3]).toEqual(['requirement']);
+      expect(structureSpy.mock.calls[0][7]).toBe(false);
+      expect(structureSpy.mock.calls[0][9]).toBe(true);
+      expect(structureSpy.mock.calls[0][10]).toBe(false);
+    });
+
+    it('should allow Requirement flat queries for fallback discovery', async () => {
+      const structureSpy = jest
+        .spyOn(ticketsDataProvider as any, 'structureFetchedQueries')
+        .mockResolvedValue({ tree1: { id: 't1' }, tree2: null });
+
+      await (ticketsDataProvider as any).fetchFlatUpstreamQueries(
+        { hasChildren: false },
+        ['system to subsystem', 'system-to-subsystem', 'system subsystem'],
+        ['requirement'],
+      );
+
+      expect(structureSpy.mock.calls[0][3]).toEqual(['requirement']);
+      expect(structureSpy.mock.calls[0][8]).toEqual([
+        'system to subsystem',
+        'system-to-subsystem',
+        'system subsystem',
+      ]);
+      expect(structureSpy.mock.calls[0][9]).toBe(true);
+      expect(structureSpy.mock.calls[0][10]).toBe(false);
+    });
+
+    it('should let structureFetchedQueries exclude oneHop leaves only for flat-only callers', async () => {
+      const result = await (ticketsDataProvider as any).structureFetchedQueries(
+        {
+          id: 'one-hop',
+          hasChildren: false,
+          isFolder: false,
+          queryType: 'oneHop',
+          wiql: "[Source].[System.WorkItemType] = 'Requirement'",
+        },
+        false,
+        null,
+        ['requirement'],
+        [],
+        undefined,
+        undefined,
+        false,
+        [],
+        true,
+        false,
+      );
+
+      expect(result).toEqual({ tree1: null, tree2: null });
+    });
+  });
+
   describe('fetchSysRsQueries', () => {
     it('should use sysrs root, exclude trace folders from system requirements and resolve both trace directions', async () => {
       const rootQueries = { id: 'root' };
@@ -106,6 +166,9 @@ describe('TicketsDataProvider', () => {
       const fetchSystemRequirementQueriesSpy = jest
         .spyOn(ticketsDataProvider as any, 'fetchSystemRequirementQueries')
         .mockResolvedValue({ systemRequirementsQueryTree: { id: 'system-tree' } });
+      const fetchFlatUpstreamQueriesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchFlatUpstreamQueries')
+        .mockResolvedValue({ systemRequirementsQueryTree: { id: 'customer-tree' } });
       const findChildFolderByPossibleNamesSpy = jest
         .spyOn(ticketsDataProvider as any, 'findChildFolderByPossibleNames')
         .mockResolvedValueOnce(subsystemToSystemFolder)
@@ -119,8 +182,14 @@ describe('TicketsDataProvider', () => {
 
       expect(getDocTypeRootSpy).toHaveBeenCalledWith(rootQueries, 'sysrs');
       expect(fetchSystemRequirementQueriesSpy).toHaveBeenCalledWith(sysRsRoot, [
-        'System To Customer',
-        'System To Subsystem',
+        'system to customer',
+        'system-to-customer',
+        'system customer',
+        'subsystem to system',
+        'customer to system',
+        'system to subsystem',
+        'system-to-subsystem',
+        'system subsystem',
       ]);
 
       expect(findChildFolderByPossibleNamesSpy).toHaveBeenNthCalledWith(
@@ -136,15 +205,17 @@ describe('TicketsDataProvider', () => {
 
       expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(1, subsystemToSystemFolder);
       expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(2, systemToSubsystemFolder);
+      expect(fetchFlatUpstreamQueriesSpy).toHaveBeenCalledWith(subsystemToSystemFolder, [], ['requirement']);
 
       expect(result).toEqual({
         systemRequirementsQueries: { systemRequirementsQueryTree: { id: 'system-tree' } },
+        customerRequirementsQueries: { systemRequirementsQueryTree: { id: 'customer-tree' } },
         subsystemToSystemRequirementsQueries: { id: 'fwd-trace-tree' },
         systemToSubsystemRequirementsQueries: { id: 'rev-trace-tree' },
       });
     });
 
-    it('should fall back to root queries and return null trace trees when trace folders are missing', async () => {
+    it('should return null customer/trace trees when trace folders are missing (no sysRsRoot fallback scan)', async () => {
       const rootQueries = { id: 'root' };
 
       jest
@@ -153,6 +224,9 @@ describe('TicketsDataProvider', () => {
       const fetchSystemRequirementQueriesSpy = jest
         .spyOn(ticketsDataProvider as any, 'fetchSystemRequirementQueries')
         .mockResolvedValue({ systemRequirementsQueryTree: { id: 'system-tree' } });
+      const fetchFlatUpstreamQueriesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchFlatUpstreamQueries')
+        .mockResolvedValue({ systemRequirementsQueryTree: { id: 'should-not-be-used' } });
       jest
         .spyOn(ticketsDataProvider as any, 'findChildFolderByPossibleNames')
         .mockResolvedValueOnce(null)
@@ -165,13 +239,22 @@ describe('TicketsDataProvider', () => {
       const result = await (ticketsDataProvider as any).fetchSysRsQueries(rootQueries);
 
       expect(fetchSystemRequirementQueriesSpy).toHaveBeenCalledWith(rootQueries, [
-        'System To Customer',
-        'System To Subsystem',
+        'system to customer',
+        'system-to-customer',
+        'system customer',
+        'subsystem to system',
+        'customer to system',
+        'system to subsystem',
+        'system-to-subsystem',
+        'system subsystem',
       ]);
       expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(1, null);
       expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(2, null);
+      // No fallback scan of sysRsRoot when the System-to-Customer folder is absent.
+      expect(fetchFlatUpstreamQueriesSpy).not.toHaveBeenCalled();
       expect(result).toEqual({
         systemRequirementsQueries: { systemRequirementsQueryTree: { id: 'system-tree' } },
+        customerRequirementsQueries: null,
         subsystemToSystemRequirementsQueries: null,
         systemToSubsystemRequirementsQueries: null,
       });
