@@ -763,7 +763,7 @@ export default class TicketsDataProvider {
     const systemToSubsystemRequirementsQueries =
       await this.fetchRequirementsTraceQueriesForFolder(systemToSubsystemFolder);
 
-    // Customer/System requirements (Chapter 6) picker: only scan the dedicated
+    // Customer/System requirements (traceability table) picker: only scan the dedicated
     // System-to-Customer folder. If it doesn't exist in the tenant, return null
     // rather than scanning the whole SysRS root, which would surface unrelated
     // flat queries into the picker.
