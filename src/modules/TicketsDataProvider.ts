@@ -78,7 +78,7 @@ const HISTORICAL_WORK_ITEM_FIELDS = [
 
 /** Default fields fetched per work item in tree/flat query parsing. */
 const WI_DEFAULT_FIELDS =
-  'System.Description,System.Title,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom';
+  'System.Description,System.Title,System.WorkItemType,Microsoft.VSTS.TCM.ReproSteps,Microsoft.VSTS.CMMI.Symptom';
 
 export default class TicketsDataProvider {
   orgUrl: string = '';
@@ -691,6 +691,58 @@ export default class TicketsDataProvider {
     return { systemRequirementsQueryTree };
   }
 
+  private async fetchCustomerRequirementQueries(queries: any) {
+    const systemRequirementsQueryTree = await this.structureCustomerRequirementQueries(queries);
+    return { systemRequirementsQueryTree };
+  }
+
+  private async structureCustomerRequirementQueries(
+    rootQuery: any,
+    parentId: any = null,
+  ): Promise<any> {
+    try {
+      if (!rootQuery?.hasChildren) {
+        const isExecutableQuery =
+          !rootQuery?.isFolder && ['flat', 'tree', 'oneHop'].includes(rootQuery?.queryType);
+        return isExecutableQuery ? this.buildQueryNode(rootQuery, parentId) : null;
+      }
+
+      if (!rootQuery.children) {
+        const queryUrl = `${rootQuery.url}?$depth=2&$expand=all`;
+        const currentQuery = await TFSServices.getItemContent(queryUrl, this.token);
+        if (!currentQuery) {
+          return null;
+        }
+        return await this.structureCustomerRequirementQueries(currentQuery, currentQuery.id);
+      }
+
+      const childResults = await Promise.all(
+        rootQuery.children.map((child: any) =>
+          this.structureCustomerRequirementQueries(child, rootQuery.id),
+        ),
+      );
+      const children = childResults.filter((child: any) => child !== null);
+
+      return children.length > 0
+        ? {
+            id: rootQuery.id,
+            pId: parentId,
+            value: rootQuery.name,
+            title: rootQuery.name,
+            children,
+          }
+        : null;
+    } catch (err: any) {
+      logger.error(
+        `Error occurred while constructing the customer query list ${err.message} with query ${JSON.stringify(
+          rootQuery,
+        )}`,
+      );
+      logger.error(`Error stack ${err.message}`);
+      return null;
+    }
+  }
+
   private async fetchSrsQueries(rootQueries: any) {
     const srsFolder = await this.findQueryFolderByName(rootQueries, 'srs');
     if (!srsFolder) {
@@ -735,55 +787,42 @@ export default class TicketsDataProvider {
     const { root: sysRsRoot, found: sysRsRootFound } = await this.getDocTypeRoot(rootQueries, 'sysrs');
     logger.debug(`[GetSharedQueries][sysrs] using ${sysRsRootFound ? 'dedicated folder' : 'root queries'}`);
 
-    const systemToCustomerFolderNames = [
-      'system to customer',
-      'system-to-customer',
-      'system customer',
-      'subsystem to system',
-      'customer to system',
-    ];
     const systemToSubsystemFolderNames = ['system to subsystem', 'system-to-subsystem', 'system subsystem'];
 
-    const systemRequirementsQueries = await this.fetchSystemRequirementQueries(sysRsRoot, [
-      ...systemToCustomerFolderNames,
-      ...systemToSubsystemFolderNames,
-    ]);
-
-    const systemToCustomerFolder = await this.findChildFolderByPossibleNames(
-      sysRsRoot,
-      systemToCustomerFolderNames,
-    );
-    const systemToSubsystemFolder = await this.findChildFolderByPossibleNames(
+    const systemRequirementsQueries = await this.fetchSystemRequirementQueries(
       sysRsRoot,
       systemToSubsystemFolderNames,
     );
 
-    const subsystemToSystemRequirementsQueries =
-      await this.fetchRequirementsTraceQueriesForFolder(systemToCustomerFolder);
+    const systemToSubsystemFolder = await this.findChildFolderByPossibleNames(
+      sysRsRoot,
+      systemToSubsystemFolderNames,
+    );
     const systemToSubsystemRequirementsQueries =
       await this.fetchRequirementsTraceQueriesForFolder(systemToSubsystemFolder);
 
-    // Customer/System requirements (traceability table) picker: only scan the dedicated
-    // System-to-Customer folder. If it doesn't exist in the tenant, return null
-    // rather than scanning the whole SysRS root, which would surface unrelated
-    // flat queries into the picker.
+    // Customer/System requirements (traceability table) picker: scan the entire
+    // dedicated SysRS folder for executable query nodes. The selected query
+    // defines the customer-side candidate set, so discovery does not infer
+    // "customer" semantics from WIQL. Scope is intentionally limited to the
+    // dedicated `sysrs` folder so unrelated queries from the Shared Queries root
+    // do not leak into the picker.
     let customerRequirementsQueries: any = null;
-    if (systemToCustomerFolder) {
-      customerRequirementsQueries = await this.fetchFlatUpstreamQueries(
-        systemToCustomerFolder,
-        [],
-        ['requirement'],
-      );
+    if (sysRsRootFound) {
+      customerRequirementsQueries = await this.fetchCustomerRequirementQueries(sysRsRoot);
     } else {
       logger.debug(
-        '[GetSharedQueries][sysrs] System-to-Customer folder not found; skipping customer-requirements picker',
+        '[GetSharedQueries][sysrs] dedicated sysrs folder not found; skipping customer-requirements picker',
       );
     }
 
     return {
       systemRequirementsQueries,
       customerRequirementsQueries,
-      subsystemToSystemRequirementsQueries,
+      // Legacy field retained for backward compatibility with callers/tests.
+      // The sub-system -> system trace table is out of scope for v0 and no
+      // longer sourced from a hardcoded "System to Customer" folder.
+      subsystemToSystemRequirementsQueries: null,
       systemToSubsystemRequirementsQueries,
     };
   }
@@ -2256,42 +2295,46 @@ export default class TicketsDataProvider {
   }
 
   async PopulateWorkItemsByIds(workItemsArray: any[] = [], projectName: string = ''): Promise<any[]> {
-    let url = `${this.orgUrl}${projectName}/_apis/wit/workitemsbatch`;
-    let res: any[] = [];
-    let divByMax = Math.floor(workItemsArray.length / 200);
-    let modulusByMax = workItemsArray.length % 200;
-    //iterating
-    for (let i = 0; i < divByMax; i++) {
-      let from = i * 200;
-      let to = (i + 1) * 200;
-      let currentIds = workItemsArray.slice(from, to);
-      try {
-        let subRes = await TFSServices.getItemContent(url, this.token, 'post', {
+    const baseUrl = `${this.orgUrl}${projectName}/_apis/wit/workitemsbatch`;
+    // On-prem Azure DevOps Server rejects this POST with HTTP 400 unless an
+    // api-version is explicitly set on the URL. Use the same fallback chain
+    // (7.1 -> 5.1 -> no version) the historical batch hydration already uses,
+    // so the helper stays compatible with ADO cloud and older on-prem tenants.
+    const postBatch = (currentIds: any[]) =>
+      this.withHistoricalApiVersionFallback('populate-workitems-batch', (apiVersion) =>
+        TFSServices.getItemContent(this.appendApiVersion(baseUrl, apiVersion), this.token, 'post', {
           $expand: 'Relations',
           ids: currentIds,
-        });
-        res = [...res, ...subRes.value];
+        }),
+      ).then(({ result }) => result);
+
+    const res: any[] = [];
+    const divByMax = Math.floor(workItemsArray.length / 200);
+    const modulusByMax = workItemsArray.length % 200;
+    for (let i = 0; i < divByMax; i++) {
+      const from = i * 200;
+      const to = (i + 1) * 200;
+      const currentIds = workItemsArray.slice(from, to);
+      try {
+        const subRes = await postBatch(currentIds);
+        res.push(...subRes.value);
       } catch (error) {
         logger.error(`error populating workitems array`);
         logger.error(JSON.stringify(error));
         return [];
       }
     }
-    //compliting the rimainder
     if (modulusByMax !== 0) {
       try {
-        let currentIds = workItemsArray.slice(workItemsArray.length - modulusByMax, workItemsArray.length);
-        let subRes = await TFSServices.getItemContent(url, this.token, 'post', {
-          $expand: 'Relations',
-          ids: currentIds,
-        });
-        res = [...res, ...subRes.value];
+        const currentIds = workItemsArray.slice(workItemsArray.length - modulusByMax, workItemsArray.length);
+        const subRes = await postBatch(currentIds);
+        res.push(...subRes.value);
       } catch (error) {
         logger.error(`error populating workitems array`);
         logger.error(JSON.stringify(error));
         return [];
       }
-    } //if
+    }
 
     return res;
   }
