@@ -153,11 +153,119 @@ describe('TicketsDataProvider', () => {
     });
   });
 
+  describe('fetchCustomerRequirementQueries', () => {
+    it('should return flat, tree, and oneHop query nodes without WIQL type filtering', async () => {
+      const root = {
+        id: 'root',
+        name: 'SYSRS',
+        isFolder: true,
+        hasChildren: true,
+        children: [
+          {
+            id: 'flat-query',
+            name: 'Flat Customer Pull',
+            isFolder: false,
+            hasChildren: false,
+            queryType: 'flat',
+            wiql: "SELECT * FROM WorkItems WHERE [System.WorkItemType] = 'Task'",
+            columns: [],
+            _links: { wiql: { href: 'flat-url' } },
+          },
+          {
+            id: 'tree-query',
+            name: 'Tree Customer Pull',
+            isFolder: false,
+            hasChildren: false,
+            queryType: 'tree',
+            wiql: "SELECT * FROM WorkItemLinks WHERE [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward'",
+            columns: [],
+            _links: { wiql: { href: 'tree-url' } },
+          },
+          {
+            id: 'onehop-query',
+            name: 'OneHop Customer Pull',
+            isFolder: false,
+            hasChildren: false,
+            queryType: 'oneHop',
+            wiql: "SELECT * FROM WorkItemLinks WHERE [System.Links.LinkType] = 'System.LinkTypes.Related'",
+            columns: [],
+            _links: { wiql: { href: 'onehop-url' } },
+          },
+          {
+            id: 'unsupported-query',
+            name: 'Unsupported',
+            isFolder: false,
+            hasChildren: false,
+            queryType: 'invalid',
+            _links: { wiql: { href: 'unsupported-url' } },
+          },
+        ],
+      };
+
+      const result = await (ticketsDataProvider as any).fetchCustomerRequirementQueries(root, []);
+
+      expect(result.systemRequirementsQueryTree.children.map((child: any) => child.queryType)).toEqual([
+        'flat',
+        'tree',
+        'oneHop',
+      ]);
+      expect(result.systemRequirementsQueryTree.children.map((child: any) => child.wiql.href)).toEqual([
+        'flat-url',
+        'tree-url',
+        'onehop-url',
+      ]);
+    });
+
+    it('should include system-to-subsystem queries because customer discovery has no folder exclusions', async () => {
+      const root = {
+        id: 'root',
+        name: 'SYSRS',
+        isFolder: true,
+        hasChildren: true,
+        children: [
+          {
+            id: 'excluded-folder',
+            name: 'System To Subsystem',
+            isFolder: true,
+            hasChildren: true,
+            children: [
+              {
+                id: 'system-to-subsystem-query',
+                name: 'System To Subsystem Query',
+                isFolder: false,
+                hasChildren: false,
+                queryType: 'tree',
+                _links: { wiql: { href: 'system-to-subsystem-url' } },
+              },
+            ],
+          },
+          {
+            id: 'included-query',
+            name: 'Included Query',
+            isFolder: false,
+            hasChildren: false,
+            queryType: 'oneHop',
+            _links: { wiql: { href: 'included-url' } },
+          },
+        ],
+      };
+
+      const result = await (ticketsDataProvider as any).fetchCustomerRequirementQueries(root);
+
+      expect(result.systemRequirementsQueryTree.children).toHaveLength(2);
+      expect(result.systemRequirementsQueryTree.children[0].children[0]).toEqual(
+        expect.objectContaining({ id: 'system-to-subsystem-query', queryType: 'tree' }),
+      );
+      expect(result.systemRequirementsQueryTree.children[1]).toEqual(
+        expect.objectContaining({ id: 'included-query', queryType: 'oneHop' }),
+      );
+    });
+  });
+
   describe('fetchSysRsQueries', () => {
-    it('should use sysrs root, exclude trace folders from system requirements and resolve both trace directions', async () => {
+    it('should scan the dedicated sysrs folder for customer queries regardless of query type', async () => {
       const rootQueries = { id: 'root' };
       const sysRsRoot = { id: 'sysrs-root', name: 'SYSRS' };
-      const subsystemToSystemFolder = { id: 'fwd-folder', name: 'System To Customer' };
       const systemToSubsystemFolder = { id: 'rev-folder', name: 'System To Subsystem' };
 
       const getDocTypeRootSpy = jest
@@ -166,56 +274,49 @@ describe('TicketsDataProvider', () => {
       const fetchSystemRequirementQueriesSpy = jest
         .spyOn(ticketsDataProvider as any, 'fetchSystemRequirementQueries')
         .mockResolvedValue({ systemRequirementsQueryTree: { id: 'system-tree' } });
-      const fetchFlatUpstreamQueriesSpy = jest
-        .spyOn(ticketsDataProvider as any, 'fetchFlatUpstreamQueries')
+      const fetchCustomerRequirementQueriesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchCustomerRequirementQueries')
         .mockResolvedValue({ systemRequirementsQueryTree: { id: 'customer-tree' } });
       const findChildFolderByPossibleNamesSpy = jest
         .spyOn(ticketsDataProvider as any, 'findChildFolderByPossibleNames')
-        .mockResolvedValueOnce(subsystemToSystemFolder)
         .mockResolvedValueOnce(systemToSubsystemFolder);
       const fetchRequirementsTraceQueriesForFolderSpy = jest
         .spyOn(ticketsDataProvider as any, 'fetchRequirementsTraceQueriesForFolder')
-        .mockResolvedValueOnce({ id: 'fwd-trace-tree' })
         .mockResolvedValueOnce({ id: 'rev-trace-tree' });
 
       const result = await (ticketsDataProvider as any).fetchSysRsQueries(rootQueries);
 
       expect(getDocTypeRootSpy).toHaveBeenCalledWith(rootQueries, 'sysrs');
+      // fetchSystemRequirementQueries only excludes the sub-system trace folder;
+      // the legacy System-to-Customer exclusion list is gone.
       expect(fetchSystemRequirementQueriesSpy).toHaveBeenCalledWith(sysRsRoot, [
-        'system to customer',
-        'system-to-customer',
-        'system customer',
-        'subsystem to system',
-        'customer to system',
         'system to subsystem',
         'system-to-subsystem',
         'system subsystem',
       ]);
 
-      expect(findChildFolderByPossibleNamesSpy).toHaveBeenNthCalledWith(
-        1,
-        sysRsRoot,
-        expect.arrayContaining(['system to customer', 'subsystem to system', 'customer to system']),
-      );
-      expect(findChildFolderByPossibleNamesSpy).toHaveBeenNthCalledWith(
-        2,
+      // Only one folder lookup remains (sub-system trace); no System-to-Customer lookup.
+      expect(findChildFolderByPossibleNamesSpy).toHaveBeenCalledTimes(1);
+      expect(findChildFolderByPossibleNamesSpy).toHaveBeenCalledWith(
         sysRsRoot,
         expect.arrayContaining(['system to subsystem', 'system-to-subsystem']),
       );
 
-      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(1, subsystemToSystemFolder);
-      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(2, systemToSubsystemFolder);
-      expect(fetchFlatUpstreamQueriesSpy).toHaveBeenCalledWith(subsystemToSystemFolder, [], ['requirement']);
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenCalledTimes(1);
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenCalledWith(systemToSubsystemFolder);
+
+      // Customer picker scans the whole sysRsRoot with no query/folder exclusions.
+      expect(fetchCustomerRequirementQueriesSpy).toHaveBeenCalledWith(sysRsRoot);
 
       expect(result).toEqual({
         systemRequirementsQueries: { systemRequirementsQueryTree: { id: 'system-tree' } },
         customerRequirementsQueries: { systemRequirementsQueryTree: { id: 'customer-tree' } },
-        subsystemToSystemRequirementsQueries: { id: 'fwd-trace-tree' },
+        subsystemToSystemRequirementsQueries: null,
         systemToSubsystemRequirementsQueries: { id: 'rev-trace-tree' },
       });
     });
 
-    it('should return null customer/trace trees when trace folders are missing (no sysRsRoot fallback scan)', async () => {
+    it('should return null customer/trace trees when the dedicated sysrs folder is missing (no fallback scan)', async () => {
       const rootQueries = { id: 'root' };
 
       jest
@@ -224,34 +325,26 @@ describe('TicketsDataProvider', () => {
       const fetchSystemRequirementQueriesSpy = jest
         .spyOn(ticketsDataProvider as any, 'fetchSystemRequirementQueries')
         .mockResolvedValue({ systemRequirementsQueryTree: { id: 'system-tree' } });
-      const fetchFlatUpstreamQueriesSpy = jest
-        .spyOn(ticketsDataProvider as any, 'fetchFlatUpstreamQueries')
+      const fetchCustomerRequirementQueriesSpy = jest
+        .spyOn(ticketsDataProvider as any, 'fetchCustomerRequirementQueries')
         .mockResolvedValue({ systemRequirementsQueryTree: { id: 'should-not-be-used' } });
-      jest
-        .spyOn(ticketsDataProvider as any, 'findChildFolderByPossibleNames')
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(null);
+      jest.spyOn(ticketsDataProvider as any, 'findChildFolderByPossibleNames').mockResolvedValueOnce(null);
       const fetchRequirementsTraceQueriesForFolderSpy = jest
         .spyOn(ticketsDataProvider as any, 'fetchRequirementsTraceQueriesForFolder')
-        .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null);
 
       const result = await (ticketsDataProvider as any).fetchSysRsQueries(rootQueries);
 
       expect(fetchSystemRequirementQueriesSpy).toHaveBeenCalledWith(rootQueries, [
-        'system to customer',
-        'system-to-customer',
-        'system customer',
-        'subsystem to system',
-        'customer to system',
         'system to subsystem',
         'system-to-subsystem',
         'system subsystem',
       ]);
-      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(1, null);
-      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenNthCalledWith(2, null);
-      // No fallback scan of sysRsRoot when the System-to-Customer folder is absent.
-      expect(fetchFlatUpstreamQueriesSpy).not.toHaveBeenCalled();
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenCalledTimes(1);
+      expect(fetchRequirementsTraceQueriesForFolderSpy).toHaveBeenCalledWith(null);
+      // No fallback scan when the dedicated sysrs folder is absent — otherwise
+      // unrelated flat queries from the Shared Queries root would leak in.
+      expect(fetchCustomerRequirementQueriesSpy).not.toHaveBeenCalled();
       expect(result).toEqual({
         systemRequirementsQueries: { systemRequirementsQueryTree: { id: 'system-tree' } },
         customerRequirementsQueries: null,
@@ -1434,6 +1527,46 @@ describe('TicketsDataProvider', () => {
 
       // Assert
       expect(result).toBeDefined();
+    });
+
+    // Regression: WI_DEFAULT_FIELDS must include System.WorkItemType so that
+    // downstream Requirement-type filters (e.g. the customer-coverage table)
+    // do not drop every row because workItemType resolves to empty string.
+    it('should request System.WorkItemType in default fields for flat queries and expose workItemType on parsed items', async () => {
+      const mockWiqlHref = 'https://example.com/wiql';
+      const mockQueryResult = {
+        queryType: 'flat',
+        workItems: [{ id: 42, url: 'https://example.com/wi/42' }],
+      };
+      const mockWiResponse = {
+        fields: {
+          'System.Title': 'Customer Requirement',
+          'System.WorkItemType': 'Requirement',
+          'System.Description': 'Desc',
+        },
+        _links: { html: { href: 'https://example.com/wi/42' } },
+      };
+
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce(mockQueryResult)
+        .mockResolvedValueOnce(mockWiResponse);
+
+      const result: any = await ticketsDataProvider.GetQueryResultsFromWiql(
+        mockWiqlHref,
+        false,
+        new Map<number, Set<any>>(),
+      );
+
+      // The per-item fetch URL must request System.WorkItemType.
+      const perItemCall = (TFSServices.getItemContent as jest.Mock).mock.calls.find(
+        (call: any[]) => typeof call[0] === 'string' && call[0].startsWith('https://example.com/wi/42'),
+      );
+      expect(perItemCall).toBeDefined();
+      expect(perItemCall[0]).toContain('System.WorkItemType');
+
+      // The parsed item must expose workItemType so downstream filters work.
+      expect(Array.isArray(result)).toBe(true);
+      expect(result[0]).toMatchObject({ id: 42, workItemType: 'Requirement' });
     });
 
     it('should return undefined when queryType is not supported', async () => {
