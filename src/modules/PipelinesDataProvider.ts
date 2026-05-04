@@ -22,6 +22,20 @@ export default class PipelinesDataProvider {
   }
 
   /**
+   * Returns work item references associated with one completed build.
+   *
+   * Used by template-only first-run SVD baseline generation, where there is no
+   * previous successful build to compare against and the current target build's
+   * linked work items become the baseline content.
+   */
+  public async GetBuildWorkItems(teamProject: string, buildId: number): Promise<any[]> {
+    const encodedProject = encodeURIComponent(teamProject);
+    const url = `${this.orgUrl}${encodedProject}/_apis/build/builds/${buildId}/workitems?$top=2000&api-version=6.0`;
+    const result = await TFSServices.getItemContent(url, this.token, 'get');
+    return Array.isArray(result?.value) ? result.value : [];
+  }
+
+  /**
    * Resolves the previous pipeline run used as the source side of an SVD pipeline range.
    *
    * For regular pipeline ranges, the Builds API is used first because it supports paging,

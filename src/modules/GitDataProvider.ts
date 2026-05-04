@@ -634,6 +634,10 @@ export default class GitDataProvider {
     return linkedItems;
   }
 
+  async GetLinkedRelatedItemsForSVD(linkedWiOptions: any, populatedWorkItem: any) {
+    return this.createLinkedRelatedItemsForSVD(linkedWiOptions, populatedWorkItem);
+  }
+
   async GetCommitsInDateRange(
     projectId: string,
     repositoryId: string,
