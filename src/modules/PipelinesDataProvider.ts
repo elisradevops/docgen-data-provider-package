@@ -3,6 +3,13 @@ import { TFSServices } from '../helpers/tfs';
 
 import logger from '../utils/logger';
 import GitDataProvider from './GitDataProvider';
+const pLimit = require('p-limit');
+const MAX_DISCOVERY_PAGES = 50;
+
+type PreviousDiscoveryResult =
+  | { status: 'found'; id: number }
+  | { status: 'not_found' }
+  | { status: 'failed'; error: unknown };
 
 export default class PipelinesDataProvider {
   orgUrl: string = '';
@@ -14,6 +21,20 @@ export default class PipelinesDataProvider {
     this.token = token;
   }
 
+  /**
+   * Resolves the previous pipeline run used as the source side of an SVD pipeline range.
+   *
+   * For regular pipeline ranges, the Builds API is used first because it supports paging,
+   * completed/succeeded filters, and branch filtering. Stage-specific discovery keeps the
+   * older Pipelines Runs path because stage status must be checked from run details.
+   *
+   * @param teamProject Azure DevOps project name.
+   * @param pipelineId Pipeline/build definition id.
+   * @param toPipelineRunId Target run/build id. Candidates must be older than this id.
+   * @param targetPipeline Full target pipeline run details, used for repository/branch matching.
+   * @param searchPrevPipelineFromDifferentCommit When true, skip candidates from the same commit.
+   * @param fromStage Optional stage name. When set, only previous runs with this successful stage match.
+   */
   public async findPreviousPipeline(
     teamProject: string,
     pipelineId: string,
@@ -22,8 +43,21 @@ export default class PipelinesDataProvider {
     searchPrevPipelineFromDifferentCommit: boolean,
     fromStage: string = ''
   ) {
+    if (!fromStage) {
+      const previousBuildId = await this.findPreviousSuccessfulBuild(
+        teamProject,
+        pipelineId,
+        toPipelineRunId,
+        targetPipeline,
+        searchPrevPipelineFromDifferentCommit
+      );
+      if (previousBuildId) {
+        return previousBuildId;
+      }
+    }
+
     const pipelineRuns = await this.GetPipelineRunHistory(teamProject, pipelineId);
-    if (!pipelineRuns.value) {
+    if (!pipelineRuns?.value) {
       return undefined;
     }
 
@@ -46,6 +80,338 @@ export default class PipelinesDataProvider {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Finds the previous successful completed build for a definition.
+   *
+   * Discovery prefers the target run's branch first. If no same-branch candidate exists, it
+   * falls back to the same repository on any branch so auto-discovery can still work for
+   * sparse branches or customer histories where the previous success is on another branch.
+   *
+   * @returns Previous build id, or undefined when no valid candidate is found.
+   */
+  public async findPreviousSuccessfulBuild(
+    teamProject: string,
+    definitionId: string,
+    toBuildId: number,
+    targetPipeline: any,
+    searchPrevPipelineFromDifferentCommit: boolean
+  ): Promise<number | undefined> {
+    const targetRepo = this.getPrimaryPipelineRepository(targetPipeline);
+    const targetBranch = this.normalizeBranchName(targetRepo?.refName);
+
+    if (targetBranch) {
+      const sameBranchResult = await this.findPreviousSuccessfulBuildPage(
+        teamProject,
+        definitionId,
+        toBuildId,
+        targetPipeline,
+        searchPrevPipelineFromDifferentCommit,
+        targetBranch
+      );
+      if (sameBranchResult.status === 'failed') {
+        throw sameBranchResult.error;
+      }
+      if (sameBranchResult.status === 'found') {
+        return sameBranchResult.id;
+      }
+    }
+
+    const anyBranchResult = await this.findPreviousSuccessfulBuildPage(
+      teamProject,
+      definitionId,
+      toBuildId,
+      targetPipeline,
+      searchPrevPipelineFromDifferentCommit
+    );
+    if (anyBranchResult.status === 'failed') {
+      throw anyBranchResult.error;
+    }
+    return anyBranchResult.status === 'found' ? anyBranchResult.id : undefined;
+  }
+
+  /**
+   * Pages the Builds API until a valid previous successful build is found.
+   *
+   * The API query already asks for completed/succeeded builds ordered by finish time, but
+   * candidates are validated locally as well to protect callers from incomplete API data,
+   * mocks, or future response-shape differences.
+   */
+  private async findPreviousSuccessfulBuildPage(
+    teamProject: string,
+    definitionId: string,
+    toBuildId: number,
+    targetPipeline: any,
+    searchPrevPipelineFromDifferentCommit: boolean,
+    branchName?: string
+  ): Promise<PreviousDiscoveryResult> {
+    const targetRepo = this.getPrimaryPipelineRepository(targetPipeline);
+    let continuationToken: string | undefined = undefined;
+    let pageCount = 0;
+    do {
+      let url = `${this.orgUrl}${teamProject}/_apis/build/builds?definitions=${encodeURIComponent(
+        String(definitionId)
+      )}&resultFilter=succeeded&statusFilter=completed&queryOrder=finishTimeDescending&$top=200&api-version=6.0`;
+      if (branchName) {
+        url += `&branchName=${encodeURIComponent(branchName)}`;
+      }
+      if (continuationToken) {
+        url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
+      }
+
+      try {
+        const { data, headers } = await TFSServices.getItemContentWithHeaders(
+          url,
+          this.token,
+          'get',
+          null,
+          null
+        );
+        pageCount++;
+        const builds: any[] = data?.value || [];
+        const match = builds.find((build: any) =>
+          this.isMatchingPreviousBuild(
+            build,
+            targetRepo,
+            toBuildId,
+            searchPrevPipelineFromDifferentCommit,
+            branchName
+          )
+        );
+        if (match?.id) {
+          return { status: 'found', id: Number(match.id) };
+        }
+        continuationToken = this.getContinuationToken(headers);
+        if (continuationToken && pageCount >= MAX_DISCOVERY_PAGES) {
+          return {
+            status: 'failed',
+            error: new Error(`Pipeline discovery exceeded ${MAX_DISCOVERY_PAGES} pages`),
+          };
+        }
+      } catch (err: unknown) {
+        logger.warn(`Could not fetch previous successful builds: ${this.getErrorMessage(err)}`);
+        return { status: 'failed', error: err };
+      }
+    } while (continuationToken);
+
+    return { status: 'not_found' };
+  }
+
+  private getContinuationToken(headers: any): string | undefined {
+    return headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
+  }
+
+  /**
+   * Extracts the primary repository from a pipeline run details response.
+   *
+   * Newer YAML runs expose repository resources as an array with a `self` entry, while some
+   * designer/classic pipeline responses expose the repository under `__designer_repo`.
+   */
+  private getPrimaryPipelineRepository(pipeline: any): any {
+    const repositories = pipeline?.resources?.repositories;
+    if (!repositories) return undefined;
+    return repositories[0]?.self || repositories.__designer_repo;
+  }
+
+  /**
+   * Validates a Builds API candidate against the target run.
+   *
+   * A candidate must be older than the target, completed successfully, from the same
+   * repository, and optionally from the required branch. When the caller asks for a
+   * different commit, candidates with the same source version are excluded.
+   */
+  private isMatchingPreviousBuild(
+    build: any,
+    targetRepo: any,
+    toBuildId: number,
+    searchPrevPipelineFromDifferentCommit: boolean,
+    requiredBranch?: string
+  ): boolean {
+    const buildId = Number(build?.id);
+    if (!Number.isFinite(buildId) || buildId >= toBuildId) return false;
+    if (build?.status && build.status !== 'completed') return false;
+    if (build?.result && build.result !== 'succeeded') return false;
+
+    const buildRepoId = build?.repository?.id;
+    const targetRepoId = targetRepo?.repository?.id;
+    if (!buildRepoId || !targetRepoId || buildRepoId !== targetRepoId) return false;
+
+    if (requiredBranch && build?.sourceBranch !== requiredBranch) return false;
+
+    if (build?.sourceVersion && targetRepo?.version && build.sourceVersion === targetRepo.version) {
+      return !searchPrevPipelineFromDifferentCommit;
+    }
+
+    return true;
+  }
+
+  /**
+   * Finds the previous successful release/deployment for an SVD release range.
+   *
+   * Release discovery pages the Release List API and expands environments so candidates can
+   * be validated by deployment status. A matching release must be older than the target,
+   * active, and have at least one succeeded environment.
+   *
+   * @returns Previous release id, or undefined when no valid candidate is found.
+   */
+  public async findPreviousSuccessfulRelease(
+    projectName: string,
+    definitionId: string,
+    toReleaseId: number
+  ): Promise<number | undefined> {
+    let result = await this.findSuccessfulReleasePage(
+      projectName,
+      definitionId,
+      '7.1',
+      (release) => this.isPreviousSuccessfulRelease(release, toReleaseId),
+      'previous'
+    );
+    if (result.status === 'failed' && this.isUnsupportedApiVersionError(result.error)) {
+      result = await this.findSuccessfulReleasePage(
+        projectName,
+        definitionId,
+        '6.0',
+        (release) => this.isPreviousSuccessfulRelease(release, toReleaseId),
+        'previous'
+      );
+    }
+    if (result.status === 'failed') {
+      throw result.error;
+    }
+    return result.status === 'found' ? result.id : undefined;
+  }
+
+  /**
+   * Finds the latest successful release/deployment for an SVD release range.
+   *
+   * Used when the release template omits `toReleaseId`. The same candidate rule is used as
+   * previous-release discovery: active release with at least one succeeded environment.
+   *
+   * @returns Latest release id, or undefined when no valid candidate is found.
+   */
+  public async findLatestSuccessfulRelease(
+    projectName: string,
+    definitionId: string
+  ): Promise<number | undefined> {
+    let result = await this.findSuccessfulReleasePage(
+      projectName,
+      definitionId,
+      '7.1',
+      (release) => this.isSuccessfulRelease(release),
+      'latest'
+    );
+    if (result.status === 'failed' && this.isUnsupportedApiVersionError(result.error)) {
+      result = await this.findSuccessfulReleasePage(
+        projectName,
+        definitionId,
+        '6.0',
+        (release) => this.isSuccessfulRelease(release),
+        'latest'
+      );
+    }
+    if (result.status === 'failed') {
+      throw result.error;
+    }
+    return result.status === 'found' ? result.id : undefined;
+  }
+
+  private async findSuccessfulReleasePage(
+    projectName: string,
+    definitionId: string,
+    apiVersion: string,
+    isMatch: (release: any) => boolean,
+    discoveryLabel: 'previous' | 'latest'
+  ): Promise<PreviousDiscoveryResult> {
+    let baseUrl: string = `${this.orgUrl}${projectName}/_apis/release/releases?definitionId=${encodeURIComponent(
+      String(definitionId)
+    )}&queryOrder=descending&$top=200&$expand=environments&api-version=${apiVersion}`;
+    if (baseUrl.startsWith('https://dev.azure.com')) {
+      baseUrl = baseUrl.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com');
+    }
+
+    let continuationToken: string | undefined = undefined;
+    let pageCount = 0;
+    do {
+      let url = baseUrl;
+      if (continuationToken) {
+        url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
+      }
+
+      try {
+        const { data, headers } = await TFSServices.getItemContentWithHeaders(
+          url,
+          this.token,
+          'get',
+          null,
+          null
+        );
+        pageCount++;
+        const releases: any[] = data?.value || [];
+        const match = releases.find(isMatch);
+        if (match?.id) {
+          return { status: 'found', id: Number(match.id) };
+        }
+        continuationToken = this.getContinuationToken(headers);
+        if (continuationToken && pageCount >= MAX_DISCOVERY_PAGES) {
+          return {
+            status: 'failed',
+            error: new Error(`Release discovery exceeded ${MAX_DISCOVERY_PAGES} pages`),
+          };
+        }
+      } catch (err: unknown) {
+        logger.warn(`Could not fetch ${discoveryLabel} successful releases: ${this.getErrorMessage(err)}`);
+        return { status: 'failed', error: err };
+      }
+    } while (continuationToken);
+
+    return { status: 'not_found' };
+  }
+
+  private isUnsupportedApiVersionError(err: unknown): boolean {
+    const error = err as any;
+    const responseData = error?.response?.data;
+    const message = [
+      error?.message,
+      responseData?.message,
+      typeof responseData === 'string' ? responseData : JSON.stringify(responseData || ''),
+    ]
+      .join(' ')
+      .toLowerCase();
+    return (
+      message.includes('api-version') &&
+      (message.includes('unsupported') ||
+        message.includes('not support') ||
+        message.includes('not supported'))
+    );
+  }
+
+  private getErrorMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+  }
+
+  /**
+   * Validates a release candidate for auto-discovery.
+   *
+   * A release is considered successful for this SVD range purpose when at least one
+   * deployment environment succeeded. This mirrors the existing release artifact flow,
+   * where a release may contain multiple environments but still provide usable artifacts.
+   */
+  private isPreviousSuccessfulRelease(release: any, toReleaseId: number): boolean {
+    const releaseId = Number(release?.id);
+    if (!Number.isFinite(releaseId) || releaseId >= toReleaseId) return false;
+    return this.isSuccessfulRelease(release);
+  }
+
+  private isSuccessfulRelease(release: any): boolean {
+    const releaseId = Number(release?.id);
+    if (!Number.isFinite(releaseId)) return false;
+    if (release?.status && String(release.status).toLowerCase() !== 'active') return false;
+
+    const environments = Array.isArray(release?.environments) ? release.environments : [];
+    return environments.some((environment: any) => {
+      return String(environment?.status || '').toLowerCase() === 'succeeded';
+    });
   }
 
   /**
@@ -483,8 +849,9 @@ export default class PipelinesDataProvider {
       `getPipelineResourcePipelinesFromObject: resolving ${pipelineEntries.length} pipeline resources`
     );
 
+    const concurrencyLimit = pLimit(8);
     await Promise.all(
-      pipelineEntries.map(async ([resourcePipelineAlias, resource]) => {
+      pipelineEntries.map(([resourcePipelineAlias, resource]) => concurrencyLimit(async () => {
         const resourcePipelineObj = (resource as any)?.pipeline;
         const pipelineIdCandidate = Number(resourcePipelineObj?.id);
 
@@ -596,7 +963,7 @@ export default class PipelinesDataProvider {
           const key = `${resourcePipelineToAdd.teamProject}:${resourcePipelineToAdd.definitionId}:${resourcePipelineToAdd.buildId}:${resourcePipelineToAdd.name}`;
           if (!resourcePipelinesByKey.has(key)) resourcePipelinesByKey.set(key, resourcePipelineToAdd);
         }
-      })
+      }))
     );
     return [...resourcePipelinesByKey.values()];
   }
@@ -757,6 +1124,12 @@ export default class PipelinesDataProvider {
     }
   }
 
+  /**
+   * Fetches the first page of release history for a definition.
+   *
+   * Kept for backward compatibility with existing consumers. New range/discovery flows
+   * should prefer GetAllReleaseHistory when full release history is required.
+   */
   async GetReleaseHistory(projectName: string, definitionId: string) {
     let url: string = `${this.orgUrl}${projectName}/_apis/release/releases?definitionId=${definitionId}&$top=200`;
     if (url.startsWith('https://dev.azure.com')) {
@@ -767,9 +1140,16 @@ export default class PipelinesDataProvider {
   }
 
   /**
-   * Fetch all releases for a definition using continuation tokens.
+   * Fetches all releases for a definition using continuation tokens.
+   *
+   * This is used by SVD release range handling because the requested from/to releases may be
+   * older than the first page returned by Azure DevOps.
+   *
+   * @param range When provided, pagination stops as soon as both fromId and toId are present in
+   *   the accumulated results. ADO returns releases in descending id order, so once the smallest
+   *   id seen is <= the lower requested id both endpoints are guaranteed to be loaded.
    */
-  async GetAllReleaseHistory(projectName: string, definitionId: string) {
+  async GetAllReleaseHistory(projectName: string, definitionId: string, range?: { fromId: number; toId: number }) {
     let baseUrl: string = `${this.orgUrl}${projectName}/_apis/release/releases?definitionId=${definitionId}&api-version=6.0`;
     if (baseUrl.startsWith('https://dev.azure.com')) {
       baseUrl = baseUrl.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com');
@@ -793,14 +1173,25 @@ export default class PipelinesDataProvider {
         );
         const { value = [] } = data || {};
         all.push(...value);
-        // Azure DevOps returns continuation token header for next page
-        continuationToken =
-          headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
         page++;
         logger.debug(`GetAllReleaseHistory: fetched page ${page}, cumulative ${all.length} releases`);
+
+        // Stop-early: once the smallest id in the accumulated list is <= the lower
+        // requested id, both endpoints of the range are present.
+        if (range && all.length > 0) {
+          const lowerBound = Math.min(range.fromId, range.toId);
+          const minId = Math.min(...all.map((r: any) => Number(r.id)));
+          if (minId <= lowerBound) {
+            logger.debug(`GetAllReleaseHistory: stop-early at page ${page} (minId=${minId} <= lowerBound=${lowerBound})`);
+            break;
+          }
+        }
+
+        // Azure DevOps returns continuation token header for next page
+        continuationToken = this.getContinuationToken(headers);
       } catch (err: any) {
         logger.error(`GetAllReleaseHistory failed: ${err.message}`);
-        break;
+        throw err;
       }
     } while (continuationToken);
 

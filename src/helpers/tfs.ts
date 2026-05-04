@@ -131,7 +131,7 @@ export class TFSServices {
       headers: customHeaders,
       method: requestMethod,
       data: data,
-      timeout: requestMethod.toLocaleLowerCase() === 'get' ? 10000 : undefined, // More reasonable timeout
+      timeout: requestMethod.toLocaleLowerCase() === 'get' ? 30000 : undefined,
     };
 
     this.applyAuth(config, pat);
@@ -157,7 +157,7 @@ export class TFSServices {
       headers: customHeaders,
       method: requestMethod,
       data: data,
-      timeout: requestMethod.toLocaleLowerCase() === 'get' ? 10000 : undefined,
+      timeout: requestMethod.toLocaleLowerCase() === 'get' ? 30000 : undefined,
     };
 
     this.applyAuth(config, pat);
@@ -218,8 +218,8 @@ export class TFSServices {
     responseProcessor: (response: any) => any
   ): Promise<any> {
     let attempts = 0;
-    const maxAttempts = 3;
     const baseDelay = 500; // Start with 500ms delay
+    const maxAttempts = 3;
 
     while (true) {
       try {
@@ -261,7 +261,12 @@ export class TFSServices {
    */
   private static isRetryableError(error: any): boolean {
     // Network errors
-    if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.message.includes('timeout')) {
+    if (
+      error.code === 'ECONNRESET' ||
+      error.code === 'ETIMEDOUT' ||
+      error.code === 'ENOTFOUND' ||
+      error.message.includes('timeout')
+    ) {
       return true;
     }
 
@@ -283,7 +288,7 @@ export class TFSServices {
    */
   private static logDetailedError(error: any, url: string): void {
     if (error.response) {
-      logger.error(`Error for ${url}: ${error.message}`);
+      logger.error(`Error for ${url} - ${error.message}`);
       logger.error(`Status: ${error.response.status}`);
 
       if (error.response.data) {
@@ -296,7 +301,7 @@ export class TFSServices {
         }
       }
     } else {
-      logger.error(`Error for ${url}: ${error.message}`);
+      logger.error(`Error for ${url} - ${error.message}`);
     }
   }
 

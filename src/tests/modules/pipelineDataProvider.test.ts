@@ -581,18 +581,309 @@ describe('PipelinesDataProvider', () => {
       expect(result.value).toEqual([{ id: 1 }]);
     });
 
-    it('should handle errors during pagination', async () => {
+    it('should continue paging for reversed release ranges until the lower release id is loaded', async () => {
+      const projectName = 'project1';
+      const definitionId = '456';
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [{ id: 20 }, { id: 19 }] },
+          headers: { 'x-ms-continuationtoken': 'page-2' },
+        })
+        .mockResolvedValueOnce({
+          data: { value: [{ id: 14 }, { id: 13 }] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.GetAllReleaseHistory(projectName, definitionId, {
+        fromId: 20,
+        toId: 14,
+      });
+
+      expect(result.value.map((r: any) => r.id)).toEqual([20, 19, 14, 13]);
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(2);
+    });
+
+    it('should throw when release history pagination fails', async () => {
       // Arrange
       const projectName = 'project1';
       const definitionId = '456';
       (TFSServices.getItemContentWithHeaders as jest.Mock).mockRejectedValueOnce(new Error('API Error'));
 
-      // Act
-      const result = await pipelinesDataProvider.GetAllReleaseHistory(projectName, definitionId);
-
       // Assert
-      expect(result).toEqual({ count: 0, value: [] });
+      await expect(pipelinesDataProvider.GetAllReleaseHistory(projectName, definitionId)).rejects.toThrow(
+        'API Error'
+      );
       expect(logger.error).toHaveBeenCalled();
+    });
+  });
+
+  describe('findPreviousSuccessfulRelease', () => {
+    const releaseCandidate = (id: number, status = 'succeeded') => ({
+      id,
+      status: 'active',
+      environments: [{ status }],
+      releaseDefinition: { id: 456 },
+    });
+
+    it('should find previous successful release on a later Release API page', async () => {
+      const projectName = 'project1';
+      const definitionId = '456';
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+        .mockResolvedValueOnce({
+          data: { value: [releaseCandidate(80)] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findPreviousSuccessfulRelease(
+        projectName,
+        definitionId,
+        100
+      );
+
+      expect(result).toBe(80);
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
+        expect.stringContaining('continuationToken=next-page'),
+        mockToken,
+        'get',
+        null,
+        null
+      );
+    });
+
+    it('should query release history with expanded environments and ignore non-successful releases', async () => {
+      const projectName = 'project1';
+      const definitionId = '456';
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: {
+          value: [
+            releaseCandidate(99, 'failed'),
+            releaseCandidate(98, 'rejected'),
+            releaseCandidate(97, 'succeeded'),
+          ],
+        },
+        headers: {},
+      });
+
+      const result = await pipelinesDataProvider.findPreviousSuccessfulRelease(
+        projectName,
+        definitionId,
+        100
+      );
+
+      const url = (TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0];
+      expect(url).toContain(`definitionId=${definitionId}`);
+      expect(url).toContain('queryOrder=descending');
+      expect(url).toContain('$top=200');
+      expect(url).toContain('$expand=environments');
+      expect(result).toBe(97);
+    });
+
+    it('should retry release discovery with api-version 6.0 when 7.1 is unsupported', async () => {
+      const unsupportedError: any = new Error('The requested resource does not support api-version 7.1');
+      unsupportedError.response = { status: 404 };
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockRejectedValueOnce(unsupportedError)
+        .mockResolvedValueOnce({
+          data: { value: [releaseCandidate(90)] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findPreviousSuccessfulRelease('project1', '456', 100);
+
+      expect(result).toBe(90);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
+        'api-version=7.1'
+      );
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).toContain(
+        'api-version=6.0'
+      );
+    });
+
+    it('should retry release discovery when unsupported api-version is reported in Axios response data', async () => {
+      const unsupportedError: any = new Error('Request failed with status code 404');
+      unsupportedError.response = {
+        status: 404,
+        data: { message: 'The requested resource does not support api-version 7.1' },
+      };
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockRejectedValueOnce(unsupportedError)
+        .mockResolvedValueOnce({
+          data: { value: [releaseCandidate(89)] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findPreviousSuccessfulRelease('project1', '456', 100);
+
+      expect(result).toBe(89);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).toContain(
+        'api-version=6.0'
+      );
+    });
+
+    it('should not retry api-version 6.0 for ordinary invalid release definition errors', async () => {
+      const invalidDefinitionError: any = new Error('Release definition 456 was not found');
+      invalidDefinitionError.response = { status: 404 };
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockRejectedValueOnce(invalidDefinitionError);
+
+      await expect(
+        pipelinesDataProvider.findPreviousSuccessfulRelease('project1', '456', 100)
+      ).rejects.toThrow('Release definition 456 was not found');
+
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
+        'api-version=7.1'
+      );
+    });
+
+    it('should throw release discovery permission errors without retrying api-version 6.0', async () => {
+      const permissionError: any = new Error('Forbidden');
+      permissionError.response = { status: 403 };
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockRejectedValueOnce(permissionError);
+
+      await expect(
+        pipelinesDataProvider.findPreviousSuccessfulRelease('project1', '456', 100)
+      ).rejects.toThrow('Forbidden');
+
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
+        'api-version=7.1'
+      );
+    });
+
+    it('should throw when a later release discovery page fails', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+        .mockRejectedValueOnce(new Error('page failed'));
+
+      await expect(
+        pipelinesDataProvider.findPreviousSuccessfulRelease('project1', '456', 100)
+      ).rejects.toThrow('page failed');
+    });
+
+    it('should throw when previous release discovery exceeds the defensive page limit', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockImplementation(() =>
+        Promise.resolve({
+          data: { value: [] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+      );
+
+      await expect(
+        pipelinesDataProvider.findPreviousSuccessfulRelease('project1', '456', 100)
+      ).rejects.toThrow('Release discovery exceeded 50 pages');
+    });
+  });
+
+  describe('findLatestSuccessfulRelease', () => {
+    const releaseCandidate = (id: number, status = 'succeeded') => ({
+      id,
+      status: 'active',
+      environments: [{ status }],
+      releaseDefinition: { id: 456 },
+    });
+
+    it('should find latest successful release on a later Release API page', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [releaseCandidate(100, 'failed')] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+        .mockResolvedValueOnce({
+          data: { value: [releaseCandidate(90)] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findLatestSuccessfulRelease('project1', '456');
+
+      expect(result).toBe(90);
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
+        expect.stringContaining('continuationToken=next-page'),
+        mockToken,
+        'get',
+        null,
+        null
+      );
+    });
+
+    it('should retry latest release discovery with api-version 6.0 only for unsupported api-version errors', async () => {
+      const unsupportedError: any = new Error('The requested resource does not support api-version 7.1');
+      unsupportedError.response = { status: 404 };
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockRejectedValueOnce(unsupportedError)
+        .mockResolvedValueOnce({
+          data: { value: [releaseCandidate(101)] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findLatestSuccessfulRelease('project1', '456');
+
+      expect(result).toBe(101);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
+        'api-version=7.1'
+      );
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).toContain(
+        'api-version=6.0'
+      );
+    });
+
+    it('should retry latest release discovery when unsupported api-version is reported in Axios response data', async () => {
+      const unsupportedError: any = new Error('Request failed with status code 404');
+      unsupportedError.response = {
+        status: 404,
+        data: { message: 'The requested resource does not support api-version 7.1' },
+      };
+
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockRejectedValueOnce(unsupportedError)
+        .mockResolvedValueOnce({
+          data: { value: [releaseCandidate(102)] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findLatestSuccessfulRelease('project1', '456');
+
+      expect(result).toBe(102);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).toContain(
+        'api-version=6.0'
+      );
+    });
+
+    it('should not retry latest release discovery for ordinary 404 errors', async () => {
+      const invalidDefinitionError: any = new Error('Release definition 456 was not found');
+      invalidDefinitionError.response = { status: 404 };
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockRejectedValueOnce(invalidDefinitionError);
+
+      await expect(
+        pipelinesDataProvider.findLatestSuccessfulRelease('project1', '456')
+      ).rejects.toThrow('Release definition 456 was not found');
+
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
+    });
+
+    it('should throw when latest release discovery exceeds the defensive page limit', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockImplementation(() =>
+        Promise.resolve({
+          data: { value: [] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+      );
+
+      await expect(
+        pipelinesDataProvider.findLatestSuccessfulRelease('project1', '456')
+      ).rejects.toThrow('Release discovery exceeded 50 pages');
     });
   });
 
@@ -877,12 +1168,40 @@ describe('PipelinesDataProvider', () => {
   });
 
   describe('findPreviousPipeline', () => {
+    const targetPipelineRun = {
+      resources: {
+        repositories: {
+          '0': {
+            self: {
+              repository: { id: 'repo1' },
+              version: 'target-sha',
+              refName: 'refs/heads/main',
+            },
+          },
+        },
+      },
+    } as unknown as PipelineRun;
+
+    const buildCandidate = (id: number, branchName: string, repoId = 'repo1') => ({
+      id,
+      status: 'completed',
+      result: 'succeeded',
+      sourceBranch: branchName,
+      sourceVersion: `sha-${id}`,
+      repository: { id: repoId },
+      definition: { id: 123 },
+    });
+
     it('should return undefined when no pipeline runs exist', async () => {
       // Arrange
       const teamProject = 'project1';
       const pipelineId = '123';
       const toPipelineRunId = 100;
       const targetPipeline = {} as PipelineRun;
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [] },
+        headers: {},
+      });
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({});
 
       // Act
@@ -908,6 +1227,15 @@ describe('PipelinesDataProvider', () => {
         },
       } as any;
 
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: {},
+        })
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: {},
+        });
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
         value: [
           { id: 100, result: 'succeeded' },
@@ -938,6 +1266,10 @@ describe('PipelinesDataProvider', () => {
       const toPipelineRunId = 100;
       const targetPipeline = {} as PipelineRun;
 
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [] },
+        headers: {},
+      });
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
         value: [{ id: 99, result: 'succeeded' }],
       });
@@ -955,6 +1287,7 @@ describe('PipelinesDataProvider', () => {
 
       expect(res).toBeUndefined();
       expect(detailsSpy).not.toHaveBeenCalled();
+      expect(TFSServices.getItemContentWithHeaders).not.toHaveBeenCalled();
     });
 
     it('should skip when pipeline details do not include repositories', async () => {
@@ -1018,6 +1351,15 @@ describe('PipelinesDataProvider', () => {
         },
       };
 
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: {},
+        })
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: {},
+        });
       (TFSServices.getItemContent as jest.Mock)
         .mockResolvedValueOnce(mockRunHistory)
         .mockResolvedValueOnce(mockPipelineDetails);
@@ -1033,6 +1375,171 @@ describe('PipelinesDataProvider', () => {
 
       // Assert
       expect(result).toBe(99);
+    });
+
+    it('should find previous successful build on a later Builds API page', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+        .mockResolvedValueOnce({
+          data: { value: [buildCandidate(80, 'refs/heads/main')] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findPreviousPipeline(
+        'project1',
+        '123',
+        100,
+        targetPipelineRun,
+        true
+      );
+
+      expect(result).toBe(80);
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
+        expect.stringContaining('continuationToken=next-page'),
+        mockToken,
+        'get',
+        null,
+        null
+      );
+    });
+
+    it('should prefer a same-branch successful build before trying cross-branch fallback', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [buildCandidate(90, 'refs/heads/main')] },
+        headers: {},
+      });
+
+      const result = await pipelinesDataProvider.findPreviousPipeline(
+        'project1',
+        '123',
+        100,
+        targetPipelineRun,
+        true
+      );
+
+      expect(result).toBe(90);
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
+        'branchName=refs%2Fheads%2Fmain'
+      );
+    });
+
+    it('should fall back to a different branch only when same-branch discovery fails', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: {},
+        })
+        .mockResolvedValueOnce({
+          data: { value: [buildCandidate(95, 'refs/heads/release')] },
+          headers: {},
+        });
+
+      const result = await pipelinesDataProvider.findPreviousPipeline(
+        'project1',
+        '123',
+        100,
+        targetPipelineRun,
+        true
+      );
+
+      expect(result).toBe(95);
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(2);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
+        'branchName=refs%2Fheads%2Fmain'
+      );
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).not.toContain(
+        'branchName='
+      );
+    });
+
+    it('should query completed successful builds and ignore non-previous candidates', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [buildCandidate(100, 'refs/heads/main'), buildCandidate(101, 'refs/heads/main')] },
+          headers: {},
+        })
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: {},
+        });
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({});
+
+      const result = await pipelinesDataProvider.findPreviousPipeline(
+        'project1',
+        '123',
+        100,
+        targetPipelineRun,
+        true
+      );
+
+      const url = (TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0];
+      expect(url).toContain('definitions=123');
+      expect(url).toContain('resultFilter=succeeded');
+      expect(url).toContain('statusFilter=completed');
+      expect(url).toContain('queryOrder=finishTimeDescending');
+      expect(result).toBeUndefined();
+    });
+
+    it('should throw and not try cross-branch fallback when same-branch Builds API fails', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockRejectedValueOnce(new Error('same branch failed'));
+
+      await expect(
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+      ).rejects.toThrow('same branch failed');
+
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
+        'branchName=refs%2Fheads%2Fmain'
+      );
+      expect(TFSServices.getItemContent).not.toHaveBeenCalled();
+    });
+
+    it('should throw when cross-branch Builds API fallback fails after same-branch no-match', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: {},
+        })
+        .mockRejectedValueOnce(new Error('fallback failed'));
+
+      await expect(
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+      ).rejects.toThrow('fallback failed');
+
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(2);
+      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).not.toContain(
+        'branchName='
+      );
+    });
+
+    it('should throw when a later Builds API page fails', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock)
+        .mockResolvedValueOnce({
+          data: { value: [] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+        .mockRejectedValueOnce(new Error('build page failed'));
+
+      await expect(
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+      ).rejects.toThrow('build page failed');
+    });
+
+    it('should throw when previous build discovery exceeds the defensive page limit', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockImplementation(() =>
+        Promise.resolve({
+          data: { value: [] },
+          headers: { 'x-ms-continuationtoken': 'next-page' },
+        })
+      );
+
+      await expect(
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+      ).rejects.toThrow('Pipeline discovery exceeded 50 pages');
     });
   });
 
