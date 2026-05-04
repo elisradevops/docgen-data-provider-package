@@ -2569,6 +2569,37 @@ describe('GitDataProvider - createLinkedRelatedItemsForSVD', () => {
     );
   });
 
+  it('GetLinkedRelatedItemsForSVD should expose the shared linked WI enrichment for callers', async () => {
+    jest.spyOn((gitDataProvider as any).ticketsDataProvider, 'GetWorkItemByUrl').mockResolvedValueOnce({
+      id: 10,
+      fields: { 'System.WorkItemType': 'Requirement', 'System.Title': 'Req' },
+      _links: { html: { href: 'http://example.com/10' } },
+    });
+
+    const res = await gitDataProvider.GetLinkedRelatedItemsForSVD(
+      { isEnabled: true, linkedWiTypes: 'reqOnly', linkedWiRelationship: 'affectsOnly' },
+      {
+        id: 1,
+        relations: [
+          {
+            url: 'https://example.com/_apis/wit/workItems/10',
+            rel: 'Affects',
+            attributes: { name: 'Affects' },
+          },
+        ],
+      }
+    );
+
+    expect(res).toHaveLength(1);
+    expect(res[0]).toEqual(
+      expect.objectContaining({
+        id: 10,
+        wiType: 'Requirement',
+        relationType: 'Affects',
+      })
+    );
+  });
+
   it('should add Feature when linkedWiTypes=featureOnly and linkedWiRelationship=coversOnly', async () => {
     jest.spyOn((gitDataProvider as any).ticketsDataProvider, 'GetWorkItemByUrl').mockResolvedValueOnce({
       id: 11,

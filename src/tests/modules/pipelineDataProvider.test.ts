@@ -18,6 +18,36 @@ describe('PipelinesDataProvider', () => {
     pipelinesDataProvider = new PipelinesDataProvider(mockOrgUrl, mockToken);
   });
 
+  describe('GetBuildWorkItems', () => {
+    it('should return work item references associated with a single build', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue({
+        value: [{ id: '1', url: 'https://example.test/wi/1' }],
+      });
+
+      const result = await pipelinesDataProvider.GetBuildWorkItems('project1', 123);
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        'https://dev.azure.com/orgname/project1/_apis/build/builds/123/workitems?$top=2000&api-version=6.0',
+        mockToken,
+        'get'
+      );
+      expect(result).toEqual([{ id: '1', url: 'https://example.test/wi/1' }]);
+    });
+
+    it('should encode project names in the build work items URL', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue({});
+
+      const result = await pipelinesDataProvider.GetBuildWorkItems('Project With Spaces', 123);
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        'https://dev.azure.com/orgname/Project%20With%20Spaces/_apis/build/builds/123/workitems?$top=2000&api-version=6.0',
+        mockToken,
+        'get'
+      );
+      expect(result).toEqual([]);
+    });
+  });
+
   describe('isMatchingPipeline', () => {
     // Create test method to access private method
     const invokeIsMatchingPipeline = (
