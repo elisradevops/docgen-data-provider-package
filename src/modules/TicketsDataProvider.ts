@@ -3189,7 +3189,8 @@ export default class TicketsDataProvider {
 
   public async GetWorkItemTypeList(project: string) {
     try {
-      let url = `${this.orgUrl}${project}/_apis/wit/workitemtypes?api-version=5.1`;
+      const query = new URLSearchParams({ 'api-version': '5.1' }).toString();
+      let url = `${this.orgUrl}${encodeURIComponent(project)}/_apis/wit/workitemtypes?${query}`;
       const { value: workItemTypes } = await TFSServices.getItemContent(url, this.token);
       const workItemTypesWithIcons = await Promise.all(
         workItemTypes.map(async (workItemType: any) => {

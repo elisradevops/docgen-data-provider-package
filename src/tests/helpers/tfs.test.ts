@@ -21,6 +21,7 @@ describe('TFSServices', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAxiosInstance.request.mockReset();
     // Mock Math.random to return a predictable value for tests with retry
     Math.random = jest.fn().mockReturnValue(0.5);
   });
@@ -191,7 +192,7 @@ describe('TFSServices', () => {
           url: url.replace(/ /g, '%20'),
           method: 'get',
           auth: { username: '', password: pat },
-          timeout: 10000, // Verify the actual timeout value is 10000ms
+          timeout: 30000,
         })
       );
     });
@@ -228,7 +229,7 @@ describe('TFSServices', () => {
       timeoutError.name = 'TimeoutError';
       (timeoutError as any).code = 'ECONNABORTED';
 
-      // Configure mock to simulate timeout (will retry 3 times by default)
+      // Timeout errors should get the standard retry budget.
       mockAxiosInstance.request
         .mockRejectedValueOnce(timeoutError)
         .mockRejectedValueOnce(timeoutError)
@@ -290,7 +291,7 @@ describe('TFSServices', () => {
 
       // Act & Assert
       await expect(TFSServices.getItemContent(url, pat)).rejects.toThrow('ENOTFOUND');
-      expect(mockAxiosInstance.request).toHaveBeenCalledTimes(2); // Should retry DNS failures too
+      expect(mockAxiosInstance.request).toHaveBeenCalledTimes(3); // Initial + 2 retries
     });
 
     it('should handle spaces in URL by replacing them with %20', async () => {

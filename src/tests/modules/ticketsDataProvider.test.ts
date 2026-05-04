@@ -1029,6 +1029,11 @@ describe('TicketsDataProvider', () => {
           icon: expect.objectContaining({ dataUrl: 'data:image/png;base64,xxx' }),
         }),
       );
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        expect.stringContaining('/_apis/wit/workitemtypes?api-version=5.1'),
+        expect.any(String),
+      );
+      expect((TFSServices.getItemContent as jest.Mock).mock.calls[0][0]).not.toContain('api-version=5.1:');
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to download icon'));
     });
   });
