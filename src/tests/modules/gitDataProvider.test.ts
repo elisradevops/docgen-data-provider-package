@@ -1334,6 +1334,90 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
     // Assert - should only have 1 work item (no duplicates)
     expect(result.commitChangesArray).toHaveLength(1);
   });
+
+  it('cross-project repo: should resolve WIs using teamProject fallback when _links.web.href is missing', async () => {
+    // Real ADO cross-project resource-pipeline repos can return repo metadata without
+    // _links.web.href. Previously this left targetRepo.projectId undefined, causing
+    // GetWorkItem to call /{orgUrl}undefined/... and silently swallow the 404.
+    const pipelineTeamProject = 'TestProject-CMMI';
+    const extendedCommits = [
+      {
+        commit: {
+          commitId: 'abc1234',
+          workItems: [{ id: 42 }],
+          committer: { date: '2024-01-01', name: 'Dev' },
+          comment: 'cross-project fix',
+        },
+      },
+    ];
+    const targetRepo = { url: 'https://dev.azure.com/org/OtherProject/_apis/git/repositories/repo-id' };
+    const addedWorkItemByIdSet = new Set<number>();
+
+    // Repo lives in a different project; response has no _links.web.href
+    const mockRepoDataNoCrossLink = {
+      project: { id: 'cross-project-id' },
+      // no _links at all
+    };
+    const mockPopulatedWI = { id: 42, fields: { 'System.Title': 'Cross-project WI' } };
+
+    (TFSServices.getItemContent as jest.Mock)
+      .mockResolvedValueOnce(mockRepoDataNoCrossLink) // repo metadata call
+      .mockResolvedValueOnce(mockPopulatedWI);        // GetWorkItem call
+
+    const result = await gitDataProvider.getItemsForPipelineRange(
+      pipelineTeamProject,
+      extendedCommits,
+      targetRepo,
+      addedWorkItemByIdSet
+    );
+
+    expect(result.commitChangesArray).toHaveLength(1);
+    expect(result.commitChangesArray[0].workItem.id).toBe(42);
+    // GetWorkItem should have been called with the repo's own projectId from repoData.project.id
+    expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+      expect.stringContaining('cross-project-id'),
+      expect.any(String)
+    );
+  });
+
+  it('cross-project repo: should fall back to teamProject when repoData.project.id is also missing', async () => {
+    const pipelineTeamProject = 'TestProject-CMMI';
+    const extendedCommits = [
+      {
+        commit: {
+          commitId: 'def5678',
+          workItems: [{ id: 99 }],
+          committer: { date: '2024-01-02', name: 'Dev' },
+          comment: 'fallback test',
+        },
+      },
+    ];
+    const targetRepo = { url: 'https://dev.azure.com/org/SomeProject/_apis/git/repositories/repo-id2' };
+    const addedWorkItemByIdSet = new Set<number>();
+
+    // Response with neither _links.web.href nor project.id
+    const mockRepoDataEmpty = {};
+    const mockPopulatedWI = { id: 99, fields: { 'System.Title': 'Fallback WI' } };
+
+    (TFSServices.getItemContent as jest.Mock)
+      .mockResolvedValueOnce(mockRepoDataEmpty)
+      .mockResolvedValueOnce(mockPopulatedWI);
+
+    const result = await gitDataProvider.getItemsForPipelineRange(
+      pipelineTeamProject,
+      extendedCommits,
+      targetRepo,
+      addedWorkItemByIdSet
+    );
+
+    expect(result.commitChangesArray).toHaveLength(1);
+    expect(result.commitChangesArray[0].workItem.id).toBe(99);
+    // GetWorkItem should have been called with the pipeline teamProject as fallback
+    expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+      expect.stringContaining(pipelineTeamProject),
+      expect.any(String)
+    );
+  });
 });
 
 describe('GitDataProvider - GetItemsInPullRequestRange', () => {

@@ -492,11 +492,16 @@ export default class GitDataProvider {
       //First fetch the repo web url
       if (targetRepo.url) {
         const repoData = await TFSServices.getItemContent(targetRepo.url, this.token);
-        const repoWebUrl = repoData._links?.web.href;
-        const targetRepoProjectId = repoData.project?.id;
+        const repoWebUrl = repoData?._links?.web?.href;
+        const targetRepoProjectId = repoData?.project?.id;
         if (repoWebUrl) {
           targetRepo['url'] = repoWebUrl;
-          targetRepo['projectId'] = targetRepoProjectId ?? teamProject;
+        }
+        targetRepo['projectId'] = targetRepoProjectId ?? teamProject;
+        if (!targetRepoProjectId) {
+          logger.warn(
+            `getItemsForPipelineRange: repo response missing project.id for ${targetRepo.url}; falling back to pipeline teamProject=${teamProject}`
+          );
         }
       }
       //Then extend the commit information with the related WIs
