@@ -52,14 +52,9 @@ describe('PipelinesDataProvider', () => {
     // Create test method to access private method
     const invokeIsMatchingPipeline = (
       fromPipeline: PipelineRun,
-      targetPipeline: PipelineRun,
-      searchPrevPipelineFromDifferentCommit: boolean
+      targetPipeline: PipelineRun
     ): boolean => {
-      return (pipelinesDataProvider as any).isMatchingPipeline(
-        fromPipeline,
-        targetPipeline,
-        searchPrevPipelineFromDifferentCommit
-      );
+      return (pipelinesDataProvider as any).isMatchingPipeline(fromPipeline, targetPipeline);
     };
 
     it('should return false when repository IDs are different', () => {
@@ -93,13 +88,13 @@ describe('PipelinesDataProvider', () => {
       } as unknown as PipelineRun;
 
       // Act
-      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline);
 
       // Assert
       expect(result).toBe(false);
     });
 
-    it('should return true when versions are the same and searchPrevPipelineFromDifferentCommit is false', () => {
+    it('should return true when versions are the same and refNames match', () => {
       // Arrange
       const fromPipeline = {
         resources: {
@@ -130,47 +125,10 @@ describe('PipelinesDataProvider', () => {
       } as unknown as PipelineRun;
 
       // Act
-      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline);
 
       // Assert
       expect(result).toBe(true);
-    });
-
-    it('should return false when versions are the same and searchPrevPipelineFromDifferentCommit is true', () => {
-      // Arrange
-      const fromPipeline = {
-        resources: {
-          repositories: {
-            '0': {
-              self: {
-                repository: { id: 'repo1' },
-                version: 'v1',
-                refName: 'refs/heads/main',
-              },
-            },
-          },
-        },
-      } as unknown as PipelineRun;
-
-      const targetPipeline = {
-        resources: {
-          repositories: {
-            '0': {
-              self: {
-                repository: { id: 'repo1' },
-                version: 'v1',
-                refName: 'refs/heads/main',
-              },
-            },
-          },
-        },
-      } as unknown as PipelineRun;
-
-      // Act
-      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, true);
-
-      // Assert
-      expect(result).toBe(false);
     });
 
     it('should return true when refNames match but versions differ', () => {
@@ -204,7 +162,7 @@ describe('PipelinesDataProvider', () => {
       } as unknown as PipelineRun;
 
       // Act
-      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, true);
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline);
 
       // Assert
       expect(result).toBe(true);
@@ -237,7 +195,7 @@ describe('PipelinesDataProvider', () => {
       } as unknown as PipelineRun;
 
       // Act
-      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline);
 
       // Assert
       expect(result).toBe(true);
@@ -270,7 +228,7 @@ describe('PipelinesDataProvider', () => {
         },
       } as unknown as PipelineRun;
 
-      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline);
       expect(result).toBe(true);
     });
   });
@@ -1176,8 +1134,10 @@ describe('PipelinesDataProvider', () => {
       } as unknown as PipelineRun;
 
       const mockRepo = {
+        id: 'repo-123',
         name: 'MyRepo',
         url: 'https://dev.azure.com/org/project/_git/MyRepo',
+        // no project field → falls back to repo.url
       };
 
       const mockGitDataProvider = {
@@ -1197,6 +1157,45 @@ describe('PipelinesDataProvider', () => {
         repoSha1: 'abc123',
         url: 'https://dev.azure.com/org/project/_git/MyRepo',
       });
+    });
+
+    it('should use project-name URL when repo response includes project.name (on-prem TFS WI fix)', async () => {
+      // On-prem TFS canonicalizes repo.url to a project-UUID form, but commitsbatch only
+      // resolves workItems when the URL uses the project name. This test verifies the URL
+      // is rewritten to project-name form when project.name is available.
+      const inPipeline = {
+        resources: {
+          repositories: {
+            self: {
+              repository: { id: 'b671b0fa-1111-2222-3333-444444444444', type: 'TfsGit' },
+              version: 'abc123',
+            },
+          },
+        },
+      } as unknown as PipelineRun;
+
+      const mockRepo = {
+        id: 'b671b0fa-1111-2222-3333-444444444444',
+        name: 'eden1',
+        url: 'http://elis-tfs:8080/tfs/ElisraCollection/5d662fe5-uuid/_apis/git/repositories/b671b0fa-1111-2222-3333-444444444444',
+        project: { id: '5d662fe5-uuid', name: 'TestProject-CMMI' },
+      };
+
+      const mockGitDataProvider = {
+        GetGitRepoFromRepoId: jest.fn().mockResolvedValue(mockRepo),
+      } as unknown as GitDataProvider;
+
+      // Act
+      const result = await pipelinesDataProvider.getPipelineResourceRepositoriesFromObject(
+        inPipeline,
+        mockGitDataProvider
+      );
+
+      // Assert — URL must use project NAME, not UUID
+      expect(result).toHaveLength(1);
+      expect((result as any[])[0].url).toContain('TestProject-CMMI');
+      expect((result as any[])[0].url).not.toContain('5d662fe5-uuid');
+      expect((result as any[])[0].url).toContain('b671b0fa-1111-2222-3333-444444444444');
     });
 
     it('should skip non-azureReposGit repositories', async () => {
@@ -1270,8 +1269,7 @@ describe('PipelinesDataProvider', () => {
         teamProject,
         pipelineId,
         toPipelineRunId,
-        targetPipeline,
-        false
+        targetPipeline
       );
 
       // Assert
@@ -1315,8 +1313,7 @@ describe('PipelinesDataProvider', () => {
         teamProject,
         pipelineId,
         toPipelineRunId,
-        targetPipeline,
-        true
+        targetPipeline
       );
       expect(res).toBe(99);
     });
@@ -1342,7 +1339,6 @@ describe('PipelinesDataProvider', () => {
         pipelineId,
         toPipelineRunId,
         targetPipeline,
-        false,
         'Deploy'
       );
 
@@ -1368,8 +1364,7 @@ describe('PipelinesDataProvider', () => {
         teamProject,
         pipelineId,
         toPipelineRunId,
-        targetPipeline,
-        false
+        targetPipeline
       );
 
       expect(res).toBeUndefined();
@@ -1430,8 +1425,7 @@ describe('PipelinesDataProvider', () => {
         teamProject,
         pipelineId,
         toPipelineRunId,
-        targetPipeline,
-        true
+        targetPipeline
       );
 
       // Assert
@@ -1453,8 +1447,7 @@ describe('PipelinesDataProvider', () => {
         'project1',
         '123',
         100,
-        targetPipelineRun,
-        true
+        targetPipelineRun
       );
 
       expect(result).toBe(80);
@@ -1477,8 +1470,7 @@ describe('PipelinesDataProvider', () => {
         'project1',
         '123',
         100,
-        targetPipelineRun,
-        true
+        targetPipelineRun
       );
 
       expect(result).toBe(90);
@@ -1503,8 +1495,7 @@ describe('PipelinesDataProvider', () => {
         'project1',
         '123',
         100,
-        targetPipelineRun,
-        true
+        targetPipelineRun
       );
 
       expect(result).toBe(95);
@@ -1533,8 +1524,7 @@ describe('PipelinesDataProvider', () => {
         'project1',
         '123',
         100,
-        targetPipelineRun,
-        true
+        targetPipelineRun
       );
 
       const url = (TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0];
@@ -1549,7 +1539,7 @@ describe('PipelinesDataProvider', () => {
       (TFSServices.getItemContentWithHeaders as jest.Mock).mockRejectedValueOnce(new Error('same branch failed'));
 
       await expect(
-        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun)
       ).rejects.toThrow('same branch failed');
 
       expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
@@ -1568,7 +1558,7 @@ describe('PipelinesDataProvider', () => {
         .mockRejectedValueOnce(new Error('fallback failed'));
 
       await expect(
-        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun)
       ).rejects.toThrow('fallback failed');
 
       expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(2);
@@ -1586,7 +1576,7 @@ describe('PipelinesDataProvider', () => {
         .mockRejectedValueOnce(new Error('build page failed'));
 
       await expect(
-        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun)
       ).rejects.toThrow('build page failed');
     });
 
@@ -1599,7 +1589,7 @@ describe('PipelinesDataProvider', () => {
       );
 
       await expect(
-        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun, true)
+        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun)
       ).rejects.toThrow('Pipeline discovery exceeded 50 pages');
     });
   });
