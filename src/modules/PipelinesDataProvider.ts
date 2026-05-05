@@ -46,7 +46,6 @@ export default class PipelinesDataProvider {
    * @param pipelineId Pipeline/build definition id.
    * @param toPipelineRunId Target run/build id. Candidates must be older than this id.
    * @param targetPipeline Full target pipeline run details, used for repository/branch matching.
-   * @param searchPrevPipelineFromDifferentCommit When true, skip candidates from the same commit.
    * @param fromStage Optional stage name. When set, only previous runs with this successful stage match.
    */
   public async findPreviousPipeline(
@@ -54,7 +53,6 @@ export default class PipelinesDataProvider {
     pipelineId: string,
     toPipelineRunId: number,
     targetPipeline: any,
-    searchPrevPipelineFromDifferentCommit: boolean,
     fromStage: string = ''
   ) {
     if (!fromStage) {
@@ -62,8 +60,7 @@ export default class PipelinesDataProvider {
         teamProject,
         pipelineId,
         toPipelineRunId,
-        targetPipeline,
-        searchPrevPipelineFromDifferentCommit
+        targetPipeline
       );
       if (previousBuildId) {
         return previousBuildId;
@@ -89,7 +86,7 @@ export default class PipelinesDataProvider {
         continue;
       }
 
-      if (this.isMatchingPipeline(fromPipeline, targetPipeline, searchPrevPipelineFromDifferentCommit)) {
+      if (this.isMatchingPipeline(fromPipeline, targetPipeline)) {
         return pipelineRun.id;
       }
     }
@@ -109,8 +106,7 @@ export default class PipelinesDataProvider {
     teamProject: string,
     definitionId: string,
     toBuildId: number,
-    targetPipeline: any,
-    searchPrevPipelineFromDifferentCommit: boolean
+    targetPipeline: any
   ): Promise<number | undefined> {
     const targetRepo = this.getPrimaryPipelineRepository(targetPipeline);
     const targetBranch = this.normalizeBranchName(targetRepo?.refName);
@@ -121,7 +117,6 @@ export default class PipelinesDataProvider {
         definitionId,
         toBuildId,
         targetPipeline,
-        searchPrevPipelineFromDifferentCommit,
         targetBranch
       );
       if (sameBranchResult.status === 'failed') {
@@ -136,8 +131,7 @@ export default class PipelinesDataProvider {
       teamProject,
       definitionId,
       toBuildId,
-      targetPipeline,
-      searchPrevPipelineFromDifferentCommit
+      targetPipeline
     );
     if (anyBranchResult.status === 'failed') {
       throw anyBranchResult.error;
@@ -157,7 +151,6 @@ export default class PipelinesDataProvider {
     definitionId: string,
     toBuildId: number,
     targetPipeline: any,
-    searchPrevPipelineFromDifferentCommit: boolean,
     branchName?: string
   ): Promise<PreviousDiscoveryResult> {
     const targetRepo = this.getPrimaryPipelineRepository(targetPipeline);
@@ -189,7 +182,6 @@ export default class PipelinesDataProvider {
             build,
             targetRepo,
             toBuildId,
-            searchPrevPipelineFromDifferentCommit,
             branchName
           )
         );
@@ -234,14 +226,12 @@ export default class PipelinesDataProvider {
    * Validates a Builds API candidate against the target run.
    *
    * A candidate must be older than the target, completed successfully, from the same
-   * repository, and optionally from the required branch. When the caller asks for a
-   * different commit, candidates with the same source version are excluded.
+   * repository, and optionally from the required branch.
    */
   private isMatchingPreviousBuild(
     build: any,
     targetRepo: any,
     toBuildId: number,
-    searchPrevPipelineFromDifferentCommit: boolean,
     requiredBranch?: string
   ): boolean {
     const buildId = Number(build?.id);
@@ -254,10 +244,6 @@ export default class PipelinesDataProvider {
     if (!buildRepoId || !targetRepoId || buildRepoId !== targetRepoId) return false;
 
     if (requiredBranch && build?.sourceBranch !== requiredBranch) return false;
-
-    if (build?.sourceVersion && targetRepo?.version && build.sourceVersion === targetRepo.version) {
-      return !searchPrevPipelineFromDifferentCommit;
-    }
 
     return true;
   }
@@ -467,17 +453,15 @@ export default class PipelinesDataProvider {
   }
 
   /**
-   * Determines if two pipelines match based on their repository and version information.
+   * Determines if two pipelines match based on their repository and branch.
    *
    * @param fromPipeline - The source pipeline to compare.
    * @param targetPipeline - The target pipeline to compare against.
-   * @param searchPrevPipelineFromDifferentCommit - A flag indicating whether to search for a previous pipeline from a different commit.
-   * @returns `true` if the pipelines match based on the repository and version criteria; otherwise, `false`.
+   * @returns `true` if the pipelines share the same repository and ref; otherwise, `false`.
    */
   private isMatchingPipeline(
     fromPipeline: PipelineRun,
-    targetPipeline: PipelineRun,
-    searchPrevPipelineFromDifferentCommit: boolean
+    targetPipeline: PipelineRun
   ): boolean {
     if (!fromPipeline?.resources?.repositories || !targetPipeline?.resources?.repositories) {
       return false;
@@ -498,10 +482,6 @@ export default class PipelinesDataProvider {
 
     if (fromRepo.repository.id !== targetRepo.repository.id) {
       return false;
-    }
-
-    if (fromRepo.version === targetRepo.version) {
-      return !searchPrevPipelineFromDifferentCommit;
     }
 
     return fromRepo.refName === targetRepo.refName;
@@ -995,6 +975,18 @@ export default class PipelinesDataProvider {
    * @param gitDataProviderInstance - An instance of GitDataProvider to fetch repository details.
    * @returns A promise that resolves to an array of unique resource repositories.
    */
+  /**
+   * Rebuilds a repository API URL using the project name rather than the UUID that TFS
+   * returns in repo.url. On-prem TFS indexes WI-to-commit associations by project name, so
+   * commitsbatch requests must use the name form to receive populated workItems arrays.
+   */
+  private buildRepoApiUrl(repo: Repository): string {
+    const projectName = repo.project?.name;
+    return projectName
+      ? `${this.orgUrl}${projectName}/_apis/git/repositories/${repo.id}`
+      : repo.url;
+  }
+
   public async getPipelineResourceRepositoriesFromObject(
     inPipeline: PipelineRun,
     gitDataProviderInstance: GitDataProvider
@@ -1015,10 +1007,11 @@ export default class PipelinesDataProvider {
       if (!repoId) continue;
 
       const repo: Repository = await gitDataProviderInstance.GetGitRepoFromRepoId(repoId);
+      const repoApiUrl = this.buildRepoApiUrl(repo);
       const resourceRepository: ResourceRepository = {
         repoName: repo.name,
         repoSha1: resourceRepo.version,
-        url: repo.url,
+        url: repoApiUrl,
       };
       const key = String(repoId);
       if (!resourceRepositoriesById.has(key)) {

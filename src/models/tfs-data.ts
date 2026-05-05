@@ -238,6 +238,7 @@ export interface Repository {
   id: string;
   name: string;
   url: string;
+  project?: { id: string; name: string };
 }
 
 export interface ResourceRepository {
