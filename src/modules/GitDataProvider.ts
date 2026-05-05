@@ -634,6 +634,20 @@ export default class GitDataProvider {
     return linkedItems;
   }
 
+  /**
+   * Public entry point for resolving linked related work items on a single populated work item
+   * for SVD document generation.
+   *
+   * Filters relations by work item type (Requirement / Feature) and relationship kind
+   * (Affects / CoveredBy) according to `linkedWiOptions`, then returns the matching
+   * {@link LinkedRelation} records.
+   *
+   * @param linkedWiOptions - Configuration object controlling which link types and relationship
+   *   directions to include (`isEnabled`, `linkedWiTypes`, `linkedWiRelationship`).
+   * @param populatedWorkItem - A fully populated ADO work item object that includes its
+   *   `relations` array.
+   * @returns A promise resolving to an array of `LinkedRelation` objects for the work item.
+   */
   async GetLinkedRelatedItemsForSVD(linkedWiOptions: any, populatedWorkItem: any) {
     return this.createLinkedRelatedItemsForSVD(linkedWiOptions, populatedWorkItem);
   }
