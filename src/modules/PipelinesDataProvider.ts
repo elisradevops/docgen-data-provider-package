@@ -983,7 +983,7 @@ export default class PipelinesDataProvider {
   private buildRepoApiUrl(repo: Repository): string {
     const projectName = repo.project?.name;
     return projectName
-      ? `${this.orgUrl}${projectName}/_apis/git/repositories/${repo.id}`
+      ? `${this.orgUrl}${encodeURIComponent(projectName)}/_apis/git/repositories/${repo.id}`
       : repo.url;
   }
 

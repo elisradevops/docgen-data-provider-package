@@ -1198,6 +1198,39 @@ describe('PipelinesDataProvider', () => {
       expect((result as any[])[0].url).toContain('b671b0fa-1111-2222-3333-444444444444');
     });
 
+    it('should encode project name when rebuilding repository API URL', async () => {
+      const inPipeline = {
+        resources: {
+          repositories: {
+            self: {
+              repository: { id: 'repo-123', type: 'TfsGit' },
+              version: 'abc123',
+            },
+          },
+        },
+      } as unknown as PipelineRun;
+
+      const mockRepo = {
+        id: 'repo-123',
+        name: 'MyRepo',
+        url: 'http://elis-tfs:8080/tfs/ElisraCollection/project-id/_apis/git/repositories/repo-123',
+        project: { id: 'project-id', name: 'Project With Spaces' },
+      };
+
+      const mockGitDataProvider = {
+        GetGitRepoFromRepoId: jest.fn().mockResolvedValue(mockRepo),
+      } as unknown as GitDataProvider;
+
+      const result = await pipelinesDataProvider.getPipelineResourceRepositoriesFromObject(
+        inPipeline,
+        mockGitDataProvider
+      );
+
+      expect((result as any[])[0].url).toBe(
+        'https://dev.azure.com/orgname/Project%20With%20Spaces/_apis/git/repositories/repo-123'
+      );
+    });
+
     it('should skip non-azureReposGit repositories', async () => {
       // Arrange
       const inPipeline = {
