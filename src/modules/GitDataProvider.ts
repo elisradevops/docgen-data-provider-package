@@ -507,6 +507,10 @@ export default class GitDataProvider {
       //Then extend the commit information with the related WIs
       for (const extendedCommit of extendedCommits) {
         const { commit } = extendedCommit;
+        logger.info(
+          `getItemsForPipelineRange: commit ${commit?.commitId?.substring(0, 7)} ` +
+          `workItems=${JSON.stringify(commit?.workItems ?? null)}`
+        );
         if (!Array.isArray(commit.workItems) || commit.workItems.length === 0) {
           if (includeUnlinkedCommits) {
             commitsWithNoRelations.push({
@@ -920,6 +924,10 @@ export default class GitDataProvider {
 
       let url = `${gitUrl}/commitsbatch?$skip=${skipping}&$top=${chunkSize}&api-version=5.1`;
       let commitsResponse = await TFSServices.postRequest(url, this.token, undefined, body);
+      logger.info(
+        `GetCommitBatch raw: url=${url}, count=${commitsResponse.data?.count ?? 0}, ` +
+        `first=${JSON.stringify(commitsResponse.data?.value?.[0])}`
+      );
       let commits = commitsResponse.data;
       while (commits.count > 0) {
         for (const commit of commits.value) {
