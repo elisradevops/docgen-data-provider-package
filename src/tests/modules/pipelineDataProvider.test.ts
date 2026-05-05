@@ -242,6 +242,37 @@ describe('PipelinesDataProvider', () => {
       // Assert
       expect(result).toBe(true);
     });
+
+    it('should resolve self from real ADO Runs API format (repositories.self, not repositories[0].self)', () => {
+      // Real ADO Pipelines Runs API returns repositories as a named-key object:
+      // { self: {...}, DevOpsTemplates: {...} } — NOT an array.
+      const fromPipeline = {
+        resources: {
+          repositories: {
+            self: {
+              repository: { id: 'repo1' },
+              version: 'v1',
+              refName: 'refs/heads/main',
+            },
+          },
+        },
+      } as unknown as PipelineRun;
+
+      const targetPipeline = {
+        resources: {
+          repositories: {
+            self: {
+              repository: { id: 'repo1' },
+              version: 'v2',
+              refName: 'refs/heads/main',
+            },
+          },
+        },
+      } as unknown as PipelineRun;
+
+      const result = invokeIsMatchingPipeline(fromPipeline, targetPipeline, false);
+      expect(result).toBe(true);
+    });
   });
 
   describe('getPipelineRunDetails', () => {

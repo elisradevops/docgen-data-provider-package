@@ -219,13 +219,15 @@ export default class PipelinesDataProvider {
   /**
    * Extracts the primary repository from a pipeline run details response.
    *
-   * Newer YAML runs expose repository resources as an array with a `self` entry, while some
-   * designer/classic pipeline responses expose the repository under `__designer_repo`.
+   * The ADO Pipelines Runs API returns resources.repositories as a named-key object where
+   * 'self' is the pipeline's own checkout (e.g. { self: {...}, AppRepo: {...} }). Some older
+   * in-process representations wrap it as an array ({ 0: { self: {...} } }) and classic/designer
+   * pipelines use __designer_repo.
    */
   private getPrimaryPipelineRepository(pipeline: any): any {
     const repositories = pipeline?.resources?.repositories;
     if (!repositories) return undefined;
-    return repositories[0]?.self || repositories.__designer_repo;
+    return repositories.self || repositories[0]?.self || repositories.__designer_repo;
   }
 
   /**
@@ -482,9 +484,13 @@ export default class PipelinesDataProvider {
     }
 
     const fromRepo =
-      fromPipeline.resources.repositories[0]?.self || fromPipeline.resources.repositories.__designer_repo;
+      fromPipeline.resources.repositories.self ||
+      fromPipeline.resources.repositories[0]?.self ||
+      fromPipeline.resources.repositories.__designer_repo;
     const targetRepo =
-      targetPipeline.resources.repositories[0]?.self || targetPipeline.resources.repositories.__designer_repo;
+      targetPipeline.resources.repositories.self ||
+      targetPipeline.resources.repositories[0]?.self ||
+      targetPipeline.resources.repositories.__designer_repo;
 
     if (!fromRepo?.repository?.id || !targetRepo?.repository?.id) {
       return false;
