@@ -1291,10 +1291,6 @@ describe('PipelinesDataProvider', () => {
       const pipelineId = '123';
       const toPipelineRunId = 100;
       const targetPipeline = {} as PipelineRun;
-      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
-        data: { value: [] },
-        headers: {},
-      });
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({});
 
       // Act
@@ -1319,15 +1315,10 @@ describe('PipelinesDataProvider', () => {
         },
       } as any;
 
-      (TFSServices.getItemContentWithHeaders as jest.Mock)
-        .mockResolvedValueOnce({
-          data: { value: [] },
-          headers: {},
-        })
-        .mockResolvedValueOnce({
-          data: { value: [] },
-          headers: {},
-        });
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [] },
+        headers: {},
+      });
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
         value: [
           { id: 100, result: 'succeeded' },
@@ -1357,10 +1348,6 @@ describe('PipelinesDataProvider', () => {
       const toPipelineRunId = 100;
       const targetPipeline = {} as PipelineRun;
 
-      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
-        data: { value: [] },
-        headers: {},
-      });
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
         value: [{ id: 99, result: 'succeeded' }],
       });
@@ -1440,15 +1427,10 @@ describe('PipelinesDataProvider', () => {
         },
       };
 
-      (TFSServices.getItemContentWithHeaders as jest.Mock)
-        .mockResolvedValueOnce({
-          data: { value: [] },
-          headers: {},
-        })
-        .mockResolvedValueOnce({
-          data: { value: [] },
-          headers: {},
-        });
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [] },
+        headers: {},
+      });
       (TFSServices.getItemContent as jest.Mock)
         .mockResolvedValueOnce(mockRunHistory)
         .mockResolvedValueOnce(mockPipelineDetails);
@@ -1513,16 +1495,12 @@ describe('PipelinesDataProvider', () => {
       );
     });
 
-    it('should fall back to a different branch only when same-branch discovery fails', async () => {
-      (TFSServices.getItemContentWithHeaders as jest.Mock)
-        .mockResolvedValueOnce({
-          data: { value: [] },
-          headers: {},
-        })
-        .mockResolvedValueOnce({
-          data: { value: [buildCandidate(95, 'refs/heads/release')] },
-          headers: {},
-        });
+    it('should return undefined when no same-branch build found (no cross-branch fallback)', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [] },
+        headers: {},
+      });
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ value: [] });
 
       const result = await pipelinesDataProvider.findPreviousPipeline(
         'project1',
@@ -1531,26 +1509,18 @@ describe('PipelinesDataProvider', () => {
         targetPipelineRun
       );
 
-      expect(result).toBe(95);
-      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(2);
+      expect(result).toBeUndefined();
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
       expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0]).toContain(
         'branchName=refs%2Fheads%2Fmain'
-      );
-      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).not.toContain(
-        'branchName='
       );
     });
 
     it('should query completed successful builds and ignore non-previous candidates', async () => {
-      (TFSServices.getItemContentWithHeaders as jest.Mock)
-        .mockResolvedValueOnce({
-          data: { value: [buildCandidate(100, 'refs/heads/main'), buildCandidate(101, 'refs/heads/main')] },
-          headers: {},
-        })
-        .mockResolvedValueOnce({
-          data: { value: [] },
-          headers: {},
-        });
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [buildCandidate(100, 'refs/heads/main'), buildCandidate(101, 'refs/heads/main')] },
+        headers: {},
+      });
       (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({});
 
       const result = await pipelinesDataProvider.findPreviousPipeline(
@@ -1582,22 +1552,22 @@ describe('PipelinesDataProvider', () => {
       expect(TFSServices.getItemContent).not.toHaveBeenCalled();
     });
 
-    it('should throw when cross-branch Builds API fallback fails after same-branch no-match', async () => {
-      (TFSServices.getItemContentWithHeaders as jest.Mock)
-        .mockResolvedValueOnce({
-          data: { value: [] },
-          headers: {},
-        })
-        .mockRejectedValueOnce(new Error('fallback failed'));
+    it('should not attempt cross-branch Builds API after same-branch no-match', async () => {
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+        data: { value: [] },
+        headers: {},
+      });
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ value: [] });
 
-      await expect(
-        pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun)
-      ).rejects.toThrow('fallback failed');
-
-      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(2);
-      expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0]).not.toContain(
-        'branchName='
+      const result = await pipelinesDataProvider.findPreviousPipeline(
+        'project1',
+        '123',
+        100,
+        targetPipelineRun
       );
+
+      expect(result).toBeUndefined();
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledTimes(1);
     });
 
     it('should throw when a later Builds API page fails', async () => {

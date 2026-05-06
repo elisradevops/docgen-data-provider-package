@@ -127,16 +127,7 @@ export default class PipelinesDataProvider {
       }
     }
 
-    const anyBranchResult = await this.findPreviousSuccessfulBuildPage(
-      teamProject,
-      definitionId,
-      toBuildId,
-      targetPipeline
-    );
-    if (anyBranchResult.status === 'failed') {
-      throw anyBranchResult.error;
-    }
-    return anyBranchResult.status === 'found' ? anyBranchResult.id : undefined;
+    return undefined;
   }
 
   /**
@@ -1007,6 +998,11 @@ export default class PipelinesDataProvider {
       if (!repoId) continue;
 
       const repo: Repository = await gitDataProviderInstance.GetGitRepoFromRepoId(repoId);
+      const rawProjectName = repo.project?.name || repo.project?.id;
+      const resolvedProjectName = await this.normalizeProjectName(rawProjectName);
+      if (resolvedProjectName && repo.project) {
+        repo.project.name = resolvedProjectName;
+      }
       const repoApiUrl = this.buildRepoApiUrl(repo);
       const resourceRepository: ResourceRepository = {
         repoName: repo.name,
