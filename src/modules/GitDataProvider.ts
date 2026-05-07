@@ -932,33 +932,6 @@ export default class GitDataProvider {
 
             extendedCommit['commit'] = commit;
 
-            // commitsbatch only returns WIs linked from the commit side (e.g. commit message "#123").
-            // WIs linked from the WI development section are missing. Enrich via the per-commit
-            // /workItems endpoint which resolves bidirectional links.
-            // Build a local normalized copy so the raw API response object is never mutated.
-            const mergedWorkItems: { id: any; url: string }[] = Array.isArray(commit.workItems)
-              ? commit.workItems.map((wi: any) => ({ id: wi?.id, url: wi?.url }))
-              : [];
-            try {
-              const perCommitWiUrl = `${gitUrl}/commits/${commit.commitId}/workItems?api-version=5.1`;
-              const perCommitWiRes = await TFSServices.getItemContent(perCommitWiUrl, this.token);
-              if (Array.isArray(perCommitWiRes?.value) && perCommitWiRes.value.length > 0) {
-                // Normalize to string keys to handle number/string inconsistency across API versions.
-                const existingIds = new Set(mergedWorkItems.map((wi) => String(wi.id)));
-                for (const wi of perCommitWiRes.value) {
-                  if (wi?.id != null && !existingIds.has(String(wi.id))) {
-                    mergedWorkItems.push({ id: wi.id, url: wi.url });
-                    existingIds.add(String(wi.id));
-                  }
-                }
-              }
-            } catch (enrichErr: any) {
-              logger.warn(
-                `GetCommitBatch per-commit WI enrichment failed for ${commit.commitId}: ${enrichErr?.message}`
-              );
-            }
-            commit.workItems = mergedWorkItems;
-
             const workItemIds = Array.isArray(commit.workItems)
               ? commit.workItems.map((wi: any) => wi?.id).filter(Boolean).join(',')
               : '';
