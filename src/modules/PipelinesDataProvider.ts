@@ -96,9 +96,14 @@ export default class PipelinesDataProvider {
   /**
    * Finds the previous successful completed build for a definition.
    *
-   * Discovery prefers the target run's branch first. If no same-branch candidate exists, it
-   * falls back to the same repository on any branch so auto-discovery can still work for
-   * sparse branches or customer histories where the previous success is on another branch.
+   * Discovery order:
+   * 1. Same-branch search (preferred): pages the Builds API filtered to succeeded builds on the
+   *    same branch as the target run.
+   * 2. Ancestry-walk fallback: if no same-branch result, finds the merge-base between the
+   *    target commit and the default branch, then returns the latest default-branch build whose
+   *    sourceVersion is an ancestor of that merge-base. Useful for feature-branch first builds
+   *    that have never had a prior same-branch success.
+   * 3. Returns undefined if neither step finds a candidate (caller falls through to baseline).
    *
    * @returns Previous build id, or undefined when no valid candidate is found.
    */
@@ -125,6 +130,16 @@ export default class PipelinesDataProvider {
       if (sameBranchResult.status === 'found') {
         return sameBranchResult.id;
       }
+    }
+
+    const ancestryId = await this.findAncestryFallbackBuild(
+      teamProject,
+      definitionId,
+      toBuildId,
+      targetPipeline
+    );
+    if (ancestryId !== undefined) {
+      return ancestryId;
     }
 
     return undefined;
@@ -195,6 +210,187 @@ export default class PipelinesDataProvider {
     return { status: 'not_found' };
   }
 
+  /**
+   * Ancestry-walk fallback for findPreviousSuccessfulBuild.
+   *
+   * Used when no same-branch successful build exists. Resolves the merge-base between the
+   * target commit and the repo's default branch, then finds the latest default-branch build
+   * whose sourceVersion is an ancestor of that merge-base.
+   *
+   * Returns undefined (never throws) so the caller can fall through to baseline SVD mode.
+   */
+  private async findAncestryFallbackBuild(
+    teamProject: string,
+    definitionId: string,
+    toBuildId: number,
+    targetPipeline: any
+  ): Promise<number | undefined> {
+    try {
+      const targetRepo = this.getPrimaryPipelineRepository(targetPipeline);
+      const repoId = targetRepo?.repository?.id;
+      const targetSha = targetRepo?.version;
+
+      if (!repoId || !targetSha) {
+        return undefined;
+      }
+
+      const defaultBranch = await this.getRepoDefaultBranch(teamProject, repoId);
+      if (!defaultBranch) {
+        return undefined;
+      }
+      const normalizedDefault = this.normalizeBranchName(defaultBranch);
+      if (!normalizedDefault) {
+        return undefined;
+      }
+
+      const mergeBase = await this.getMergeBase(teamProject, repoId, defaultBranch, targetSha);
+      if (!mergeBase) {
+        return undefined;
+      }
+
+      logger.debug(
+        `[ancestry] target=${targetSha.substring(0, 7)} defaultBranch=${defaultBranch} mergeBase=${mergeBase.substring(0, 7)}`
+      );
+
+      let continuationToken: string | undefined;
+      let pageCount = 0;
+
+      do {
+        // encodeURIComponent(teamProject) is used here (and in getRepoDefaultBranch / getMergeBase)
+        // for consistency within the ancestry helpers. findPreviousSuccessfulBuildPage uses a bare
+        // teamProject segment — both forms are accepted by ADO, but they should be unified in a
+        // future cleanup pass.
+        let url =
+          `${this.orgUrl}${encodeURIComponent(teamProject)}/_apis/build/builds` +
+          `?definitions=${encodeURIComponent(String(definitionId))}` +
+          `&resultFilter=succeeded&statusFilter=completed` +
+          `&queryOrder=finishTimeDescending&$top=200&api-version=6.0` +
+          `&branchName=${encodeURIComponent(normalizedDefault)}`;
+        if (continuationToken) {
+          url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
+        }
+
+        const { data, headers } = await TFSServices.getItemContentWithHeaders(
+          url,
+          this.token,
+          'get',
+          null,
+          null
+        );
+        pageCount++;
+        const builds: any[] = data?.value || [];
+
+        for (const build of builds) {
+          if (!this.isMatchingPreviousBuild(build, targetRepo, toBuildId, normalizedDefault)) {
+            continue;
+          }
+          const candidateSha: string | undefined = build.sourceVersion;
+          if (!candidateSha) continue;
+
+          const isAncestor = await this.isCommitAncestorOf(
+            teamProject,
+            repoId,
+            candidateSha,
+            mergeBase
+          );
+          if (isAncestor) {
+            logger.debug(
+              `[ancestry] selected build ${build.id} sourceVersion=${candidateSha.substring(0, 7)}`
+            );
+            return Number(build.id);
+          }
+        }
+
+        continuationToken = this.getContinuationToken(headers);
+        if (continuationToken && pageCount >= MAX_DISCOVERY_PAGES) {
+          logger.warn(`[ancestry] fallback exceeded ${MAX_DISCOVERY_PAGES} pages without match`);
+          return undefined;
+        }
+      } while (continuationToken);
+
+      return undefined;
+    } catch (err: unknown) {
+      logger.warn(`[ancestry] fallback failed: ${this.getErrorMessage(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns the default branch name (e.g. "refs/heads/main") for a Git repository.
+   * Returns undefined if the repository cannot be fetched.
+   */
+  private async getRepoDefaultBranch(
+    teamProject: string,
+    repoId: string
+  ): Promise<string | undefined> {
+    const url = `${this.orgUrl}${encodeURIComponent(teamProject)}/_apis/git/repositories/${repoId}?api-version=6.0`;
+    try {
+      const result = await TFSServices.getItemContent(url, this.token, 'get', null, null, false);
+      return typeof result?.defaultBranch === 'string' && result.defaultBranch
+        ? result.defaultBranch
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns the merge-base commit SHA between a branch tip and a target commit SHA.
+   *
+   * Uses the ADO Git diffs/commits API:
+   *   baseVersion=<branchShortName> (branch type), targetVersion=<commitSha> (commit type)
+   * The returned commonCommit is the merge-base.
+   */
+  private async getMergeBase(
+    teamProject: string,
+    repoId: string,
+    defaultBranch: string,
+    targetSha: string
+  ): Promise<string | undefined> {
+    const branchShort = defaultBranch.replace(/^refs\/heads\//, '');
+    const url =
+      `${this.orgUrl}${encodeURIComponent(teamProject)}/_apis/git/repositories/${repoId}/diffs/commits` +
+      `?baseVersion=${encodeURIComponent(branchShort)}&baseVersionType=branch` +
+      `&targetVersion=${encodeURIComponent(targetSha)}&targetVersionType=commit` +
+      `&$top=1&api-version=6.0`;
+    try {
+      const result = await TFSServices.getItemContent(url, this.token, 'get', null, null, false);
+      return typeof result?.commonCommit === 'string' && result.commonCommit
+        ? result.commonCommit
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Returns true when candidateSha is an ancestor of (or equal to) targetSha.
+   *
+   * Uses the ADO Git diffs/commits API:
+   *   baseVersion=candidateSha (commit), targetVersion=targetSha (commit)
+   * If candidateSha is an ancestor of targetSha, it IS the common ancestor of the two,
+   * so commonCommit === candidateSha.
+   */
+  private async isCommitAncestorOf(
+    teamProject: string,
+    repoId: string,
+    candidateSha: string,
+    targetSha: string
+  ): Promise<boolean> {
+    if (candidateSha === targetSha) return true;
+    const url =
+      `${this.orgUrl}${encodeURIComponent(teamProject)}/_apis/git/repositories/${repoId}/diffs/commits` +
+      `?baseVersion=${encodeURIComponent(candidateSha)}&baseVersionType=commit` +
+      `&targetVersion=${encodeURIComponent(targetSha)}&targetVersionType=commit` +
+      `&$top=1&api-version=6.0`;
+    try {
+      const result = await TFSServices.getItemContent(url, this.token, 'get', null, null, false);
+      return result?.commonCommit === candidateSha;
+    } catch {
+      return false;
+    }
+  }
+
   private getContinuationToken(headers: any): string | undefined {
     return headers?.['x-ms-continuationtoken'] || headers?.['x-ms-continuation-token'] || undefined;
   }
@@ -210,7 +406,13 @@ export default class PipelinesDataProvider {
   private getPrimaryPipelineRepository(pipeline: any): any {
     const repositories = pipeline?.resources?.repositories;
     if (!repositories) return undefined;
-    return repositories.self || repositories[0]?.self || repositories.__designer_repo;
+    if (repositories.self) return repositories.self;
+    if (repositories.__designer_repo) return repositories.__designer_repo;
+    // resources.repositories is a plain named-key object (not an array), so [0] is always
+    // undefined. Fall back to the first value for pipelines using a custom checkout alias.
+    // Some older ADO pipeline formats wrap the repo under a nested .self key; unwrap if present.
+    const first = Object.values(repositories)[0] as any;
+    return first?.self ?? first ?? undefined;
   }
 
   /**
@@ -1039,7 +1241,7 @@ export default class PipelinesDataProvider {
    * @returns A promise that resolves to the content of the pipeline run.
    */
   async getPipelineRunDetails(projectName: string, pipelineId: number, runId: number): Promise<PipelineRun> {
-    let url = `${this.orgUrl}${projectName}/_apis/pipelines/${pipelineId}/runs/${runId}`;
+    let url = `${this.orgUrl}${projectName}/_apis/pipelines/${pipelineId}/runs/${runId}?$expand=resources`;
     return TFSServices.getItemContent(url, this.token);
   }
 

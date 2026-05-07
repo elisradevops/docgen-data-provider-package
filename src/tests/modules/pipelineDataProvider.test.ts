@@ -247,7 +247,7 @@ describe('PipelinesDataProvider', () => {
 
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-        `${mockOrgUrl}${projectName}/_apis/pipelines/${pipelineId}/runs/${runId}`,
+        `${mockOrgUrl}${projectName}/_apis/pipelines/${pipelineId}/runs/${runId}?$expand=resources`,
         mockToken
       );
       expect(result).toEqual(mockResponse);
@@ -1319,12 +1319,14 @@ describe('PipelinesDataProvider', () => {
         data: { value: [] },
         headers: {},
       });
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
-        value: [
-          { id: 100, result: 'succeeded' },
-          { id: 99, result: 'succeeded' },
-        ],
-      });
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({}) // getRepoDefaultBranch (no defaultBranch → ancestry short-circuits)
+        .mockResolvedValueOnce({
+          value: [
+            { id: 100, result: 'succeeded' },
+            { id: 99, result: 'succeeded' },
+          ],
+        });
 
       jest.spyOn(pipelinesDataProvider as any, 'getPipelineRunDetails').mockResolvedValueOnce({
         resources: {
@@ -1432,6 +1434,7 @@ describe('PipelinesDataProvider', () => {
         headers: {},
       });
       (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({}) // getRepoDefaultBranch (no defaultBranch → ancestry short-circuits)
         .mockResolvedValueOnce(mockRunHistory)
         .mockResolvedValueOnce(mockPipelineDetails);
 
@@ -1500,7 +1503,9 @@ describe('PipelinesDataProvider', () => {
         data: { value: [] },
         headers: {},
       });
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ value: [] });
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({})           // getRepoDefaultBranch — no defaultBranch, ancestry exits
+        .mockResolvedValueOnce({ value: [] }); // GetPipelineRunHistory (legacy path)
 
       const result = await pipelinesDataProvider.findPreviousPipeline(
         'project1',
@@ -1521,7 +1526,9 @@ describe('PipelinesDataProvider', () => {
         data: { value: [buildCandidate(100, 'refs/heads/main'), buildCandidate(101, 'refs/heads/main')] },
         headers: {},
       });
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({});
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({})           // getRepoDefaultBranch — no defaultBranch, ancestry exits
+        .mockResolvedValueOnce({ value: [] }); // GetPipelineRunHistory (legacy path)
 
       const result = await pipelinesDataProvider.findPreviousPipeline(
         'project1',
@@ -1557,7 +1564,9 @@ describe('PipelinesDataProvider', () => {
         data: { value: [] },
         headers: {},
       });
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ value: [] });
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({})           // getRepoDefaultBranch — no defaultBranch, ancestry exits
+        .mockResolvedValueOnce({ value: [] }); // GetPipelineRunHistory (legacy path)
 
       const result = await pipelinesDataProvider.findPreviousPipeline(
         'project1',
@@ -1594,6 +1603,139 @@ describe('PipelinesDataProvider', () => {
       await expect(
         pipelinesDataProvider.findPreviousPipeline('project1', '123', 100, targetPipelineRun)
       ).rejects.toThrow('Pipeline discovery exceeded 50 pages');
+    });
+
+    describe('ancestry-walk fallback', () => {
+      const featureTargetPipelineRun = {
+        resources: {
+          repositories: {
+            self: {
+              repository: { id: 'repo1' },
+              version: 'C3-B',
+              refName: 'refs/heads/feature/x',
+            },
+          },
+        },
+      } as unknown as PipelineRun;
+
+      beforeEach(() => {
+        jest.clearAllMocks();
+      });
+
+      it('should return ancestry-resolved build when same-branch has no match', async () => {
+        // same-branch search: no candidates (empty)
+        (TFSServices.getItemContentWithHeaders as jest.Mock)
+          .mockResolvedValueOnce({ data: { value: [] }, headers: {} }) // same-branch
+          .mockResolvedValueOnce({                                       // ancestry default-branch page
+            data: {
+              value: [
+                buildCandidate(90, 'refs/heads/main'),  // id=90, sourceVersion='sha-90'
+                buildCandidate(70, 'refs/heads/main'),  // id=70, sourceVersion='sha-70'
+              ],
+            },
+            headers: {},
+          });
+
+        // getRepoDefaultBranch
+        (TFSServices.getItemContent as jest.Mock)
+          .mockResolvedValueOnce({ defaultBranch: 'refs/heads/main' })  // getRepoDefaultBranch
+          .mockResolvedValueOnce({ commonCommit: 'C3' })                // getMergeBase
+          .mockResolvedValueOnce({ commonCommit: 'unrelated-sha' })     // isCommitAncestorOf sha-90 vs C3 => false
+          .mockResolvedValueOnce({ commonCommit: 'sha-70' });           // isCommitAncestorOf sha-70 vs C3 => sha-70 == sha-70 -> true
+
+        const result = await pipelinesDataProvider.findPreviousPipeline(
+          'project1',
+          '123',
+          100,
+          featureTargetPipelineRun
+        );
+
+        expect(result).toBe(70);
+      });
+
+      it('should return undefined when ancestry walk finds no ancestor match', async () => {
+        (TFSServices.getItemContentWithHeaders as jest.Mock)
+          .mockResolvedValueOnce({ data: { value: [] }, headers: {} })  // same-branch
+          .mockResolvedValueOnce({                                        // ancestry default-branch page
+            data: { value: [buildCandidate(90, 'refs/heads/main')] },
+            headers: {},
+          });
+
+        (TFSServices.getItemContent as jest.Mock)
+          .mockResolvedValueOnce({ defaultBranch: 'refs/heads/main' })  // getRepoDefaultBranch
+          .mockResolvedValueOnce({ commonCommit: 'C3' })                // getMergeBase
+          .mockResolvedValueOnce({ commonCommit: 'unrelated-sha' })     // isCommitAncestorOf => false
+          .mockResolvedValueOnce({ value: [] });                         // GetPipelineRunHistory (legacy path)
+
+        const result = await pipelinesDataProvider.findPreviousPipeline(
+          'project1',
+          '123',
+          100,
+          featureTargetPipelineRun
+        );
+
+        expect(result).toBeUndefined();
+      });
+
+      it('should return undefined (not throw) when getRepoDefaultBranch fails', async () => {
+        (TFSServices.getItemContentWithHeaders as jest.Mock)
+          .mockResolvedValueOnce({ data: { value: [] }, headers: {} }); // same-branch
+
+        (TFSServices.getItemContent as jest.Mock)
+          .mockRejectedValueOnce(new Error('repo not found'))            // getRepoDefaultBranch throws
+          .mockResolvedValueOnce({ value: [] });                         // GetPipelineRunHistory (legacy path)
+
+        const result = await pipelinesDataProvider.findPreviousPipeline(
+          'project1',
+          '123',
+          100,
+          featureTargetPipelineRun
+        );
+
+        expect(result).toBeUndefined();
+      });
+
+      it('should not invoke ancestry walk when same-branch search finds a match', async () => {
+        (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+          data: { value: [buildCandidate(90, 'refs/heads/feature/x')] },
+          headers: {},
+        });
+
+        const getItemContentSpy = jest.spyOn(TFSServices, 'getItemContent');
+
+        const result = await pipelinesDataProvider.findPreviousPipeline(
+          'project1',
+          '123',
+          100,
+          featureTargetPipelineRun
+        );
+
+        expect(result).toBe(90);
+        // getRepoDefaultBranch / getMergeBase are called via getItemContent — none should be called
+        const ancestryCalls = getItemContentSpy.mock.calls.filter(
+          ([url]) => typeof url === 'string' && (url.includes('git/repositories') && !url.includes('_apis/build'))
+        );
+        expect(ancestryCalls).toHaveLength(0);
+      });
+
+      it('should return undefined (not throw) when getMergeBase returns no commonCommit', async () => {
+        (TFSServices.getItemContentWithHeaders as jest.Mock)
+          .mockResolvedValueOnce({ data: { value: [] }, headers: {} }); // same-branch
+
+        (TFSServices.getItemContent as jest.Mock)
+          .mockResolvedValueOnce({ defaultBranch: 'refs/heads/main' })  // getRepoDefaultBranch
+          .mockResolvedValueOnce({})                                     // getMergeBase returns no commonCommit
+          .mockResolvedValueOnce({ value: [] });                         // GetPipelineRunHistory (legacy path)
+
+        const result = await pipelinesDataProvider.findPreviousPipeline(
+          'project1',
+          '123',
+          100,
+          featureTargetPipelineRun
+        );
+
+        expect(result).toBeUndefined();
+      });
     });
   });
 
