@@ -932,13 +932,6 @@ export default class GitDataProvider {
 
             extendedCommit['commit'] = commit;
 
-            const workItemIds = Array.isArray(commit.workItems)
-              ? commit.workItems.map((wi: any) => wi?.id).filter(Boolean).join(',')
-              : '';
-            logger.info(
-              `GetCommitBatch commit ${String(commit.commitId || '').substring(0, 7)} workItems=[${workItemIds}]`
-            );
-
             let committerName = commit.committer.name;
             let commitDate = commit.committer.date.toString().slice(0, 10);
             extendedCommit['committerName'] = committerName;

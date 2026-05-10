@@ -1417,6 +1417,9 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
       expect.stringContaining(pipelineTeamProject),
       expect.any(String)
     );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`falling back to pipeline teamProject=${pipelineTeamProject}`)
+    );
   });
 });
 
