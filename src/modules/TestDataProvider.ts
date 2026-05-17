@@ -15,6 +15,8 @@ export default class TestDataProvider {
   private cache = new Map<string, any>(); // Cache for API responses
   private limit = pLimit(10);
   private linkedMomLookupMap: Map<string, any>;
+  private static readonly CACHE_TTL_MS = 60000;
+  private static readonly CONTINUATION_HEADER_NAMES = ['x-ms-continuationtoken', 'x-ms-continuation-token'];
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
@@ -86,33 +88,31 @@ export default class TestDataProvider {
     }
     const descriptions = new Map<string, string>();
 
-    try {
-      for (const chunkIds of chunks) {
-        const payload = {
-          ids: chunkIds,
-          fields: ['System.Description'],
-          errorPolicy: 'Omit',
-        };
-        const response = await TFSServices.getItemContent(
+    const settled = await Promise.allSettled(
+      chunks.map((chunkIds) =>
+        TFSServices.getItemContent(
           url,
           this.token,
           'post',
-          payload,
+          { ids: chunkIds, fields: ['System.Description'], errorPolicy: 'Omit' },
           { 'Content-Type': 'application/json' }
-        );
-        const items = Array.isArray(response?.value) ? response.value : [];
-        items.forEach((wi: any) => {
-          const desc = String(wi?.fields?.['System.Description'] || '').trim();
-          if (wi?.id && desc) {
-            descriptions.set(String(wi.id), desc);
-          }
-        });
+        )
+      )
+    );
+    for (const result of settled) {
+      if (result.status === 'rejected') {
+        logger.warn(`Failed to enrich suite descriptions chunk: ${result.reason?.message || result.reason}`);
+        continue;
       }
-      return descriptions;
-    } catch (error: any) {
-      logger.warn(`Failed to enrich suite descriptions from work items batch: ${error?.message || error}`);
-      return new Map<string, string>();
+      const items = Array.isArray(result.value?.value) ? result.value.value : [];
+      items.forEach((wi: any) => {
+        const desc = String(wi?.fields?.['System.Description'] ?? '').trim();
+        if (wi?.id && desc) {
+          descriptions.set(String(wi.id), desc);
+        }
+      });
     }
+    return descriptions;
   }
 
   private async normalizeAndEnrichSuitesResponse(project: string, data: any): Promise<any> {
@@ -174,11 +174,60 @@ export default class TestDataProvider {
     if (!planid) {
       throw new Error('Plan not selected');
     }
-    const url = this.isBearerToken()
-      ? `${this.joinOrgProject(project)}/_apis/testplan/Plans/${planid}/suites?includeChildren=true&api-version=7.0`
-      : `${this.joinOrgProject(project)}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${planid}`;
-    const data = await this.fetchWithCache(url);
-    return this.normalizeAndEnrichSuitesResponse(project, data);
+
+    if (!this.isBearerToken()) {
+      const rawUrl = `${this.joinOrgProject(project)}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${planid}`;
+      const enrichedKey = `${rawUrl}__enriched`;
+      if (this.cache.has(enrichedKey)) {
+        const cached = this.cache.get(enrichedKey);
+        if (cached.timestamp + TestDataProvider.CACHE_TTL_MS > Date.now()) return cached.data;
+      }
+      const data = await this.fetchWithCache(rawUrl);
+      const enriched = await this.normalizeAndEnrichSuitesResponse(project, data);
+      this.cache.set(enrichedKey, { data: enriched, timestamp: Date.now() });
+      return enriched;
+    }
+
+    // Bearer branch — follow x-ms-continuationtoken until the server stops returning it.
+    // Doc: https://learn.microsoft.com/en-us/rest/api/azure/devops/testplan/test-suites/get-test-suites-for-plan?view=azure-devops-rest-7.0
+    const base = `${this.joinOrgProject(project)}/_apis/testplan/Plans/${planid}/suites?expand=children&api-version=7.0`;
+    const cacheKey = `${base}__all_pages`;
+
+    if (this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey);
+      if (cached.timestamp + TestDataProvider.CACHE_TTL_MS > Date.now()) {
+        return cached.data;
+      }
+    }
+
+    const MAX_PAGES = 50;
+
+    const aggregated: any[] = [];
+    let continuationToken: string | undefined;
+    let pages = 0;
+
+    do {
+      const url = continuationToken
+        ? `${base}&continuationToken=${encodeURIComponent(continuationToken)}`
+        : base;
+      const { data, headers } = await TFSServices.getItemContentWithHeaders(url, this.token, 'get', {}, {}, false);
+      const rows = Array.isArray(data?.value) ? data.value : Array.isArray(data) ? data : [];
+      aggregated.push(...rows);
+
+      continuationToken = (
+        headers?.[TestDataProvider.CONTINUATION_HEADER_NAMES[0]] ||
+        headers?.[TestDataProvider.CONTINUATION_HEADER_NAMES[1]]
+      ) as string | undefined;
+      pages += 1;
+    } while (continuationToken && pages < MAX_PAGES);
+
+    if (continuationToken) {
+      logger.warn(`GetTestSuitesForPlan: reached MAX_PAGES (${MAX_PAGES}) for plan=${planid}; ${aggregated.length} suites collected but server still has more`);
+    }
+
+    const enriched = await this.normalizeAndEnrichSuitesResponse(project, { value: aggregated, count: aggregated.length });
+    this.cache.set(cacheKey, { data: enriched, timestamp: Date.now() });
+    return enriched;
   }
 
   async GetTestSuitesByPlan(

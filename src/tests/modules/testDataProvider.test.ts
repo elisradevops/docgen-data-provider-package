@@ -321,13 +321,17 @@ describe('TestDataProvider', () => {
         ],
         count: 2,
       };
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockData);
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({ data: mockData, headers: {} });
 
       const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
 
-      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?includeChildren=true&api-version=7.0`,
-        mockBearerToken
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&api-version=7.0`,
+        mockBearerToken,
+        'get',
+        {},
+        {},
+        false
       );
       expect(result.testSuites).toEqual(
         expect.arrayContaining([
@@ -353,22 +357,25 @@ describe('TestDataProvider', () => {
       const workItemsPayload = {
         value: [{ id: 101, fields: { 'System.Description': 'Enriched Desc A' } }],
       };
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({ data: suitesPayload, headers: {} });
       (TFSServices.getItemContent as jest.Mock).mockImplementation((url: string) => {
         if (url.includes('/_apis/wit/workitemsbatch')) {
           return Promise.resolve(workItemsPayload);
         }
-        return Promise.resolve(suitesPayload);
+        return Promise.resolve(undefined);
       });
 
       const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
 
-      expect(TFSServices.getItemContent).toHaveBeenNthCalledWith(
-        1,
-        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?includeChildren=true&api-version=7.0`,
-        mockBearerToken
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&api-version=7.0`,
+        mockBearerToken,
+        'get',
+        {},
+        {},
+        false
       );
-      expect(TFSServices.getItemContent).toHaveBeenNthCalledWith(
-        2,
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
         `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/wit/workitemsbatch?api-version=7.1`,
         mockBearerToken,
         'post',
@@ -385,6 +392,112 @@ describe('TestDataProvider', () => {
           expect.objectContaining({ id: 202, description: 'Native Desc B' }),
         ])
       );
+    });
+
+    describe('bearer-token branch — REST contract', () => {
+      it('should call the documented endpoint with expand=children, not includeChildren', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+          data: { value: [], count: 0 },
+          headers: {},
+        });
+
+        await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        const calledUrl = (TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0] as string;
+        expect(calledUrl).toContain(`/_apis/testplan/Plans/${mockPlanId}/suites`);
+        expect(calledUrl).toContain('expand=children');
+        expect(calledUrl).toContain('api-version=7.0');
+        expect(calledUrl).not.toContain('includeChildren');
+      });
+
+      it('should follow x-ms-continuationtoken across pages and aggregate the result', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        const page1 = {
+          data: { value: [{ id: 1, name: 'A' }, { id: 2, name: 'B' }], count: 2 },
+          headers: { 'x-ms-continuationtoken': 'TOKEN_PAGE_2' },
+        };
+        const page2 = {
+          data: { value: [{ id: 3, name: 'C' }], count: 1 },
+          headers: { 'x-ms-continuationtoken': 'TOKEN_PAGE_3' },
+        };
+        const page3 = {
+          data: { value: [{ id: 4, name: 'D' }], count: 1 },
+          headers: {},
+        };
+        (TFSServices.getItemContentWithHeaders as jest.Mock)
+          .mockResolvedValueOnce(page1)
+          .mockResolvedValueOnce(page2)
+          .mockResolvedValueOnce(page3);
+
+        const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls).toHaveLength(3);
+        expect(result.testSuites.map((s: any) => s.id)).toEqual([1, 2, 3, 4]);
+      });
+
+      it('should send the continuation token verbatim on subsequent page requests', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        (TFSServices.getItemContentWithHeaders as jest.Mock)
+          .mockResolvedValueOnce({
+            data: { value: [{ id: 1 }], count: 1 },
+            headers: { 'x-ms-continuationtoken': 'CT_XYZ' },
+          })
+          .mockResolvedValueOnce({ data: { value: [], count: 0 }, headers: {} });
+
+        await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        const secondCallUrl = (TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[1][0] as string;
+        expect(secondCallUrl).toContain('continuationToken=CT_XYZ');
+      });
+
+      it('should accept the alternate "x-ms-continuation-token" header spelling', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        (TFSServices.getItemContentWithHeaders as jest.Mock)
+          .mockResolvedValueOnce({
+            data: { value: [{ id: 1 }], count: 1 },
+            headers: { 'x-ms-continuation-token': 'CT_ALT' },
+          })
+          .mockResolvedValueOnce({ data: { value: [{ id: 2 }], count: 1 }, headers: {} });
+
+        const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls).toHaveLength(2);
+        expect(result.testSuites.map((s: any) => s.id)).toEqual([1, 2]);
+      });
+
+      it('should stop at the safety cap and not loop forever on misbehaving server', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValue({
+          data: { value: [{ id: 0 }], count: 1 },
+          headers: { 'x-ms-continuationtoken': 'NEVER_ENDING' },
+        });
+
+        await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        const callCount = (TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls.length;
+        expect(callCount).toBeLessThanOrEqual(50);
+        expect(callCount).toBeGreaterThan(0);
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('reached MAX_PAGES'));
+      });
+    });
+
+    describe('PAT-token branch — regression guard', () => {
+      it('should still hit the internal _testManagement endpoint with a single call (no pagination)', async () => {
+        const patProvider = new TestDataProvider(mockOrgUrl, mockToken);
+        (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+          testSuites: [{ id: 1 }, { id: 2 }],
+        });
+
+        const result = await patProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+          `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_api/_testManagement/GetTestSuitesForPlan?__v=5&planId=${mockPlanId}`,
+          mockToken
+        );
+        expect((TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls).toHaveLength(0);
+        expect(result.testSuites).toHaveLength(2);
+      });
     });
   });
 
@@ -429,14 +542,18 @@ describe('TestDataProvider', () => {
         value: [{ id: '123', name: 'Suite 1', parentSuite: { id: 0 }, description: 'Suite Desc' }],
       };
       const mockSuiteData = [new suiteData('Suite 1', '123', '456', 1)];
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockTestSuites);
+      (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({ data: mockTestSuites, headers: {} });
       (Helper.findSuitesRecursive as jest.Mock).mockReturnValueOnce(mockSuiteData);
 
       const result = await bearerProvider.GetTestSuiteById(mockProject, mockPlanId, mockSuiteId, true);
 
-      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?includeChildren=true&api-version=7.0`,
-        mockBearerToken
+      expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&api-version=7.0`,
+        mockBearerToken,
+        'get',
+        {},
+        {},
+        false
       );
       const suitesArg = (Helper.findSuitesRecursive as jest.Mock).mock.calls[0][3];
       expect(suitesArg[0].title).toBe('Suite 1');
