@@ -1757,8 +1757,17 @@ export default class TicketsDataProvider {
   }
 
   private shouldRetryHistoricalWithLowerVersion(error: any): boolean {
+    if (error?._historicalFallbackExhausted) {
+      return false;
+    }
     const status = Number(error?.response?.status || 0);
     if (status === 401 || status === 403) {
+      return false;
+    }
+    const message = String(error?.response?.data?.message || error?.message || '');
+    // TF##### errors are semantic ADO rejections (invalid path, missing field, etc.) —
+    // not api-version compatibility issues. Retrying wastes time and amplifies timeouts.
+    if (/(^|\s)TF\d{4,6}:/i.test(message)) {
       return false;
     }
     if (status >= 500) {
@@ -1767,7 +1776,6 @@ export default class TicketsDataProvider {
     if ([400, 404, 405, 406, 410].includes(status)) {
       return true;
     }
-    const message = String(error?.response?.data?.message || error?.message || '');
     return /api[- ]?version/i.test(message);
   }
 
@@ -1941,50 +1949,73 @@ export default class TicketsDataProvider {
     queryId: string,
     asOfIso: string,
   ): Promise<{ queryDefinition: any; queryResult: any; apiVersion: string | null }> {
-    const { apiVersion, result } = await this.withHistoricalApiVersionFallback(
-      'historical-query-execution',
-      async (resolvedApiVersion) => {
-        const queryDefUrl = this.appendApiVersion(
-          `${this.orgUrl}${project}/_apis/wit/queries/${encodeURIComponent(queryId)}?$expand=all`,
-          resolvedApiVersion,
-        );
-        const queryDefinition = await TFSServices.getItemContent(queryDefUrl, this.token);
+    try {
+      const { apiVersion, result } = await this.withHistoricalApiVersionFallback(
+        'historical-query-execution',
+        async (resolvedApiVersion) => {
+          const queryDefUrl = this.appendApiVersion(
+            `${this.orgUrl}${project}/_apis/wit/queries/${encodeURIComponent(queryId)}?$expand=all`,
+            resolvedApiVersion,
+          );
+          const queryDefinition = await TFSServices.getItemContent(queryDefUrl, this.token);
 
-        const wiqlText = String(queryDefinition?.wiql || '').trim();
-        let queryResult: any = null;
-        try {
-          if (!wiqlText) {
-            throw new Error(`Could not resolve WIQL text for query ${queryId}`);
+          const wiqlText = String(queryDefinition?.wiql || '').trim();
+          let queryResult: any = null;
+          try {
+            if (!wiqlText) {
+              throw new Error(`Could not resolve WIQL text for query ${queryId}`);
+            }
+            const wiqlWithAsOf = this.appendAsOfToWiql(wiqlText, asOfIso);
+            if (!wiqlWithAsOf) {
+              throw new Error(`Could not build WIQL for historical query ${queryId}`);
+            }
+            const executeUrl = this.appendApiVersion(
+              `${this.orgUrl}${project}/_apis/wit/wiql?$top=2147483646&timePrecision=true`,
+              resolvedApiVersion,
+            );
+            queryResult = await TFSServices.getItemContent(executeUrl, this.token, 'post', {
+              query: wiqlWithAsOf,
+            });
+          } catch (inlineWiqlError: any) {
+            logger.warn(
+              `[historical-query-execution] inline WIQL failed for query ${queryId}${
+                resolvedApiVersion ? ` (api-version=${resolvedApiVersion})` : ''
+              }, trying WIQL-by-id fallback: ${inlineWiqlError?.message || inlineWiqlError}`,
+            );
+            const executeByIdUrl = this.appendApiVersion(
+              `${this.orgUrl}${project}/_apis/wit/wiql/${encodeURIComponent(
+                queryId,
+              )}?$top=2147483646&timePrecision=true&asOf=${encodeURIComponent(asOfIso)}`,
+              resolvedApiVersion,
+            );
+            try {
+              queryResult = await TFSServices.getItemContent(executeByIdUrl, this.token);
+            } catch (byIdError: any) {
+              byIdError._historicalFallbackExhausted = true;
+              throw byIdError;
+            }
           }
-          const wiqlWithAsOf = this.appendAsOfToWiql(wiqlText, asOfIso);
-          if (!wiqlWithAsOf) {
-            throw new Error(`Could not build WIQL for historical query ${queryId}`);
-          }
-          const executeUrl = this.appendApiVersion(
-            `${this.orgUrl}${project}/_apis/wit/wiql?$top=2147483646&timePrecision=true`,
-            resolvedApiVersion,
-          );
-          queryResult = await TFSServices.getItemContent(executeUrl, this.token, 'post', {
-            query: wiqlWithAsOf,
-          });
-        } catch (inlineWiqlError: any) {
-          logger.warn(
-            `[historical-query-execution] inline WIQL failed for query ${queryId}${
-              resolvedApiVersion ? ` (api-version=${resolvedApiVersion})` : ''
-            }, trying WIQL-by-id fallback: ${inlineWiqlError?.message || inlineWiqlError}`,
-          );
-          const executeByIdUrl = this.appendApiVersion(
-            `${this.orgUrl}${project}/_apis/wit/wiql/${encodeURIComponent(
-              queryId,
-            )}?$top=2147483646&timePrecision=true&asOf=${encodeURIComponent(asOfIso)}`,
-            resolvedApiVersion,
-          );
-          queryResult = await TFSServices.getItemContent(executeByIdUrl, this.token);
-        }
-        return { queryDefinition, queryResult };
-      },
-    );
-    return { ...result, apiVersion };
+          return { queryDefinition, queryResult };
+        },
+      );
+      return { ...result, apiVersion };
+    } catch (err: any) {
+      const raw = String(err?.response?.data?.message || err?.message || '');
+      const tfMatch = raw.match(/(^|\s)(TF\d{4,6}):/i);
+      if (tfMatch) {
+        const tfCode = tfMatch[2];
+        const friendly = new Error(
+          `Azure DevOps rejected the historical query (${tfCode}): ${raw} ` +
+            `The query references an area or iteration path that no longer exists. ` +
+            `Please open the query in Azure DevOps and fix the filter.`,
+        ) as any;
+        friendly.response = err?.response;
+        friendly.status = err?.response?.status ?? err?.status ?? 400;
+        friendly.code = tfCode;
+        throw friendly;
+      }
+      throw err;
+    }
   }
 
   private toHistoricalWorkItemSnapshot(project: string, workItem: any): HistoricalWorkItemSnapshot {
