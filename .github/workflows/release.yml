@@ -71,5 +71,8 @@ jobs:
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
+          FAILED_VERSION=$(node -p "require('./package.json').version")
           git revert HEAD --no-edit
           git push
+          git tag -d "${FAILED_VERSION}" || true
+          git push origin ":refs/tags/${FAILED_VERSION}" || true
