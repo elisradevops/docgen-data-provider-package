@@ -218,6 +218,7 @@ export function createBugRelation(id: string, title: string, severity?: string):
 export class TestSteps {
   stepId: string;
   stepPosition: string;
+  originalStepPosition?: string;
   action: string;
   expected: string;
   isSharedStepTitle: boolean;

@@ -130,10 +130,10 @@ describe('TestStepParserHelper', () => {
         `${mockOrgUrl}/_apis/wit/workitems/999/revisions/5`,
         mockToken
       );
-      expect(result).toHaveLength(2); // Title + 1 step
-      expect(result[0].isSharedStepTitle).toBe(true);
-      expect(result[0].action).toContain('Shared Step Title');
-      expect(result[1].action).toBe('Shared Step Action');
+      expect(result).toHaveLength(1); // shared step only (no title row)
+      expect(result[0].isSharedStepTitle).toBe(false);
+      expect(result[0].action).toBe('Shared Step Action');
+      expect(result[0].stepPosition).toBe('1');
     });
 
     it('should parse shared steps without revision lookup', async () => {
@@ -170,7 +170,7 @@ describe('TestStepParserHelper', () => {
         `${mockOrgUrl}/_apis/wit/workitems/999`,
         mockToken
       );
-      expect(result).toHaveLength(2);
+      expect(result).toHaveLength(1); // shared step only (no title row)
     });
 
     it('should handle shared step fetch error by logging and rethrowing', async () => {
@@ -273,11 +273,12 @@ describe('TestStepParserHelper', () => {
       const result = await testStepParserHelper.parseTestSteps(xmlSteps, sharedStepIdToRevisionLookupMap);
 
       // Assert
-      expect(result).toHaveLength(3); // 1 regular + 1 title + 1 shared step
+      expect(result).toHaveLength(2); // 1 regular + 1 shared substep (no title row)
       expect(result[0].stepId).toBe('1');
       expect(result[0].action).toBe('Regular Step');
-      expect(result[1].isSharedStepTitle).toBe(true);
-      expect(result[2].action).toBe('Nested Shared Action');
+      expect(result[0].stepPosition).toBe('1');
+      expect(result[1].action).toBe('Nested Shared Action');
+      expect(result[1].stepPosition).toBe('2');
     });
 
     it('should handle parent step ID for nested steps', async () => {

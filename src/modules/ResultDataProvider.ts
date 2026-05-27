@@ -5008,6 +5008,7 @@ export default class ResultDataProvider {
           const step = stepMap.get(actionResult.stepIdentifier);
           if (step) {
             actionResult.stepPosition = step.stepPosition;
+            actionResult.originalStepPosition = step.originalStepPosition;
             actionResult.action = step.action;
             actionResult.expected = step.expected;
             actionResult.isSharedStepTitle = step.isSharedStepTitle;

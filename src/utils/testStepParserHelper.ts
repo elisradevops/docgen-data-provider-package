@@ -42,17 +42,10 @@ export default class TestStepParserHelper {
         const stepsList = await this.parseTestSteps(
           stepsXML,
           sharedStepIdToRevisionLookupMap,
-          `${parentStepPosition}.`,
+          parentStepPosition,
           parentStepId
         );
-        const titleObj = {
-          stepId: parentStepId,
-          stepPosition: parentStepPosition,
-          action: `<b>${sharedStepTitle}<b/>`,
-          expected: '',
-          isSharedStepTitle: true,
-        };
-        sharedStepsList = [titleObj, ...stepsList];
+        sharedStepsList = stepsList;
       }
       return sharedStepsList;
     } catch (err: any) {
@@ -164,6 +157,14 @@ export default class TestStepParserHelper {
         level,
         parentStepId
       );
+      if (level === '') {
+        const flatSteps = stepsList.filter((s) => !s.isSharedStepTitle);
+        flatSteps.forEach((step, i) => {
+          step.originalStepPosition = step.stepPosition;
+          step.stepPosition = String(i + 1);
+        });
+        return flatSteps;
+      }
       return stepsList;
     } catch (err: any) {
       logger.error(
