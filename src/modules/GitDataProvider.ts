@@ -33,6 +33,13 @@ export default class GitDataProvider {
     return TFSServices.getItemContent(url, this.token, 'get');
   } //GetGitRepoFromPrId
 
+  /**
+   * Retrieves a JSON file from a Git repository
+   * @param projectName - The name of the project
+   * @param repoName - The name of the repository
+   * @param filePath - The path to the file
+   * @returns The JSON content of the file
+   */
   async GetJsonFileFromGitRepo(projectName: string, repoName: string, filePath: string) {
     let url = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoName}/items?path=${filePath}&includeContent=true`;
     let res = await TFSServices.getItemContent(url, this.token, 'get');
@@ -64,7 +71,7 @@ export default class GitDataProvider {
     const res = await TFSServices.getItemContent(url, this.token, 'get');
     if (res && res.value && Array.isArray(res.value) && res.value.length > 0) {
       const match = res.value.find(
-        (r: any) => r.name.split('/').pop().toLowerCase() === branch.toLowerCase()
+        (r: any) => r.name.split('/').pop().toLowerCase() === branch.toLowerCase(),
       );
 
       if (match) {
@@ -89,7 +96,7 @@ export default class GitDataProvider {
     repoId: string,
     fileName: string,
     version: GitVersionDescriptor,
-    gitRepoUrl: string = ''
+    gitRepoUrl: string = '',
   ) {
     // get a single tag
     let versionFix = '';
@@ -125,7 +132,7 @@ export default class GitDataProvider {
   async CheckIfItemExist(
     gitApiUrl: string,
     itemPath: string,
-    version: GitVersionDescriptor
+    version: GitVersionDescriptor,
   ): Promise<boolean> {
     let safePath = encodeURIComponent(itemPath).replace(/%2F/g, '/');
     let versionFixed = '';
@@ -163,7 +170,7 @@ export default class GitDataProvider {
   async GetPullRequestsLinkedItemsInCommitRange(
     projectId: string,
     repositoryId: string,
-    commitRangeArray: any
+    commitRangeArray: any,
   ) {
     let pullRequestsFilteredArray: any = [];
     let ChangeSetsArray: any = [];
@@ -186,7 +193,7 @@ export default class GitDataProvider {
       });
     });
     logger.info(
-      `filtered in commit range ${pullRequestsFilteredArray.length} pullrequests for repo: ${repositoryId}`
+      `filtered in commit range ${pullRequestsFilteredArray.length} pullrequests for repo: ${repositoryId}`,
     );
     //extract linked items and append them to result
     await Promise.all(
@@ -206,13 +213,13 @@ export default class GitDataProvider {
                   pullrequest: pr,
                 };
                 ChangeSetsArray.push(changeSet);
-              })
+              }),
             );
           }
         } catch (error) {
           logger.error(error);
         }
-      })
+      }),
     );
     return ChangeSetsArray;
   } //GetPullRequestsInCommitRange
@@ -223,12 +230,12 @@ export default class GitDataProvider {
     commitRange: any,
     linkedWiOptions: any,
     includeUnlinkedCommits: boolean = false,
-    includePullRequestWorkItems: boolean = true
+    includePullRequestWorkItems: boolean = true,
   ) {
     logger.info(
       `GetItemsInCommitRange: includeUnlinkedCommits=${includeUnlinkedCommits}, includePullRequestWorkItems=${includePullRequestWorkItems}, commits=${
         commitRange?.value?.length || 0
-      }`
+      }`,
     );
     //get all items linked to commits
     let res: any = [];
@@ -245,7 +252,7 @@ export default class GitDataProvider {
           let populatedItem = await this.ticketsDataProvider.GetWorkItem(projectId, wi.id);
           let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
             linkedWiOptions,
-            populatedItem
+            populatedItem,
           );
           let changeSet: any = { workItem: populatedItem, commit: commit, linkedItems };
           commitChangesArray.push(changeSet);
@@ -267,7 +274,7 @@ export default class GitDataProvider {
       }
     }
     logger.info(
-      `GetItemsInCommitRange: produced ${commitChangesArray.length} linked changes and ${commitsWithNoRelations.length} unlinked commits`
+      `GetItemsInCommitRange: produced ${commitChangesArray.length} linked changes and ${commitsWithNoRelations.length} unlinked commits`,
     );
     //get all items and pr data from pr's in commit range - using the above function
     let pullRequestsChangesArray: any[] = [];
@@ -277,7 +284,7 @@ export default class GitDataProvider {
       const prLinkedItems = await this.GetPullRequestsLinkedItemsInCommitRange(
         projectId,
         repositoryId,
-        commitRange
+        commitRange,
       );
       ({ workItemIds: prWorkItemIds, mergeCommitIds: prMergeCommitIds } =
         this.collectPrWorkItemMetadata(prLinkedItems));
@@ -347,7 +354,7 @@ export default class GitDataProvider {
       commitEntries.filter((entry: [string | undefined, any]): entry is [string, any] => {
         const commitId = entry[0];
         return typeof commitId === 'string' && commitId !== '';
-      })
+      }),
     );
   }
 
@@ -374,7 +381,7 @@ export default class GitDataProvider {
     commitChangesArray: any[],
     workItemCommitIds: Map<number, Set<string>>,
     prWorkItemIds: Set<number>,
-    prMergeCommitIds: Set<string>
+    prMergeCommitIds: Set<string>,
   ) {
     if (prWorkItemIds.size === 0) return;
     for (const change of commitChangesArray || []) {
@@ -398,7 +405,7 @@ export default class GitDataProvider {
   async GetPullRequestsInCommitRangeWithoutLinkedItems(
     projectId: string,
     repositoryId: string,
-    commitRangeArray: any
+    commitRangeArray: any,
   ) {
     let pullRequestsFilteredArray: any[] = [];
 
@@ -433,7 +440,7 @@ export default class GitDataProvider {
       });
     });
     logger.info(
-      `filtered in commit range ${pullRequestsFilteredArray.length} pullrequests for repo: ${repositoryId}`
+      `filtered in commit range ${pullRequestsFilteredArray.length} pullrequests for repo: ${repositoryId}`,
     );
 
     return pullRequestsFilteredArray;
@@ -461,7 +468,7 @@ export default class GitDataProvider {
         let populatedItem = await this.ticketsDataProvider.GetWorkItem(projectId, wi.id);
         let changeSet: any = { workItem: populatedItem, build: toBuildId };
         linkedItemsArray.push(changeSet);
-      })
+      }),
     );
     return linkedItemsArray;
   } //GetCommitForPipeline
@@ -473,12 +480,12 @@ export default class GitDataProvider {
     targetRepo: any,
     addedWorkItemByIdSet: Set<number>,
     linkedWiOptions: any = undefined,
-    includeUnlinkedCommits: boolean = false
+    includeUnlinkedCommits: boolean = false,
   ) {
     logger.info(
       `getItemsForPipelineRange: includeUnlinkedCommits=${includeUnlinkedCommits}, extendedCommits=${
         extendedCommits?.length || 0
-      }`
+      }`,
     );
     let commitChangesArray: any[] = [];
     let commitsWithNoRelations: any[] = [];
@@ -487,7 +494,7 @@ export default class GitDataProvider {
         throw new Error('extended commits cannot be empty');
       }
       logger.debug(
-        `getItemsForPipelineRange: ${extendedCommits?.length} commits for ${JSON.stringify(targetRepo)}`
+        `getItemsForPipelineRange: ${extendedCommits?.length} commits for ${JSON.stringify(targetRepo)}`,
       );
       //First fetch the repo web url
       if (targetRepo.url) {
@@ -500,7 +507,7 @@ export default class GitDataProvider {
         targetRepo['projectId'] = targetRepoProjectId ?? teamProject;
         if (!targetRepoProjectId) {
           logger.warn(
-            `getItemsForPipelineRange: repo response missing project.id for ${targetRepo.url}; falling back to pipeline teamProject=${teamProject}`
+            `getItemsForPipelineRange: repo response missing project.id for ${targetRepo.url}; falling back to pipeline teamProject=${teamProject}`,
           );
         }
       }
@@ -522,11 +529,11 @@ export default class GitDataProvider {
         for (const wi of commit.workItems) {
           const populatedWorkItem = await this.ticketsDataProvider.GetWorkItem(
             targetRepo['projectId'],
-            wi.id
+            wi.id,
           );
           let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
             linkedWiOptions,
-            populatedWorkItem
+            populatedWorkItem,
           );
           let changeSet: any = {
             workItem: populatedWorkItem,
@@ -554,7 +561,7 @@ export default class GitDataProvider {
       logger.error(error.message);
     }
     logger.info(
-      `getItemsForPipelineRange: produced ${commitChangesArray.length} linked changes and ${commitsWithNoRelations.length} unlinked commits`
+      `getItemsForPipelineRange: produced ${commitChangesArray.length} linked changes and ${commitsWithNoRelations.length} unlinked commits`,
     );
     return { commitChangesArray, commitsWithNoRelations };
   }
@@ -614,7 +621,7 @@ export default class GitDataProvider {
                 wiItemType,
                 relatedItemContent.fields['System.Title'],
                 relatedItemContent._links?.html?.href || '',
-                relation.attributes['name'] || ''
+                relation.attributes['name'] || '',
               );
 
               const isAffectsRelation = relName.includes('Affects');
@@ -662,7 +669,7 @@ export default class GitDataProvider {
     repositoryId: string,
     fromDate: string,
     toDate: string,
-    branchName?: string
+    branchName?: string,
   ) {
     let url: string;
     if (typeof branchName !== 'undefined') {
@@ -735,7 +742,7 @@ export default class GitDataProvider {
       });
     });
     logger.info(
-      `filtered in prId range ${pullRequestsFilteredArray.length} pullrequests for repo: ${repositoryId}`
+      `filtered in prId range ${pullRequestsFilteredArray.length} pullrequests for repo: ${repositoryId}`,
     );
     //extract linked items and append them to result
     await Promise.all(
@@ -755,13 +762,13 @@ export default class GitDataProvider {
                   pullrequest: pr,
                 };
                 ChangeSetsArray.push(changeSet);
-              })
+              }),
             );
           }
         } catch (error) {
           logger.error(error);
         }
-      })
+      }),
     );
     return ChangeSetsArray;
   }
@@ -810,7 +817,7 @@ export default class GitDataProvider {
             // If commit cannot be resolved, leave timestamp as 0
           }
           return { refItem, ts, dateStr };
-        })
+        }),
       );
 
       taggedWithDates.sort((a: any, b: any) => b.ts - a.ts);
@@ -837,7 +844,7 @@ export default class GitDataProvider {
             // ignore and keep ts=0
           }
           return { refItem, ts, dateStr };
-        })
+        }),
       );
 
       branchesWithDates.sort((a: any, b: any) => b.ts - a.ts);
@@ -895,7 +902,7 @@ export default class GitDataProvider {
     gitUrl: string,
     itemVersion: GitVersionDescriptor,
     compareVersion: GitVersionDescriptor,
-    specificItemPath: string = ''
+    specificItemPath: string = '',
   ) {
     const allCommitsExtended: any[] = [];
     let skipping = 0;
@@ -962,7 +969,7 @@ export default class GitDataProvider {
     repoId: string,
     targetVersion: GitVersionDescriptor,
     sourceVersion: GitVersionDescriptor,
-    allCommitsExtended: any[]
+    allCommitsExtended: any[],
   ) {
     let submodules: any[] = [];
     try {
@@ -1044,20 +1051,20 @@ export default class GitDataProvider {
 
         if (!sourceSha1) {
           logger.warn(
-            `${gitSubModuleName} pointer not exist in source version ${sourceVersion.versionType} ${sourceVersion.version} in repository ${gitRepoUrl}`
+            `${gitSubModuleName} pointer not exist in source version ${sourceVersion.versionType} ${sourceVersion.version} in repository ${gitRepoUrl}`,
           );
           continue;
         }
 
         if (!targetSha1) {
           logger.warn(
-            `${gitSubModuleName} pointer not exist in target version ${targetVersion.versionType} ${targetVersion.version} in repository ${gitRepoUrl}`
+            `${gitSubModuleName} pointer not exist in target version ${targetVersion.versionType} ${targetVersion.version} in repository ${gitRepoUrl}`,
           );
           continue;
         }
         if (sourceSha1 === targetSha1) {
           logger.warn(
-            `${gitSubModuleName} pointer is the same in source and target version in repository ${gitRepoUrl}`
+            `${gitSubModuleName} pointer is the same in source and target version in repository ${gitRepoUrl}`,
           );
           continue;
         }
