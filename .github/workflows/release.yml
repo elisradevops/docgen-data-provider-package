@@ -41,6 +41,9 @@ jobs:
 
       - run: npm run build
 
+      - name: Disable npm git tag creation
+        run: npm config set git-tag-version false
+
       - name: 'Automated Version Bump'
         uses: 'phips28/gh-action-bump-version@master'
         id: bump_version
@@ -71,5 +74,8 @@ jobs:
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
+          FAILED_VERSION=$(node -p "require('./package.json').version")
           git revert HEAD --no-edit
           git push
+          git tag -d "${FAILED_VERSION}" || true
+          git push origin ":refs/tags/${FAILED_VERSION}" || true
