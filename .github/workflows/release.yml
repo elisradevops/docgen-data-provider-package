@@ -41,6 +41,9 @@ jobs:
 
       - run: npm run build
 
+      - name: Disable npm git tag creation
+        run: npm config set git-tag-version false
+
       - name: 'Automated Version Bump'
         uses: 'phips28/gh-action-bump-version@master'
         id: bump_version
