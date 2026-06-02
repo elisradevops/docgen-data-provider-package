@@ -3776,16 +3776,19 @@ export default class ResultDataProvider {
             ?.filter((field: string) => field.includes('@linked'))
             ?.map((field: string) => field.split('@')[0]);
           const selectedLinkedFieldSet = new Set(filteredLinkedFields);
-          const { relations } = testCaseData;
-          if (relations) {
-            await this.appendLinkedRelations(
-              relations,
-              relatedRequirements,
-              relatedBugs,
-              relatedCRs,
-              testCaseData,
-              selectedLinkedFieldSet
-            );
+          if (selectedLinkedFieldSet.size > 0) {
+            const latestWi = await this.fetchWorkItemLatest(projectName, testCaseId, true);
+            const relations = latestWi?.relations ?? testCaseData?.relations;
+            if (relations) {
+              await this.appendLinkedRelations(
+                relations,
+                relatedRequirements,
+                relatedBugs,
+                relatedCRs,
+                testCaseData,
+                selectedLinkedFieldSet
+              );
+            }
           }
           selectedLinkedFieldSet.clear();
         }
