@@ -4413,9 +4413,6 @@ export default class ResultDataProvider {
         const relatedUrl = relation.url;
         try {
           const wi = await TFSServices.getItemContent(relatedUrl, this.token);
-          if (wi.fields['System.State'] === 'Closed') {
-            continue;
-          }
           if (
             selectedLinkedFieldSet.has('associatedRequirement') &&
             wi.fields['System.WorkItemType'] === 'Requirement'
