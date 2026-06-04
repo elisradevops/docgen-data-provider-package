@@ -5127,7 +5127,7 @@ describe('ResultDataProvider', () => {
   });
 
   describe('appendLinkedRelations', () => {
-    it('should append requirement/bug/cr when enabled and skip closed items', async () => {
+    it('should append requirement/bug/cr when enabled, including closed items', async () => {
       const relations = [
         { rel: 'System.LinkTypes.Related', url: 'https://example.com/wi/1' },
         { rel: 'System.LinkTypes.Related', url: 'https://example.com/wi/2' },
@@ -5191,7 +5191,7 @@ describe('ResultDataProvider', () => {
       expect(relatedRequirements[0]).toEqual(
         expect.objectContaining({ id: 1, customerId: 'CUST-1', workItemType: 'Requirement' })
       );
-      expect(relatedBugs).toHaveLength(1);
+      expect(relatedBugs).toHaveLength(2);
       expect(relatedCRs).toHaveLength(1);
     });
 
