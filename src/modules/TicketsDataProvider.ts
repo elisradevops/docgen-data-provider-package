@@ -515,6 +515,37 @@ export default class TicketsDataProvider {
   }
 
   /**
+   * Returns the project's work item type names and the complete set of valid state names.
+   * Used to validate SVD work-item filter options before generation so callers receive
+   * a descriptive error instead of a silent zero-result document.
+   *
+   * Types come from GET _apis/wit/workitemtypes (value[].name).
+   * States are extracted from the transitions map keys on the same response — each key
+   * is a state name — avoiding N extra per-type state calls.
+   *
+   * @param project - The project name.
+   * @returns An object with `types` (work item type names) and `states` (all state names across types).
+   */
+  async GetWorkItemTypeStates(project: string): Promise<{ types: string[]; states: string[] }> {
+    try {
+      const url = `${this.orgUrl}${project}/_apis/wit/workitemtypes`;
+      const { value: workItemTypes } = await TFSServices.getItemContent(url, this.token);
+      const types: string[] = (workItemTypes ?? []).map((t: any) => t?.name).filter(Boolean);
+      // transitions is a map whose keys are state names (e.g. { "Active": [...], "Closed": [...] })
+      const stateSet = new Set<string>();
+      for (const t of workItemTypes ?? []) {
+        for (const stateName of Object.keys(t?.transitions ?? {})) {
+          if (stateName) stateSet.add(stateName);
+        }
+      }
+      return { types, states: Array.from(stateSet) };
+    } catch (err: any) {
+      logger.error(`Error fetching work item type states: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
    * fetches linked queries
    * @param queries fetched queries
    * @param onlyTestReq get only test req
