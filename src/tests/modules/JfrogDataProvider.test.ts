@@ -33,7 +33,7 @@ describe('JfrogDataProvider', () => {
 
       // Assert
       expect(TFSServices.getItemContent).toHaveBeenCalledWith(
-        `${mockOrgUrl}${mockTeamProject}/_apis/serviceendpoint/endpoints/${mockConnectionId}?api-version=6`,
+        `${mockOrgUrl}${mockTeamProject}/_apis/serviceendpoint/endpoints/${mockConnectionId}?api-version=7.1`,
         mockTfsToken
       );
       expect(logger.debug).toHaveBeenCalledWith(`service connection url "${mockResponse.url}"`);

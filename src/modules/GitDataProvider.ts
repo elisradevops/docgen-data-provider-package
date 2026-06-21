@@ -245,32 +245,52 @@ export default class GitDataProvider {
     const commits = Array.isArray(commitRange?.value) ? commitRange.value : [];
     const workItemCommitIds = this.collectWorkItemCommitIds(commits);
     const commitById = includePullRequestWorkItems ? this.buildCommitById(commits) : new Map<string, any>();
-    //extract linked items and append them to result
+    //extract linked items and append them to result — batch-fetch all WIs first
+    const allWiIds: number[] = [];
+    const wiIdSet = new Set<number>();
+    const commitWiPairs: Array<{ commit: any; wiId: number }> = [];
     for (const commit of commits) {
       if (commit.workItems && commit.workItems.length > 0) {
         for (const wi of commit.workItems) {
-          let populatedItem = await this.ticketsDataProvider.GetWorkItem(projectId, wi.id);
-          let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
-            linkedWiOptions,
-            populatedItem,
-          );
-          let changeSet: any = { workItem: populatedItem, commit: commit, linkedItems };
-          commitChangesArray.push(changeSet);
-          if (typeof populatedItem?.id === 'number') {
-            addedWorkItemIds.add(populatedItem.id);
+          const wiId = Number(wi.id);
+          if (!wiIdSet.has(wiId)) {
+            wiIdSet.add(wiId);
+            allWiIds.push(wiId);
           }
+          commitWiPairs.push({ commit, wiId });
         }
-      } else {
-        // Handle commits with no linked work items
-        if (includeUnlinkedCommits) {
-          commitsWithNoRelations.push({
-            commitId: commit.commitId,
-            commitDate: commit.committer?.date,
-            committer: commit.committer?.name,
-            comment: commit.comment,
-            url: commit.remoteUrl,
-          });
-        }
+      } else if (includeUnlinkedCommits) {
+        commitsWithNoRelations.push({
+          commitId: commit.commitId,
+          commitDate: commit.committer?.date,
+          committer: commit.committer?.name,
+          comment: commit.comment,
+          url: commit.remoteUrl,
+        });
+      }
+    }
+    const populatedItems = allWiIds.length > 0
+      ? await this.ticketsDataProvider.PopulateWorkItemsByIds(allWiIds, projectId)
+      : [];
+    if (allWiIds.length > 0 && populatedItems.length === 0) {
+      logger.warn(`GetItemsInCommitRange: PopulateWorkItemsByIds returned 0 items for ${allWiIds.length} requested IDs — possible auth failure or API error`);
+    }
+    const populatedById = new Map<number, any>();
+    for (const item of populatedItems) {
+      if (item?.id != null) populatedById.set(item.id, item);
+    }
+    logger.info(`GetItemsInCommitRange: batch-fetched ${populatedById.size} unique work items (${allWiIds.length} requested)`);
+    for (const { commit, wiId } of commitWiPairs) {
+      const populatedItem = populatedById.get(wiId);
+      if (!populatedItem) continue;
+      let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
+        linkedWiOptions,
+        populatedItem,
+      );
+      let changeSet: any = { workItem: populatedItem, commit: commit, linkedItems };
+      commitChangesArray.push(changeSet);
+      if (typeof populatedItem?.id === 'number') {
+        addedWorkItemIds.add(populatedItem.id);
       }
     }
     logger.info(
@@ -511,7 +531,10 @@ export default class GitDataProvider {
           );
         }
       }
-      //Then extend the commit information with the related WIs
+      //Then extend the commit information with the related WIs — batch-fetch all WIs first
+      const pipelineWiIds: number[] = [];
+      const pipelineWiIdSet = new Set<number>();
+      const pipelineCommitWiPairs: Array<{ commit: any; wiId: number }> = [];
       for (const extendedCommit of extendedCommits) {
         const { commit } = extendedCommit;
         if (!Array.isArray(commit.workItems) || commit.workItems.length === 0) {
@@ -527,24 +550,41 @@ export default class GitDataProvider {
           continue;
         }
         for (const wi of commit.workItems) {
-          const populatedWorkItem = await this.ticketsDataProvider.GetWorkItem(
-            targetRepo['projectId'],
-            wi.id,
-          );
-          let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
-            linkedWiOptions,
-            populatedWorkItem,
-          );
-          let changeSet: any = {
-            workItem: populatedWorkItem,
-            commit: commit,
-            targetRepo,
-            linkedItems,
-          };
-          if (!addedWorkItemByIdSet.has(wi.id)) {
-            addedWorkItemByIdSet.add(wi.id);
-            commitChangesArray.push(changeSet);
+          const wiId = Number(wi.id);
+          if (!pipelineWiIdSet.has(wiId)) {
+            pipelineWiIdSet.add(wiId);
+            pipelineWiIds.push(wiId);
           }
+          pipelineCommitWiPairs.push({ commit, wiId });
+        }
+      }
+      const pipelinePopulated = pipelineWiIds.length > 0
+        ? await this.ticketsDataProvider.PopulateWorkItemsByIds(pipelineWiIds, targetRepo['projectId'])
+        : [];
+      if (pipelineWiIds.length > 0 && pipelinePopulated.length === 0) {
+        logger.warn(`getItemsForPipelineRange: PopulateWorkItemsByIds returned 0 items for ${pipelineWiIds.length} requested IDs — possible auth failure or API error`);
+      }
+      const pipelinePopulatedById = new Map<number, any>();
+      for (const item of pipelinePopulated) {
+        if (item?.id != null) pipelinePopulatedById.set(item.id, item);
+      }
+      logger.info(`getItemsForPipelineRange: batch-fetched ${pipelinePopulatedById.size} unique work items (${pipelineWiIds.length} requested)`);
+      for (const { commit, wiId } of pipelineCommitWiPairs) {
+        const populatedWorkItem = pipelinePopulatedById.get(wiId);
+        if (!populatedWorkItem) continue;
+        let linkedItems: LinkedRelation[] = await this.createLinkedRelatedItemsForSVD(
+          linkedWiOptions,
+          populatedWorkItem,
+        );
+        let changeSet: any = {
+          workItem: populatedWorkItem,
+          commit: commit,
+          targetRepo,
+          linkedItems,
+        };
+        if (!addedWorkItemByIdSet.has(wiId)) {
+          addedWorkItemByIdSet.add(wiId);
+          commitChangesArray.push(changeSet);
         }
       }
 

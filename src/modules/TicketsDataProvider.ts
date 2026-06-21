@@ -2365,7 +2365,7 @@ export default class TicketsDataProvider {
     const postBatch = (currentIds: any[]) =>
       this.withHistoricalApiVersionFallback('populate-workitems-batch', (apiVersion) =>
         TFSServices.getItemContent(this.appendApiVersion(baseUrl, apiVersion), this.token, 'post', {
-          $expand: 'Relations',
+          $expand: 'All',
           ids: currentIds,
         }),
       ).then(({ result }) => result);
