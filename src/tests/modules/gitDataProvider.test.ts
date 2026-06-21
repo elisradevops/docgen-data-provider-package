@@ -1129,8 +1129,8 @@ describe('GitDataProvider - GetItemsInCommitRange', () => {
     const mockPRsResponse = { count: 0, value: [] };
 
     (TFSServices.getItemContent as jest.Mock)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockPRsResponse);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }) // batch POST for work items
+      .mockResolvedValueOnce(mockPRsResponse);             // GetPullRequestsLinkedItemsInCommitRange (default: includePullRequestWorkItems=true)
 
     // Act
     const result = await gitDataProvider.GetItemsInCommitRange(projectId, repoId, commitRange, null, false);
@@ -1248,7 +1248,7 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
 
     (TFSServices.getItemContent as jest.Mock)
       .mockResolvedValueOnce(mockRepoData)
-      .mockResolvedValueOnce(mockPopulatedWI);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }); // batch POST for work items
 
     // Act
     const result = await gitDataProvider.getItemsForPipelineRange(
@@ -1320,8 +1320,7 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
 
     (TFSServices.getItemContent as jest.Mock)
       .mockResolvedValueOnce(mockRepoData)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockPopulatedWI);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }); // single batch POST (WI id=1 deduped)
 
     // Act
     const result = await gitDataProvider.getItemsForPipelineRange(
@@ -1361,8 +1360,8 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
     const mockPopulatedWI = { id: 42, fields: { 'System.Title': 'Cross-project WI' } };
 
     (TFSServices.getItemContent as jest.Mock)
-      .mockResolvedValueOnce(mockRepoDataNoCrossLink) // repo metadata call
-      .mockResolvedValueOnce(mockPopulatedWI);        // GetWorkItem call
+      .mockResolvedValueOnce(mockRepoDataNoCrossLink)        // repo metadata call
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }); // batch POST for work items
 
     const result = await gitDataProvider.getItemsForPipelineRange(
       pipelineTeamProject,
@@ -1373,10 +1372,12 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
 
     expect(result.commitChangesArray).toHaveLength(1);
     expect(result.commitChangesArray[0].workItem.id).toBe(42);
-    // GetWorkItem should have been called with the repo's own projectId from repoData.project.id
+    // batch POST URL contains the repo's projectId (cross-project-id)
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
       expect.stringContaining('cross-project-id'),
-      expect.any(String)
+      expect.any(String),
+      'post',
+      expect.objectContaining({ ids: expect.any(Array) })
     );
   });
 
@@ -1401,7 +1402,7 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
 
     (TFSServices.getItemContent as jest.Mock)
       .mockResolvedValueOnce(mockRepoDataEmpty)
-      .mockResolvedValueOnce(mockPopulatedWI);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }); // batch POST for work items
 
     const result = await gitDataProvider.getItemsForPipelineRange(
       pipelineTeamProject,
@@ -1412,10 +1413,12 @@ describe('GitDataProvider - getItemsForPipelineRange', () => {
 
     expect(result.commitChangesArray).toHaveLength(1);
     expect(result.commitChangesArray[0].workItem.id).toBe(99);
-    // GetWorkItem should have been called with the pipeline teamProject as fallback
+    // batch POST URL contains the fallback teamProject
     expect(TFSServices.getItemContent).toHaveBeenCalledWith(
       expect.stringContaining(pipelineTeamProject),
-      expect.any(String)
+      expect.any(String),
+      'post',
+      expect.objectContaining({ ids: expect.any(Array) })
     );
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`falling back to pipeline teamProject=${pipelineTeamProject}`)
@@ -1774,9 +1777,9 @@ describe('GitDataProvider - createLinkedRelatedItemsForSVD (via GetItemsInCommit
     const mockPRsResponse = { count: 0, value: [] };
 
     (TFSServices.getItemContent as jest.Mock)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockRelatedWI)
-      .mockResolvedValueOnce(mockPRsResponse);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }) // batch POST for work items
+      .mockResolvedValueOnce(mockRelatedWI)                // GetWorkItemByUrl (linked relation)
+      .mockResolvedValueOnce(mockPRsResponse);             // GetPullRequestsLinkedItemsInCommitRange
 
     // Act
     const result = await gitDataProvider.GetItemsInCommitRange(
@@ -1826,8 +1829,8 @@ describe('GitDataProvider - createLinkedRelatedItemsForSVD (via GetItemsInCommit
     const mockPRsResponse = { count: 0, value: [] };
 
     (TFSServices.getItemContent as jest.Mock)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockPRsResponse);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }) // batch POST for work items
+      .mockResolvedValueOnce(mockPRsResponse);             // GetPullRequestsLinkedItemsInCommitRange
 
     // Act
     const result = await gitDataProvider.GetItemsInCommitRange(
@@ -1877,8 +1880,8 @@ describe('GitDataProvider - createLinkedRelatedItemsForSVD (via GetItemsInCommit
     const mockPRsResponse = { count: 0, value: [] };
 
     (TFSServices.getItemContent as jest.Mock)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockPRsResponse);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }) // batch POST for work items
+      .mockResolvedValueOnce(mockPRsResponse);             // GetPullRequestsLinkedItemsInCommitRange
 
     // Act
     const result = await gitDataProvider.GetItemsInCommitRange(
@@ -1936,9 +1939,9 @@ describe('GitDataProvider - createLinkedRelatedItemsForSVD (via GetItemsInCommit
     const mockPRsResponse = { count: 0, value: [] };
 
     (TFSServices.getItemContent as jest.Mock)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockRelatedWI)
-      .mockResolvedValueOnce(mockPRsResponse);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }) // batch POST for work items
+      .mockResolvedValueOnce(mockRelatedWI)                // GetWorkItemByUrl (linked relation)
+      .mockResolvedValueOnce(mockPRsResponse);             // GetPullRequestsLinkedItemsInCommitRange
 
     // Act
     const result = await gitDataProvider.GetItemsInCommitRange(
@@ -2105,9 +2108,8 @@ describe('GitDataProvider - duplicate work item removal', () => {
     const mockPRsResponse = { count: 0, value: [] };
 
     (TFSServices.getItemContent as jest.Mock)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockPopulatedWI)
-      .mockResolvedValueOnce(mockPRsResponse);
+      .mockResolvedValueOnce({ value: [mockPopulatedWI] }) // batch POST (WI id=1 deduped from 2 commits)
+      .mockResolvedValueOnce(mockPRsResponse);             // GetPullRequestsLinkedItemsInCommitRange
 
     // Act
     const result = await gitDataProvider.GetItemsInCommitRange(projectId, repoId, commitRange, null, false);

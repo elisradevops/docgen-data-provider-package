@@ -14,8 +14,11 @@ export default class JfrogDataProvider {
   }
 
   async getServiceConnectionUrlByConnectionId(teamProject: string, connectionId: string) {
-    let url = `${this.orgUrl}${teamProject}/_apis/serviceendpoint/endpoints/${connectionId}?api-version=6`;
+    let url = `${this.orgUrl}${teamProject}/_apis/serviceendpoint/endpoints/${connectionId}?api-version=7.1`;
     const serviceConnectionResponse = await TFSServices.getItemContent(url, this.tfsToken);
+    if (!serviceConnectionResponse?.url) {
+      throw new Error(`Service connection ${connectionId} returned no URL — identity may lack service-endpoint read permission`);
+    }
     logger.debug(`service connection url ${JSON.stringify(serviceConnectionResponse.url)}`);
     return serviceConnectionResponse.url;
   }
@@ -23,6 +26,11 @@ export default class JfrogDataProvider {
   async getCiDataFromJfrog(jfrogUrl: string, buildName: string, buildVersion: string): Promise<string> {
     let jfrogHeader: any = {};
     try {
+      if (!jfrogUrl) {
+        throw new Error(
+          `JFrog service connection URL is unresolved for build "${buildName}" — the caller identity may lack service-endpoint read permission`
+        );
+      }
       if (this.jfrogToken !== '') {
         jfrogHeader['Authorization'] = `Bearer ${this.jfrogToken}`;
       }
@@ -42,6 +50,9 @@ export default class JfrogDataProvider {
         this.jfrogToken !== ''
           ? await TFSServices.getJfrogRequest(getCiRequestUrl, jfrogHeader)
           : await TFSServices.getJfrogRequest(getCiRequestUrl);
+      if (!getCiResponse?.buildInfo?.url) {
+        throw new Error(`JFrog response for build "${buildName}${buildVersion}" is missing buildInfo.url`);
+      }
       logger.debug(`CI Url from JFROG: ${getCiResponse.buildInfo.url}`);
       return getCiResponse.buildInfo.url;
     } catch (err: any) {
