@@ -290,7 +290,8 @@ export default class ResultDataProvider {
     enableRunStepStatusFilter: boolean,
     linkedQueryRequest: any,
     errorFilterMode: string = 'none',
-    includeAllHistory: boolean = false
+    includeAllHistory: boolean = false,
+    useLatestTestCaseProperties: boolean = false
   ) {
     const fetchedTestResults: any[] = [];
     logger.debug(
@@ -322,7 +323,9 @@ export default class ResultDataProvider {
         projectName,
         selectedFields,
         isQueryMode,
-        includeAllHistory
+        includeAllHistory,
+        false,
+        useLatestTestCaseProperties
       );
       logger.debug(`Aligning steps with iterations for test reporter results`);
       const testReporterData = this.alignStepsWithIterationsTestReporter(
@@ -3656,9 +3659,15 @@ export default class ResultDataProvider {
     suiteTestCaseRevision: number,
     pointAsOfTimestamp: string,
     fallbackSnapshot: any,
-    expandAll: boolean
+    expandAll: boolean,
+    useLatestTestCaseProperties: boolean = false
   ): Promise<any | null> {
     let bestSnapshotWithoutSteps: any | null = null;
+
+    if (useLatestTestCaseProperties) {
+      const latest = await this.fetchWorkItemLatest(projectName, testCaseId, expandAll);
+      if (latest) return latest;
+    }
 
     if (pointAsOfTimestamp) {
       const asOfSnapshot = await this.fetchWorkItemByAsOf(
@@ -3721,14 +3730,15 @@ export default class ResultDataProvider {
     isQueryMode?: boolean,
     point?: any,
     includeAllHistory: boolean = false,
-    useRunlessAsOf: boolean = false
+    useRunlessAsOf: boolean = false,
+    useLatestTestCaseProperties: boolean = false
   ): Promise<any> {
     try {
       let filteredFields: any = {};
       let relatedRequirements: any[] = [];
       let relatedBugs: any[] = [];
       let relatedCRs: any[] = [];
-      if (runId === '0' || resultId === '0') {
+      if (useLatestTestCaseProperties || runId === '0' || resultId === '0') {
         if (!point) {
           logger.warn(`Invalid run result ${runId} or result ${resultId}`);
           return null;
@@ -3752,7 +3762,8 @@ export default class ResultDataProvider {
           suiteTestCaseRevision,
           pointAsOfTimestamp,
           fallbackSnapshot,
-          isTestReporter
+          isTestReporter,
+          useLatestTestCaseProperties
         );
         if (!testCaseData) {
           logger.warn(`Could not resolve test case ${point.testCaseId} for runless point fallback.`);
@@ -5465,7 +5476,8 @@ export default class ResultDataProvider {
     isQueryMode?: boolean,
     point?: any,
     includeAllHistory: boolean = false,
-    useRunlessAsOf: boolean = false
+    useRunlessAsOf: boolean = false,
+    useLatestTestCaseProperties: boolean = false
   ): Promise<any> {
     return this.fetchResultDataBasedOnWiBase(
       projectName,
@@ -5476,7 +5488,8 @@ export default class ResultDataProvider {
       isQueryMode,
       point,
       includeAllHistory,
-      useRunlessAsOf
+      useRunlessAsOf,
+      useLatestTestCaseProperties
     );
   }
 
@@ -5498,13 +5511,14 @@ export default class ResultDataProvider {
     selectedFields?: string[],
     isQueryMode?: boolean,
     includeAllHistory: boolean = false,
-    useRunlessAsOf: boolean = false
+    useRunlessAsOf: boolean = false,
+    useLatestTestCaseProperties: boolean = false
   ): Promise<any[]> {
     return this.fetchAllResultDataBase(
       testData,
       projectName,
       true,
-      (projectName, testSuiteId, point, selectedFields, isQueryMode, includeAllHistory, useRunlessAsOf) =>
+      (projectName, testSuiteId, point, selectedFields, isQueryMode, includeAllHistory, useRunlessAsOf, useLatestTestCaseProperties) =>
         this.fetchResultDataForTestReporter(
           projectName,
           testSuiteId,
@@ -5512,9 +5526,10 @@ export default class ResultDataProvider {
           selectedFields,
           isQueryMode,
           includeAllHistory,
-          useRunlessAsOf
+          useRunlessAsOf,
+          useLatestTestCaseProperties
         ),
-      [selectedFields, isQueryMode, includeAllHistory, useRunlessAsOf]
+      [selectedFields, isQueryMode, includeAllHistory, useRunlessAsOf, useLatestTestCaseProperties]
     );
   }
 
@@ -5673,13 +5688,14 @@ export default class ResultDataProvider {
     selectedFields?: string[],
     isQueryMode?: boolean,
     includeAllHistory: boolean = false,
-    useRunlessAsOf: boolean = false
+    useRunlessAsOf: boolean = false,
+    useLatestTestCaseProperties: boolean = false
   ) {
     return this.fetchResultDataBase(
       projectName,
       testSuiteId,
       point,
-      (project, runId, resultId, fields, isQueryMode, point, includeAllHistory, useRunlessAsOf) =>
+      (project, runId, resultId, fields, isQueryMode, point, includeAllHistory, useRunlessAsOf, useLatestTestCaseProperties) =>
         this.fetchResultDataBasedOnWiTestReporter(
           project,
           runId,
@@ -5688,7 +5704,8 @@ export default class ResultDataProvider {
           isQueryMode,
           point,
           includeAllHistory,
-          useRunlessAsOf
+          useRunlessAsOf,
+          useLatestTestCaseProperties
         ),
       (resultData, testSuiteId, point, selectedFields) => {
         const { lastRunId, lastResultId, configurationName, lastResultDetails } = point;
