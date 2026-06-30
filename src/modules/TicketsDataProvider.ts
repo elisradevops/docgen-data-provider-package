@@ -1673,6 +1673,20 @@ export default class TicketsDataProvider {
     return await this.GetQueryResultsByWiqlHref(wiql.href, project);
   }
 
+  async GetQueryDefinitionById(
+    queryId: string,
+    project: string,
+  ): Promise<{ id: string; name: string; columns: any[]; wiql: any }> {
+    const url = `${this.orgUrl}${project}/_apis/wit/queries/${encodeURIComponent(queryId)}?$expand=all`;
+    const def: any = await TFSServices.getItemContent(url, this.token);
+    return {
+      id: def?.id ?? queryId,
+      name: def?.name ?? '',
+      columns: def?.columns ?? [],
+      wiql: def?._links?.wiql ?? null,
+    };
+  }
+
   private normalizeHistoricalAsOf(value: string): string {
     const raw = String(value || '').trim();
     if (!raw) {
@@ -3491,24 +3505,12 @@ export default class TicketsDataProvider {
     reqTestWiqlHref: string | undefined,
     testReqWiqlHref: string | undefined,
     project: string,
-  ): Promise<{ Requirement: any[]; 'Test Case': any[] }> {
+  ): Promise<{ 'req-test'?: { Requirement: any[]; 'Test Case': any[] }; 'test-req'?: { Requirement: any[]; 'Test Case': any[] } }> {
     const normalizeCols = (columns: any[]): any[] =>
       (columns || []).map((c: any) => ({
         referenceName: c.referenceName,
         name: c.name,
       }));
-
-    const mergeCols = (a: any[], b: any[]): any[] => {
-      const seen = new Set<string>();
-      const result: any[] = [];
-      for (const col of [...a, ...b]) {
-        if (!seen.has(col.referenceName)) {
-          seen.add(col.referenceName);
-          result.push(col);
-        }
-      }
-      return result;
-    };
 
     // Sample one work item to read its System.WorkItemType.
     // In OneHop query relations: !relation.source means root (target = source WI);
@@ -3539,68 +3541,69 @@ export default class TicketsDataProvider {
       return new Set<string>((fields as any[]).map((f: any) => f.referenceName));
     };
 
+    // Resolve per-side columns for one query independently.
+    // srcIsReq: true = source WI is Requirement (req-test query), false = source WI is Test Case (test-req query).
+    const resolveQuerySides = async (
+      cols: any[],
+      relations: any[],
+      srcIsReq: boolean,
+    ): Promise<{ Requirement: any[]; 'Test Case': any[] }> => {
+      if (cols.length === 0) return { Requirement: [], 'Test Case': [] };
+      if (relations.length === 0) {
+        // No items to sample — degrade to declared columns on both sides
+        return { Requirement: cols, 'Test Case': cols };
+      }
+      const [srcType, tgtType] = await Promise.all([
+        sampleWitType(relations, true),
+        sampleWitType(relations, false),
+      ]);
+      const reqType = srcIsReq ? srcType : tgtType;
+      const tcType = srcIsReq ? tgtType : srcType;
+      if (!reqType || !tcType) {
+        logger.warn('GetTraceColumnsByType: could not determine WIT type names — returning declared columns for both sides');
+        return { Requirement: cols, 'Test Case': cols };
+      }
+      const [reqFieldSet, tcFieldSet] = await Promise.all([
+        fetchTypeFieldSet(reqType),
+        fetchTypeFieldSet(tcType),
+      ]);
+      return {
+        Requirement: cols.filter((c) => reqFieldSet.has(c.referenceName)),
+        'Test Case': cols.filter((c) => tcFieldSet.has(c.referenceName)),
+      };
+    };
+
     try {
-      // Step 1: fetch declared columns from provided query hrefs
-      let reqTestCols: any[] = [];
-      let testReqCols: any[] = [];
-      let reqTestRelations: any[] = [];
-      let testReqRelations: any[] = [];
+      const result: { 'req-test'?: { Requirement: any[]; 'Test Case': any[] }; 'test-req'?: { Requirement: any[]; 'Test Case': any[] } } = {};
 
       if (reqTestWiqlHref) {
-        const qr: any = await TFSServices.getItemContent(reqTestWiqlHref, this.token);
-        reqTestCols = normalizeCols(qr?.columns || []);
-        reqTestRelations = qr?.workItemRelations || [];
+        try {
+          const qr: any = await TFSServices.getItemContent(reqTestWiqlHref, this.token);
+          const cols = normalizeCols(qr?.columns || []);
+          const relations = qr?.workItemRelations || [];
+          result['req-test'] = await resolveQuerySides(cols, relations, true);
+        } catch (err: any) {
+          logger.error(`GetTraceColumnsByType[req-test] failed: ${err.message}`);
+          result['req-test'] = { Requirement: [], 'Test Case': [] };
+        }
       }
+
       if (testReqWiqlHref) {
-        const qr: any = await TFSServices.getItemContent(testReqWiqlHref, this.token);
-        testReqCols = normalizeCols(qr?.columns || []);
-        testReqRelations = qr?.workItemRelations || [];
+        try {
+          const qr: any = await TFSServices.getItemContent(testReqWiqlHref, this.token);
+          const cols = normalizeCols(qr?.columns || []);
+          const relations = qr?.workItemRelations || [];
+          result['test-req'] = await resolveQuerySides(cols, relations, false);
+        } catch (err: any) {
+          logger.error(`GetTraceColumnsByType[test-req] failed: ${err.message}`);
+          result['test-req'] = { Requirement: [], 'Test Case': [] };
+        }
       }
 
-      const declaredCols = mergeCols(reqTestCols, testReqCols);
-      if (declaredCols.length === 0) {
-        return { Requirement: [], 'Test Case': [] };
-      }
-
-      // Step 2: sample WIT type names
-      // reqTest: source = Requirement, target = Test Case
-      // testReq: source = Test Case, target = Requirement
-      let reqTypeName: string | undefined;
-      let tcTypeName: string | undefined;
-
-      if (reqTestRelations.length > 0) {
-        [reqTypeName, tcTypeName] = await Promise.all([
-          sampleWitType(reqTestRelations, true),
-          sampleWitType(reqTestRelations, false),
-        ]);
-      }
-      if ((!reqTypeName || !tcTypeName) && testReqRelations.length > 0) {
-        const [tSrc, tTgt] = await Promise.all([
-          sampleWitType(testReqRelations, true),
-          sampleWitType(testReqRelations, false),
-        ]);
-        if (!tcTypeName) tcTypeName = tSrc;
-        if (!reqTypeName) reqTypeName = tTgt;
-      }
-
-      if (!reqTypeName || !tcTypeName) {
-        logger.warn('GetTraceColumnsByType: could not determine WIT type names — returning merged columns');
-        return { Requirement: declaredCols, 'Test Case': declaredCols };
-      }
-
-      // Step 3: fetch WIT field schemas and intersect with declared columns
-      const [reqFieldSet, tcFieldSet] = await Promise.all([
-        fetchTypeFieldSet(reqTypeName),
-        fetchTypeFieldSet(tcTypeName),
-      ]);
-
-      return {
-        Requirement: declaredCols.filter((c) => reqFieldSet.has(c.referenceName)),
-        'Test Case': declaredCols.filter((c) => tcFieldSet.has(c.referenceName)),
-      };
+      return result;
     } catch (err: any) {
       logger.error(`GetTraceColumnsByType failed: ${err.message}`);
-      return { Requirement: [], 'Test Case': [] };
+      return {};
     }
   }
 }

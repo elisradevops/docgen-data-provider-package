@@ -87,8 +87,8 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
       'my-project',
     );
 
-    const reqRefs = result.Requirement.map((c: any) => c.referenceName);
-    const tcRefs = result['Test Case'].map((c: any) => c.referenceName);
+    const reqRefs = result['req-test']!.Requirement.map((c: any) => c.referenceName);
+    const tcRefs = result['req-test']!['Test Case'].map((c: any) => c.referenceName);
 
     expect(reqRefs).toContain('Custom.CustomerRequirementId');
     expect(tcRefs).not.toContain('Custom.CustomerRequirementId');
@@ -96,19 +96,27 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
     expect(tcRefs).toContain('Microsoft.VSTS.Common.Priority');
   });
 
-  it('merges columns from both queries (reqTest + testReq), deduped', async () => {
+  it('resolves each query independently: req-test and test-req have separate column sets', async () => {
     const reqRelations = [rootRelation(1, 'https://ado/wi/1'), linkRelation(1, 101, 'https://ado/wi/101')];
     const testRelations = [rootRelation(101, 'https://ado/wi/101'), linkRelation(101, 1, 'https://ado/wi/1')];
 
     const extraCol = { referenceName: 'System.AreaPath', name: 'Area Path' };
+    const tcSchemaWithAreaPath = { value: [...TC_FIELDS_SCHEMA.value, { referenceName: 'System.AreaPath' }] };
 
     mockGetItemContent
+      // req-test query processing
       .mockResolvedValueOnce(makeQueryResult(REQ_COLS, reqRelations))          // reqTest wiql
+      .mockResolvedValueOnce({ fields: { 'System.WorkItemType': 'Requirement' } })  // source sample
+      .mockResolvedValueOnce({ fields: { 'System.WorkItemType': 'Test Case' } })    // target sample
+      .mockResolvedValueOnce(REQ_FIELDS_SCHEMA)                                     // Req schema
+      .mockResolvedValueOnce(tcSchemaWithAreaPath)                                  // TC schema
+      // test-req query processing (srcIsReq=false: source=TC, target=Req)
       .mockResolvedValueOnce(makeQueryResult([...TC_COLS, extraCol], testRelations)) // testReq wiql
-      .mockResolvedValueOnce({ fields: { 'System.WorkItemType': 'Requirement' } })  // source sample reqTest
-      .mockResolvedValueOnce({ fields: { 'System.WorkItemType': 'Test Case' } })    // target sample reqTest
-      .mockResolvedValueOnce(REQ_FIELDS_SCHEMA)
-      .mockResolvedValueOnce({ value: [...TC_FIELDS_SCHEMA.value, { referenceName: 'System.AreaPath' }] });
+      .mockResolvedValueOnce({ fields: { 'System.WorkItemType': 'Test Case' } })     // source sample (TC)
+      .mockResolvedValueOnce({ fields: { 'System.WorkItemType': 'Requirement' } })   // target sample (Req)
+      // Promise.all([fetchTypeFieldSet(reqType), fetchTypeFieldSet(tcType)]): reqType=Requirement first
+      .mockResolvedValueOnce(REQ_FIELDS_SCHEMA)                                      // Req schema (first in Promise.all)
+      .mockResolvedValueOnce(tcSchemaWithAreaPath);                                  // TC schema (second in Promise.all)
 
     const result = await provider.GetTraceColumnsByType(
       'https://ado/wiql/reqtest',
@@ -116,8 +124,12 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
       'my-project',
     );
 
-    const tcRefs = result['Test Case'].map((c: any) => c.referenceName);
-    expect(tcRefs).toContain('System.AreaPath'); // came only from testReq columns
+    // req-test: columns from REQ_COLS only — no extraCol
+    const reqTestTcRefs = result['req-test']!['Test Case'].map((c: any) => c.referenceName);
+    expect(reqTestTcRefs).not.toContain('System.AreaPath');
+    // test-req: columns from TC_COLS+extraCol — System.AreaPath present
+    const testReqTcRefs = result['test-req']!['Test Case'].map((c: any) => c.referenceName);
+    expect(testReqTcRefs).toContain('System.AreaPath');
   });
 
   it('raw display names passed through without rename (no CustomerRequirementId → Customer ID)', async () => {
@@ -132,7 +144,7 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
 
     const result = await provider.GetTraceColumnsByType('https://ado/wiql/reqtest', undefined, 'proj');
 
-    const custCol = result.Requirement.find((c: any) => c.referenceName === 'Custom.CustomerRequirementId');
+    const custCol = result['req-test']!.Requirement.find((c: any) => c.referenceName === 'Custom.CustomerRequirementId');
     expect(custCol?.name).toBe('CustomerRequirementId'); // raw ADO name, NOT 'Customer ID'
   });
 
@@ -143,9 +155,9 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
 
     const result = await provider.GetTraceColumnsByType('https://ado/wiql/reqtest', undefined, 'proj');
 
-    const reqRefs = result.Requirement.map((c: any) => c.referenceName);
-    const tcRefs = result['Test Case'].map((c: any) => c.referenceName);
-    // Both sides get the merged declared columns as fallback
+    const reqRefs = result['req-test']!.Requirement.map((c: any) => c.referenceName);
+    const tcRefs = result['req-test']!['Test Case'].map((c: any) => c.referenceName);
+    // Both sides get this query's declared columns as fallback (no sampling possible)
     expect(reqRefs).toContain('Custom.CustomerRequirementId');
     expect(tcRefs).toContain('Custom.CustomerRequirementId');
   });
@@ -155,7 +167,7 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
 
     const result = await provider.GetTraceColumnsByType('https://ado/wiql/reqtest', undefined, 'proj');
 
-    expect(result).toEqual({ Requirement: [], 'Test Case': [] });
+    expect(result).toEqual({ 'req-test': { Requirement: [], 'Test Case': [] } });
     expect((logger.error as jest.Mock)).toHaveBeenCalled();
   });
 
@@ -170,7 +182,7 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
 
     const result = await provider.GetTraceColumnsByType('https://ado/wiql/reqtest', undefined, 'proj');
 
-    expect(result).toEqual({ Requirement: [], 'Test Case': [] });
+    expect(result).toEqual({ 'req-test': { Requirement: [], 'Test Case': [] } });
   });
 
   it('handles undefined schema value gracefully (no crash on null response)', async () => {
@@ -186,7 +198,7 @@ describe('TicketsDataProvider.GetTraceColumnsByType', () => {
     const result = await provider.GetTraceColumnsByType('https://ado/wiql/reqtest', undefined, 'proj');
 
     // Both field sets are empty → both sides empty after intersection
-    expect(result.Requirement).toEqual([]);
-    expect(result['Test Case']).toEqual([]);
+    expect(result['req-test']!.Requirement).toEqual([]);
+    expect(result['req-test']!['Test Case']).toEqual([]);
   });
 });
