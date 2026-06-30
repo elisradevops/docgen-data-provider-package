@@ -1225,7 +1225,7 @@ export default class TicketsDataProvider {
   }
 
   private async ensureQueryChildren(node: any): Promise<any> {
-    if (!node || !node.hasChildren || node.children) {
+    if (!node || !node.hasChildren || (Array.isArray(node.children) && node.children.length > 0)) {
       return node;
     }
 
