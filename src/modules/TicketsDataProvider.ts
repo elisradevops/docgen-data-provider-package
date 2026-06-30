@@ -2141,10 +2141,14 @@ export default class TicketsDataProvider {
     };
   }
 
-  private collectHistoricalQueries(root: any, parentPath = ''): HistoricalQueryListItem[] {
-    const items: HistoricalQueryListItem[] = [];
+  private async collectHistoricalQueries(
+    root: any,
+    parentPath = '',
+    acc: HistoricalQueryListItem[] = [],
+    visited = new Set<string>(),
+  ): Promise<HistoricalQueryListItem[]> {
     if (!root) {
-      return items;
+      return acc;
     }
 
     const name = String(root?.name || '').trim();
@@ -2153,20 +2157,38 @@ export default class TicketsDataProvider {
     if (!root?.isFolder) {
       const id = String(root?.id || '').trim();
       if (id) {
-        items.push({
+        acc.push({
           id,
           queryName: name || id,
           path: parentPath || 'Shared Queries',
         });
       }
-      return items;
+      return acc;
     }
 
-    const children = Array.isArray(root?.children) ? root.children : [];
-    for (const child of children) {
-      items.push(...this.collectHistoricalQueries(child, currentPath || 'Shared Queries'));
+    const folderId = String(root?.id || '').trim();
+    if (folderId && visited.has(folderId)) {
+      return acc;
     }
-    return items;
+    if (folderId) {
+      visited.add(folderId);
+    }
+
+    try {
+      await this.ensureQueryChildren(root);
+    } catch (err: any) {
+      logger.warn(
+        `collectHistoricalQueries: failed to expand folder "${name}" (id=${folderId}): ${err.message}`,
+      );
+      return acc;
+    }
+    const children = Array.isArray(root?.children) ? root.children : [];
+    await Promise.all(
+      children.map((child: any) =>
+        this.collectHistoricalQueries(child, currentPath || 'Shared Queries', acc, visited),
+      ),
+    );
+    return acc;
   }
 
   /**
@@ -2187,7 +2209,7 @@ export default class TicketsDataProvider {
       },
     );
     const normalizedRoot = this.normalizeHistoricalQueryRoot(root);
-    const items = this.collectHistoricalQueries(normalizedRoot).filter((query) => query.id !== '');
+    const items = (await this.collectHistoricalQueries(normalizedRoot)).filter((query) => query.id !== '');
     items.sort((a, b) => {
       const byPath = a.path.localeCompare(b.path);
       if (byPath !== 0) return byPath;
