@@ -1614,7 +1614,11 @@ export default class TicketsDataProvider {
     resultedRefNameMap: Map<string, string>,
     isRelation: boolean,
   ) {
-    const url = isRelation ? `${receivedObject.target.url}` : `${receivedObject.url}`;
+    const baseUrl = isRelation ? `${receivedObject.target.url}` : `${receivedObject.url}`;
+    // Computed/read-only fields (e.g. System.NodeName) are only populated by ADO when explicitly
+    // requested via `fields=`; a plain GET omits them even though they're declared query columns.
+    const requestedFields = new Set([...columnMap.keys(), 'System.WorkItemType', 'System.Title']);
+    const url = `${baseUrl}?fields=${Array.from(requestedFields).join(',')}`;
     const wi: any = await TFSServices.getItemContent(url, this.token);
     if (!wi) {
       throw new Error(`WI ${isRelation ? receivedObject.target.id : receivedObject.id} not found`);
@@ -3281,6 +3285,7 @@ export default class TicketsDataProvider {
           parsedFields[fieldName] = value;
         }
       }
+
       item.fields = { ...parsedFields };
     } catch (err: any) {
       logger.error(`Cannot filter columns: ${err.message}`);
