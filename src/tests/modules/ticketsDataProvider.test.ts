@@ -913,6 +913,45 @@ describe('TicketsDataProvider', () => {
     });
   });
 
+  describe('fetchWIForQueryResult', () => {
+    it('should request an explicit fields param including declared columns and forced fields', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        id: 1,
+        fields: { 'System.WorkItemType': 'Requirement', 'System.Title': 'T', 'System.NodeName': 'My Node' },
+      });
+      const columnMap = new Map<string, string>([['System.NodeName', 'Node Name']]);
+      const resultedRefNameMap = new Map<string, string>();
+
+      await (ticketsDataProvider as any).fetchWIForQueryResult(
+        { target: { id: 1, url: 'https://example.com/wi/1' } },
+        columnMap,
+        resultedRefNameMap,
+        true,
+      );
+
+      const calledUrl = (TFSServices.getItemContent as jest.Mock).mock.calls[0][0];
+      expect(calledUrl).toContain('https://example.com/wi/1?fields=');
+      expect(calledUrl).toContain('System.NodeName');
+      expect(calledUrl).toContain('System.WorkItemType');
+      expect(calledUrl).toContain('System.Title');
+    });
+
+    it('should throw when the fetched work item is falsy', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(null);
+
+      await expect(
+        (ticketsDataProvider as any).fetchWIForQueryResult(
+          { target: { id: 1, url: 'https://example.com/wi/1' } },
+          new Map(),
+          new Map(),
+          true,
+        ),
+      ).rejects.toThrow('WI 1 not found');
+    });
+  });
+
   describe('isFlatQueryAllowedByTypeOrId', () => {
     it('should accept when allowedTypes is empty and WIQL references [System.WorkItemType]', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] = 'Bug'";
