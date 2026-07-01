@@ -2211,6 +2211,9 @@ export default class TicketsDataProvider {
     const normalizedRoot = this.normalizeHistoricalQueryRoot(root);
     const items = (await this.collectHistoricalQueries(normalizedRoot)).filter((query) => query.id !== '');
     items.sort((a, b) => {
+      const aDepth = a.path.split('/').length;
+      const bDepth = b.path.split('/').length;
+      if (aDepth !== bDepth) return bDepth - aDepth;
       const byPath = a.path.localeCompare(b.path);
       if (byPath !== 0) return byPath;
       return a.queryName.localeCompare(b.queryName);
