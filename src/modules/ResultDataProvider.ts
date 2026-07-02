@@ -3747,6 +3747,11 @@ export default class ResultDataProvider {
         const testCaseId = Number(
           point?.testCaseId || suiteTestCaseItem?.workItem?.id || suiteTestCaseItem?.testCaseId || 0
         );
+        if (useLatestTestCaseProperties) {
+          logger.debug(
+            `[TestReporter][LatestProperties] Fetching latest test case work item for testCaseId=${testCaseId}, runId=${runId}, resultId=${resultId}`
+          );
+        }
         const suiteTestCaseRevision = this.resolveSuiteTestCaseRevision(suiteTestCaseItem);
         const pointAsOfTimestamp = useRunlessAsOf
           ? String(point?.pointAsOfTimestamp || '').trim()
@@ -5826,7 +5831,7 @@ export default class ResultDataProvider {
           return null;
         }
       },
-      [selectedFields, isQueryMode, point, includeAllHistory, useRunlessAsOf]
+      [selectedFields, isQueryMode, point, includeAllHistory, useRunlessAsOf, useLatestTestCaseProperties]
     );
   }
 
