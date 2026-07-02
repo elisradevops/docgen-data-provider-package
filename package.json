@@ -1,6 +1,6 @@
 {
   "name": "@elisra-devops/docgen-data-provider",
-  "version": "1.136.3",
+  "version": "1.136.4",
   "description": "A document generator data provider, aimed to retrive data from azure devops",
   "repository": {
     "type": "git",
