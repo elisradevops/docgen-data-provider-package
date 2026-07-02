@@ -4300,6 +4300,32 @@ describe('ResultDataProvider', () => {
 
       expect(res.testCaseResult).toEqual(expect.objectContaining({ url: '' }));
     });
+
+    it('should pass latest test case properties flag to the point result fetch', async () => {
+      const fetchResultDataBaseSpy = jest
+        .spyOn(resultDataProvider as any, 'fetchResultDataBase')
+        .mockResolvedValue({});
+
+      await (resultDataProvider as any).fetchResultDataForTestReporter(
+        mockProjectName,
+        'suite1',
+        { lastRunId: 456, lastResultId: 789, testCaseId: 123 },
+        ['Custom.SortIndex@testCaseWorkItemField'],
+        false,
+        false,
+        false,
+        true
+      );
+
+      expect(fetchResultDataBaseSpy.mock.calls[0][5]).toEqual([
+        ['Custom.SortIndex@testCaseWorkItemField'],
+        false,
+        { lastRunId: 456, lastResultId: 789, testCaseId: 123 },
+        false,
+        false,
+        true,
+      ]);
+    });
   });
 
   describe('fetchResultDataBasedOnWiBase', () => {
@@ -4349,6 +4375,95 @@ describe('ResultDataProvider', () => {
           stepsResultXml: '<steps></steps>',
           filteredFields: { 'System.Title': 'Title 123' },
         })
+      );
+    });
+
+    it('should use latest test case fields for executed points when latest properties mode is enabled', async () => {
+      const point = {
+        testCaseId: '123',
+        testCaseName: 'TC 123',
+        outcome: 'passed',
+        lastRunId: 456,
+        lastResultId: 789,
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        id: 123,
+        rev: 10,
+        fields: {
+          'System.State': 'Active',
+          'System.CreatedDate': '2024-01-01T00:00:00',
+          'Microsoft.VSTS.TCM.Priority': 1,
+          'Custom.SortIndex': 3,
+          'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+        },
+        relations: null,
+      });
+
+      const selectedFields = ['Custom.SortIndex@testCaseWorkItemField'];
+      const res = await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '456',
+        '789',
+        true,
+        selectedFields,
+        false,
+        point,
+        false,
+        false,
+        true
+      );
+
+      const calledUrls = (TFSServices.getItemContent as jest.Mock).mock.calls.map((args: any[]) => String(args[0]));
+      expect(calledUrls.some((url: string) => url.includes('/_apis/test/runs/456/results/789'))).toBe(false);
+      expect(calledUrls.some((url: string) => url.includes('/_apis/wit/workItems/123?$expand=all'))).toBe(true);
+      expect(res).toEqual(
+        expect.objectContaining({
+          testCaseRevision: 10,
+          filteredFields: { 'Custom.SortIndex': 3 },
+        })
+      );
+    });
+
+    it('should log latest properties mode when bypassing run revision data', async () => {
+      const point = {
+        testCaseId: '123',
+        testCaseName: 'TC 123',
+        outcome: 'passed',
+        lastRunId: 456,
+        lastResultId: 789,
+        testSuite: { id: '1', name: 'Suite' },
+      };
+
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({
+        id: 123,
+        rev: 10,
+        fields: {
+          'System.State': 'Active',
+          'System.CreatedDate': '2024-01-01T00:00:00',
+          'Microsoft.VSTS.TCM.Priority': 1,
+          'Custom.SortIndex': 3,
+          'Microsoft.VSTS.TCM.Steps': '<steps></steps>',
+        },
+        relations: null,
+      });
+
+      await (resultDataProvider as any).fetchResultDataBasedOnWiBase(
+        mockProjectName,
+        '456',
+        '789',
+        true,
+        ['Custom.SortIndex@testCaseWorkItemField'],
+        false,
+        point,
+        false,
+        false,
+        true
+      );
+
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.stringContaining('[TestReporter][LatestProperties] Fetching latest test case work item')
       );
     });
 
