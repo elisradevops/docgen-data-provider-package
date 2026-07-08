@@ -911,6 +911,44 @@ describe('TicketsDataProvider', () => {
         ),
       ).rejects.toThrow('Target relation is missing');
     });
+
+    it('should order sourceTargetsMap by the query sortColumns (Node Name asc, Customer ID asc)', async () => {
+      // Root work items arrive in relation order 1, 2, 3 — sortColumns should reorder them
+      // by System.NodeName then CustomerRequirementId regardless of fetch order.
+      const rootFieldsById: Record<number, any> = {
+        1: { 'System.WorkItemType': 'Requirement', 'System.NodeName': 'B', CustomerRequirementId: 'C-20' },
+        2: { 'System.WorkItemType': 'Requirement', 'System.NodeName': 'A', CustomerRequirementId: 'C-10' },
+        3: { 'System.WorkItemType': 'Requirement', 'System.NodeName': 'A', CustomerRequirementId: 'C-5' },
+      };
+      jest
+        .spyOn(ticketsDataProvider as any, 'fetchWIForQueryResult')
+        .mockImplementation(async (...args: any[]) => {
+          const rel = args[0];
+          const id = rel?.target?.id ?? rel?.source?.id;
+          return { id, fields: rootFieldsById[id] };
+        });
+
+      const res = await (ticketsDataProvider as any).parseDirectLinkedQueryResultForTableFormat(
+        {
+          queryType: QueryType.OneHop,
+          columns: [],
+          sortColumns: [
+            { field: { referenceName: 'System.NodeName' }, descending: false },
+            { field: { referenceName: 'CustomerRequirementId' }, descending: false },
+          ],
+          workItemRelations: [
+            { source: null, target: { id: 1 } },
+            { source: null, target: { id: 2 } },
+            { source: null, target: { id: 3 } },
+          ],
+        } as any,
+        new Map(),
+      );
+
+      const orderedIds = Array.from(res.sourceTargetsMap.keys()).map((k: any) => k.id);
+      // Expect Node Name A-group (ids 3,2 sorted by Customer ID 5 then 10) before Node Name B (id 1)
+      expect(orderedIds).toEqual([3, 2, 1]);
+    });
   });
 
   describe('fetchWIForQueryResult', () => {
@@ -949,6 +987,45 @@ describe('TicketsDataProvider', () => {
           true,
         ),
       ).rejects.toThrow('WI 1 not found');
+    });
+  });
+
+  describe('parseFlatQueryResultForTableFormat', () => {
+    it('should order fetchedWorkItems by the query sortColumns (Node Name asc, Customer ID asc)', async () => {
+      const fieldsById: Record<number, any> = {
+        1: { 'System.WorkItemType': 'Requirement', 'System.NodeName': 'B', CustomerRequirementId: 'C-20' },
+        2: { 'System.WorkItemType': 'Requirement', 'System.NodeName': 'A', CustomerRequirementId: 'C-10' },
+        3: { 'System.WorkItemType': 'Requirement', 'System.NodeName': 'A', CustomerRequirementId: 'C-5' },
+      };
+      jest
+        .spyOn(ticketsDataProvider as any, 'fetchWIForQueryResult')
+        .mockImplementation(async (...args: any[]) => {
+          const wi = args[0];
+          return { id: wi.id, fields: fieldsById[wi.id] };
+        });
+
+      const res = await (ticketsDataProvider as any).parseFlatQueryResultForTableFormat({
+        queryType: QueryType.Flat,
+        columns: [{ referenceName: 'CustomerRequirementId', name: 'CustomerRequirementId' }],
+        sortColumns: [
+          { field: { referenceName: 'System.NodeName' }, descending: false },
+          { field: { referenceName: 'CustomerRequirementId' }, descending: false },
+        ],
+        workItems: [{ id: 1 }, { id: 2 }, { id: 3 }],
+      } as any);
+
+      const orderedIds = res.fetchedWorkItems.map((wi: any) => wi.id);
+      expect(orderedIds).toEqual([3, 2, 1]);
+    });
+
+    it('should throw when workItems is an empty array', async () => {
+      await expect(
+        (ticketsDataProvider as any).parseFlatQueryResultForTableFormat({
+          queryType: QueryType.Flat,
+          columns: [],
+          workItems: [],
+        } as any),
+      ).rejects.toThrow('No work items were found');
     });
   });
 
