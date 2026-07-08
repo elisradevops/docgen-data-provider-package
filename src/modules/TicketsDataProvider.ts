@@ -1274,11 +1274,31 @@ export default class TicketsDataProvider {
     }
   }
 
+  private compareFieldValues(a: any, b: any): number {
+    const aMissing = a === undefined || a === null || a === '';
+    const bMissing = b === undefined || b === null || b === '';
+    if (aMissing && bMissing) return 0;
+    if (aMissing) return 1; // missing values sort last
+    if (bMissing) return -1;
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  }
+
+  private compareBySortColumns(a: any, b: any, sortColumns: any[]): number {
+    for (const sortColumn of sortColumns) {
+      const referenceName = sortColumn?.field?.referenceName;
+      if (!referenceName) continue;
+      const cmp = this.compareFieldValues(a?.fields?.[referenceName], b?.fields?.[referenceName]);
+      if (cmp !== 0) return sortColumn.descending ? -cmp : cmp;
+    }
+    return 0;
+  }
+
   private async parseDirectLinkedQueryResultForTableFormat(
     queryResult: QueryTree,
     testCaseToRelatedWiMap: Map<number, Set<any>>,
   ) {
-    const { columns, workItemRelations } = queryResult;
+    const { columns, workItemRelations, sortColumns } = queryResult;
 
     if (workItemRelations?.length === 0) {
       throw new Error('No related work items were found');
@@ -1399,8 +1419,22 @@ export default class TicketsDataProvider {
     }
 
     columnsToShowMap.clear();
+
+    // Apply the ADO query's ORDER BY (sortColumns) to the resolved rows — otherwise rows
+    // render in relation-fetch order regardless of how the user sorted the query in ADO.
+    let orderedSourceTargetsMap = sourceTargetsMap;
+    if (sortColumns && sortColumns.length > 0) {
+      const sortedEntries = [...sourceTargetsMap.entries()].sort(([sourceA], [sourceB]) =>
+        this.compareBySortColumns(sourceA, sourceB, sortColumns),
+      );
+      orderedSourceTargetsMap = new Map(sortedEntries);
+      for (const targets of orderedSourceTargetsMap.values()) {
+        targets.sort((targetA, targetB) => this.compareBySortColumns(targetA, targetB, sortColumns));
+      }
+    }
+
     return {
-      sourceTargetsMap,
+      sourceTargetsMap: orderedSourceTargetsMap,
       sortingSourceColumnsMap: columnSourceMap,
       sortingTargetsColumnsMap: columnTargetsMap,
     };
@@ -1427,7 +1461,7 @@ export default class TicketsDataProvider {
   }
 
   private async parseFlatQueryResultForTableFormat(queryResult: QueryTree) {
-    const { columns, workItems } = queryResult;
+    const { columns, workItems, sortColumns } = queryResult;
 
     if (workItems?.length === 0) {
       throw new Error('No work items were found');
@@ -1459,8 +1493,16 @@ export default class TicketsDataProvider {
     }
 
     columnsToShowMap.clear();
+
+    // Apply the ADO query's ORDER BY (sortColumns) — otherwise rows render in fetch order
+    // regardless of how the user sorted the query in ADO.
+    let orderedWorkItems = [...wiSet];
+    if (sortColumns && sortColumns.length > 0) {
+      orderedWorkItems = orderedWorkItems.sort((a, b) => this.compareBySortColumns(a, b, sortColumns));
+    }
+
     return {
-      fetchedWorkItems: [...wiSet],
+      fetchedWorkItems: orderedWorkItems,
       fieldsToIncludeMap,
     };
   }
