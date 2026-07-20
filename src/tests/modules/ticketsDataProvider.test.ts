@@ -2487,6 +2487,23 @@ describe('TicketsDataProvider', () => {
       expect(result).toHaveProperty('systemToSubsystemRequirementsQueries');
     });
 
+    it('should handle Meeting-Summary docType by returning the full shared-queries tree', async () => {
+      // Arrange
+      const mockQueries = {
+        isFolder: true,
+        hasChildren: true,
+        children: [{ name: 'Meeting Queries', isFolder: true, children: [] }],
+      };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(mockQueries);
+
+      // Act
+      const result = await ticketsDataProvider.GetSharedQueries(mockProject, '', 'meeting-summary');
+
+      // Assert
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('meetingSummaryQueryTree');
+    });
+
     it('should handle unknown docType', async () => {
       // Arrange
       const mockQueries = { children: [] };
@@ -2676,11 +2693,93 @@ describe('TicketsDataProvider', () => {
       expect(modeled.workItems[0].attachments).toBeDefined();
       // System.Id branch
       expect(modeled.workItems[0].fields[0]).toEqual(expect.objectContaining({ name: 'ID', value: '1' }));
-      // System.AssignedTo branch
-      // Note: implementation does not set fields[i].name for AssignedTo branch
-      expect(modeled.workItems[0].fields[1]).toEqual(expect.objectContaining({ value: 'Bob' }));
+      // System.AssignedTo branch — name is now set (previously omitted, a column-header bug)
+      expect(modeled.workItems[0].fields[1]).toEqual(
+        expect.objectContaining({ name: 'Assigned To', value: 'Bob' }),
+      );
       // default field branch
       expect(modeled.workItems[0].fields[2]).toEqual(expect.objectContaining({ name: 'Custom', value: 'X' }));
+    });
+
+    it('should capture workItemType/title on the modeled work item independent of the query columns selected (flat)', async () => {
+      const results: any = {
+        asOf: 'now',
+        queryResultType: 'workItem',
+        queryType: QueryType.Flat,
+        workItems: [{ id: '1', url: 'https://example.com/wi/1' }],
+        // Neither System.WorkItemType nor System.Title is a selected column here —
+        // the header info must still be captured from the full work item response.
+        columns: [{ name: 'State', referenceName: 'System.State', url: 'u1' }],
+      };
+
+      jest.spyOn(TicketsDataProvider.prototype, 'GetWorkItem').mockResolvedValueOnce({
+        id: 1,
+        url: 'https://example.com/wi/1',
+        fields: {
+          'System.State': 'Active',
+          'System.WorkItemType': 'Bug',
+          'System.Title': 'Something broke',
+        },
+        relations: null,
+      } as any);
+
+      const modeled = await ticketsDataProvider.GetModeledQueryResults(results, mockProject);
+
+      // .id must also be set (previously only used transiently to build the ID column value,
+      // never assigned to the top-level Workitem.id — the header-building code reads this directly).
+      expect(modeled.workItems[0].id).toBe(1);
+      expect(modeled.workItems[0].workItemType).toBe('Bug');
+      expect(modeled.workItems[0].title).toBe('Something broke');
+    });
+
+    it('should resolve any identity-ref-shaped field (not just System.AssignedTo) to its displayName', async () => {
+      const results: any = {
+        asOf: 'now',
+        queryResultType: 'workItem',
+        queryType: QueryType.Flat,
+        workItems: [{ id: '1', url: 'https://example.com/wi/1' }],
+        columns: [{ name: 'Called By', referenceName: 'MyCorp.CalledBy', url: 'u1' }],
+      };
+
+      jest.spyOn(TicketsDataProvider.prototype, 'GetWorkItem').mockResolvedValueOnce({
+        id: 1,
+        url: 'https://example.com/wi/1',
+        fields: {
+          'MyCorp.CalledBy': { displayName: 'Jane Doe', uniqueName: 'jane@example.com', id: 'guid-1' },
+        },
+        relations: null,
+      } as any);
+
+      const modeled = await ticketsDataProvider.GetModeledQueryResults(results, mockProject);
+
+      // Previously this fell into the generic branch and assigned the raw object, which later
+      // stringifies to "[object Object]" — must resolve to the display name like Assigned To does.
+      expect(modeled.workItems[0].fields[0]).toEqual(
+        expect.objectContaining({ name: 'Called By', value: 'Jane Doe' }),
+      );
+    });
+
+    it('should leave plain non-identity field values untouched', async () => {
+      const results: any = {
+        asOf: 'now',
+        queryResultType: 'workItem',
+        queryType: QueryType.Flat,
+        workItems: [{ id: '1', url: 'https://example.com/wi/1' }],
+        columns: [{ name: 'State', referenceName: 'System.State', url: 'u1' }],
+      };
+
+      jest.spyOn(TicketsDataProvider.prototype, 'GetWorkItem').mockResolvedValueOnce({
+        id: 1,
+        url: 'https://example.com/wi/1',
+        fields: { 'System.State': 'Active' },
+        relations: null,
+      } as any);
+
+      const modeled = await ticketsDataProvider.GetModeledQueryResults(results, mockProject);
+
+      expect(modeled.workItems[0].fields[0]).toEqual(
+        expect.objectContaining({ name: 'State', value: 'Active' }),
+      );
     });
 
     it('should model non-Flat query results using workItemRelations and set Source when present', async () => {
@@ -2717,6 +2816,71 @@ describe('TicketsDataProvider', () => {
       expect(modeled.workItems).toHaveLength(1);
       expect(modeled.workItems[0].Source).toBe(10);
       expect(modeled.workItems[0].url).toBe('https://example.com/wi/20');
+    });
+
+    it('should resolve identity-ref-shaped fields to displayName in the non-Flat (tree) branch too', async () => {
+      const results: any = {
+        asOf: 'now',
+        queryResultType: 'workItemLink',
+        queryType: QueryType.OneHop,
+        workItemRelations: [{ source: null, target: { id: 20 } }],
+        columns: [
+          { name: 'Assigned To', referenceName: 'System.AssignedTo', url: 'u1' },
+          { name: 'Called By', referenceName: 'MyCorp.CalledBy', url: 'u2' },
+          { name: 'Title', referenceName: 'System.Title', url: 'u3' },
+        ],
+      };
+
+      jest.spyOn(TicketsDataProvider.prototype, 'GetWorkItem').mockResolvedValueOnce({
+        id: 20,
+        url: 'https://example.com/wi/20',
+        fields: {
+          'System.AssignedTo': { displayName: 'Bob' },
+          'MyCorp.CalledBy': { displayName: 'Jane Doe' },
+          'System.Title': 'T20',
+        },
+        relations: null,
+      } as any);
+
+      const modeled = await ticketsDataProvider.GetModeledQueryResults(results, mockProject);
+
+      expect(modeled.workItems[0].fields[0]).toEqual(
+        expect.objectContaining({ name: 'Assigned To', value: 'Bob' }),
+      );
+      expect(modeled.workItems[0].fields[1]).toEqual(
+        expect.objectContaining({ name: 'Called By', value: 'Jane Doe' }),
+      );
+      expect(modeled.workItems[0].fields[2]).toEqual(
+        expect.objectContaining({ name: 'Title', value: 'T20' }),
+      );
+    });
+
+    it('should capture workItemType/title on the modeled work item independent of the query columns selected (tree)', async () => {
+      const results: any = {
+        asOf: 'now',
+        queryResultType: 'workItemLink',
+        queryType: QueryType.OneHop,
+        workItemRelations: [{ source: null, target: { id: 20 } }],
+        // Neither System.WorkItemType nor System.Title is a selected column here.
+        columns: [{ name: 'State', referenceName: 'System.State', url: 'u1' }],
+      };
+
+      jest.spyOn(TicketsDataProvider.prototype, 'GetWorkItem').mockResolvedValueOnce({
+        id: 20,
+        url: 'https://example.com/wi/20',
+        fields: {
+          'System.State': 'Active',
+          'System.WorkItemType': 'Task',
+          'System.Title': 'Do the thing',
+        },
+        relations: null,
+      } as any);
+
+      const modeled = await ticketsDataProvider.GetModeledQueryResults(results, mockProject);
+
+      expect(modeled.workItems[0].id).toBe(20);
+      expect(modeled.workItems[0].workItemType).toBe('Task');
+      expect(modeled.workItems[0].title).toBe('Do the thing');
     });
   });
 

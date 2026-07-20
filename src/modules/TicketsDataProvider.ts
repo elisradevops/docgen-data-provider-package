@@ -469,6 +469,14 @@ export default class TicketsDataProvider {
             historicalQueryTree: tree1 ? [tree1] : [],
           };
         }
+        case 'meeting-summary': {
+          // No dedicated-folder pairing needed here (unlike std/str/svd) — any shared flat query
+          // is a valid pick for the summary/tasks/previous-tasks slots, so surface the whole tree.
+          const { tree1 } = await this.structureAllQueryPath(queriesWithChildren);
+          return {
+            meetingSummaryQueryTree: tree1 ? [tree1] : [],
+          };
+        }
         default:
           break;
       }
@@ -1789,6 +1797,12 @@ export default class TicketsDataProvider {
     return unique.join('; ');
   }
 
+  // ADO returns identity/person-picker fields (Assigned To, Called By, Created By, custom fields, etc.)
+  // as an IdentityRef-shaped object ({displayName, uniqueName, id, ...}), not a plain string.
+  private isIdentityRefValue(value: any): boolean {
+    return !!value && typeof value === 'object' && typeof value.displayName === 'string';
+  }
+
   private isTestCaseType(workItemType: string): boolean {
     const normalized = String(workItemType || '')
       .trim()
@@ -2503,6 +2517,12 @@ export default class TicketsDataProvider {
         queryResult.workItems[j] = new Workitem();
         queryResult.workItems[j].url = results.workItems[j].url;
         queryResult.workItems[j].fields = new Array(results.columns.length);
+        // Captured directly from the full work item response, independent of the query's selected
+        // columns — lets renderers build a "#ID Type - Title" header regardless of query configuration.
+        // (id was previously never assigned here — only used transiently to build the ID column value.)
+        queryResult.workItems[j].id = wi.id;
+        queryResult.workItems[j].workItemType = wi.fields['System.WorkItemType'];
+        queryResult.workItems[j].title = wi.fields['System.Title'];
         if (wi.relations != null) {
           queryResult.workItems[j].attachments = wi.relations;
         }
@@ -2513,18 +2533,18 @@ export default class TicketsDataProvider {
           queryResult.columns[i].name = results.columns[i].name;
           queryResult.columns[i].referenceName = results.columns[i].referenceName;
           queryResult.columns[i].url = results.columns[i].url;
+          const rawValue = wi.fields[results.columns[i].referenceName];
           if (results.columns[i].referenceName.toUpperCase() == 'SYSTEM.ID') {
             queryResult.workItems[j].fields[i].value = wi.id.toString();
             queryResult.workItems[j].fields[i].name = 'ID';
-          } else if (
-            results.columns[i].referenceName.toUpperCase() == 'SYSTEM.ASSIGNEDTO' &&
-            wi.fields[results.columns[i].referenceName] != null
-          )
-            queryResult.workItems[j].fields[i].value =
-              wi.fields[results.columns[i].referenceName].displayName;
-          else {
-            let s: string = wi.fields[results.columns[i].referenceName];
-            queryResult.workItems[j].fields[i].value = wi.fields[results.columns[i].referenceName];
+          } else if (this.isIdentityRefValue(rawValue)) {
+            // Any identity/person-picker field (Assigned To, Called By, Created By, custom fields, etc.) —
+            // ADO returns these as {displayName, uniqueName, id, ...}; render the display name, not the
+            // raw object (which would otherwise stringify to "[object Object]").
+            queryResult.workItems[j].fields[i].value = rawValue.displayName;
+            queryResult.workItems[j].fields[i].name = results.columns[i].name;
+          } else {
+            queryResult.workItems[j].fields[i].value = rawValue;
             queryResult.workItems[j].fields[i].name = results.columns[i].name;
           }
         }
@@ -2539,6 +2559,9 @@ export default class TicketsDataProvider {
           queryResult.workItems[j] = new Workitem();
           queryResult.workItems[j].url = wiT.url;
           queryResult.workItems[j].fields = new Array(results.columns.length);
+          queryResult.workItems[j].id = wiT.id;
+          queryResult.workItems[j].workItemType = wiT.fields['System.WorkItemType'];
+          queryResult.workItems[j].title = wiT.fields['System.Title'];
           if (wiT.relations != null) {
             queryResult.workItems[j].attachments = wiT.relations;
           }
@@ -2547,13 +2570,13 @@ export default class TicketsDataProvider {
             //..  rel.q.workItems[j].fields[i] = new value();
             queryResult.workItems[j].fields[i] = new value();
             queryResult.workItems[j].fields[i].name = queryResult.columns[i].name;
-            if (
-              results.columns[i].referenceName.toUpperCase() == 'SYSTEM.ASSIGNEDTO' &&
-              wiT.fields[results.columns[i].referenceName] != null
-            )
-              queryResult.workItems[j].fields[i].value =
-                wiT.fields[results.columns[i].referenceName].displayName;
-            else queryResult.workItems[j].fields[i].value = wiT.fields[queryResult.columns[i].referenceName];
+            const rawValue = wiT.fields[results.columns[i].referenceName];
+            if (this.isIdentityRefValue(rawValue)) {
+              // Any identity/person-picker field, not just Assigned To — see flat-query branch above.
+              queryResult.workItems[j].fields[i].value = rawValue.displayName;
+            } else {
+              queryResult.workItems[j].fields[i].value = wiT.fields[queryResult.columns[i].referenceName];
+            }
             //}
           }
           if (results.workItemRelations[j].source != null)

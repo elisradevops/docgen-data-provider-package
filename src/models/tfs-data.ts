@@ -46,6 +46,10 @@ export class Workitem {
   Source: number = 0;
   attachments: any[];
   level: number;
+  // Captured directly from the full work item response, independent of which columns the query
+  // selected — lets renderers build a "#ID Type - Title" header regardless of query configuration.
+  workItemType?: string;
+  title?: string;
 }
 export class value {
   name: string;
