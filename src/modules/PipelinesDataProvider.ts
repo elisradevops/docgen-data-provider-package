@@ -1424,24 +1424,21 @@ export default class PipelinesDataProvider {
     return res;
   }
 
-  async GetRecentReleaseArtifactInfo(projectName: string) {
+  async GetRecentReleaseArtifactInfo(projectName: string, releaseId: number) {
     let artifactInfo: any[] = [];
-    let url: string = `${this.orgUrl}${projectName}/_apis/release/releases?$top=1&api-version=6.0`;
+    if (!Number.isFinite(releaseId) || releaseId <= 0) {
+      return artifactInfo;
+    }
+    let url: string = `${this.orgUrl}${projectName}/_apis/release/releases/${releaseId}?api-version=6.0`;
     if (url.startsWith('https://dev.azure.com')) {
       url = url.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com');
     }
-    let res: any = await TFSServices.getItemContent(url, this.token);
-    const { value: releases } = res;
-    if (releases && releases.length > 0) {
-      const releaseId = releases[0].id;
-      let url: string = `${this.orgUrl}${projectName}/_apis/release/releases/${releaseId}?api-version=6.0`;
-      const releaseResponse = await TFSServices.getItemContent(url, this.token);
-      if (releaseResponse) {
-        const { artifacts } = releaseResponse;
-        for (const artifact of artifacts) {
-          const { definition, version } = artifact.definitionReference;
-          artifactInfo.push({ artifactName: definition.name, artifactVersion: version.name });
-        }
+    const releaseResponse = await TFSServices.getItemContent(url, this.token);
+    if (releaseResponse) {
+      const artifacts = releaseResponse.artifacts || [];
+      for (const artifact of artifacts) {
+        const { definition, version } = artifact.definitionReference;
+        artifactInfo.push({ artifactName: definition.name, artifactVersion: version.name });
       }
     }
     return artifactInfo;

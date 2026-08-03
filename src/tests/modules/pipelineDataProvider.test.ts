@@ -951,23 +951,28 @@ describe('PipelinesDataProvider', () => {
   });
 
   describe('GetRecentReleaseArtifactInfo', () => {
-    it('should return empty array when no releases exist', async () => {
+    it('should return empty array when release response has no artifacts', async () => {
       // Arrange
       const projectName = 'project1';
-      const mockResponse = { value: [] };
-      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
+      const releaseId = 123;
+      const mockReleaseResponse = { artifacts: [] };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockReleaseResponse);
 
       // Act
-      const result = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName);
+      const result = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName, releaseId);
 
       // Assert
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        expect.stringContaining(`releases/${releaseId}`),
+        mockToken
+      );
       expect(result).toEqual([]);
     });
 
-    it('should return artifact info from most recent release', async () => {
+    it('should return artifact info for the specified release', async () => {
       // Arrange
       const projectName = 'project1';
-      const mockReleasesResponse = { value: [{ id: 123 }] };
+      const releaseId = 123;
       const mockReleaseResponse = {
         artifacts: [
           {
@@ -978,15 +983,43 @@ describe('PipelinesDataProvider', () => {
           },
         ],
       };
-      (TFSServices.getItemContent as jest.Mock)
-        .mockResolvedValueOnce(mockReleasesResponse)
-        .mockResolvedValueOnce(mockReleaseResponse);
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockReleaseResponse);
 
       // Act
-      const result = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName);
+      const result = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName, releaseId);
 
       // Assert
       expect(result).toEqual([{ artifactName: 'artifact1', artifactVersion: '1.0.0' }]);
+    });
+
+    it('should return empty array without calling the API when releaseId is invalid', async () => {
+      // Arrange
+      const projectName = 'project1';
+
+      // Act
+      const resultForZero = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName, 0);
+      const resultForNaN = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName, NaN);
+      const resultForNegative = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName, -5);
+
+      // Assert
+      expect(resultForZero).toEqual([]);
+      expect(resultForNaN).toEqual([]);
+      expect(resultForNegative).toEqual([]);
+      expect(TFSServices.getItemContent).not.toHaveBeenCalled();
+    });
+
+    it('should return empty array when release response has no artifacts field at all', async () => {
+      // Arrange
+      const projectName = 'project1';
+      const releaseId = 123;
+      const mockReleaseResponse = { id: releaseId, name: 'Release-1' };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockReleaseResponse);
+
+      // Act
+      const result = await pipelinesDataProvider.GetRecentReleaseArtifactInfo(projectName, releaseId);
+
+      // Assert
+      expect(result).toEqual([]);
     });
   });
 
