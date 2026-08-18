@@ -37,19 +37,20 @@ export class Trace {
 }
 
 export class Helper {
-  static level: number = 1;
-  static first: boolean = true;
-  public static suitList: Array<suiteData> = new Array<suiteData>();
-
   /**
-   * Finds test suites recursively starting from a given suite ID
+   * Finds test suites recursively starting from a given suite ID.
+   *
+   * Sibling order is taken from `suits`' array order (callers are expected to
+   * hand this a tree-ordered array — see TestDataProvider.normalizeAndEnrichSuitesResponse
+   * / treeOrder), not recomputed here. Uses local state only, so concurrent calls
+   * cannot interleave.
+   *
    * @param planId - The test plan ID
    * @param url - Base organization URL
    * @param project - Project name
-   * @param suits - Array of all test suites
+   * @param suits - Array of all test suites, in display order
    * @param foundId - Starting suite ID to search from
    * @param recursive - Whether to search recursively or just direct children
-   * @param flatSuiteTestCases - If true and there's only one level 1 suite with children, flatten the hierarchy by one level
    * @returns Array of suiteData objects representing the hierarchy
    */
   public static findSuitesRecursive(
@@ -58,91 +59,64 @@ export class Helper {
     project: string,
     suits: any[],
     foundId: string,
-    recursive: boolean,
-    isTopLevel: boolean = true
+    recursive: boolean
   ): Array<suiteData> {
-
-    
-    // Only reset static state on the top-level call
-    if (isTopLevel) {
-      this.suitList = new Array<suiteData>();
-      this.level = 0; // Start at 0 so top-level suites get level 1
-      this.first = true;
-    }
-
-    for (let i = 0; i < suits.length; i++) {
-
-      if (suits[i].parentSuiteId != 0) {
-        // Child suites (parentSuiteId != 0)
-        if (suits[i].parentSuiteId == foundId) {
-          // Find the parent suite's level in our current results
-          let parentLevel = this.level + 1; // Default fallback
-          for (let j = 0; j < this.suitList.length; j++) {
-            if (this.suitList[j].id == foundId) {
-              parentLevel = this.suitList[j].level + 1;
-              break;
-            }
-          }
-          
-
-
-          // Found children of the selected suite - add them to results
-          let suit: suiteData = new suiteData(
-            suits[i].title,
-            suits[i].id,
-            foundId,
-            parentLevel,
-            suits[i].description || ''
-          );
-          suit.url =
-            url + project + '/_testManagement?planId=' + planId + '&suiteId=' + suits[i].id + '&_a=tests';
-          this.suitList.push(suit);
-          if (recursive == false) {
-            return this.suitList;
-          }
-          this.level++; // Increment level before recursive call
-          this.findSuitesRecursive(planId, url, project, suits, suits[i].id, true, false);
-          this.level--; // Decrement level after recursive call
-        } else if (suits[i].id == foundId && this.first) {
-
-
-          // Found the selected nested suite itself - add it to results
-          let suit: suiteData = new suiteData(
-            suits[i].title,
-            suits[i].id,
-            suits[i].parentSuiteId,
-            this.level + 1,
-            suits[i].description || ''
-          );
-          suit.url =
-            url + project + '/_testManagement?planId=' + planId + '&suiteId=' + suits[i].id + '&_a=tests';
-          this.suitList.push(suit);
-          this.first = false;
-          if (recursive == false) {
-            return this.suitList;
-          }
-        }
-      } else {
-        // Root suites (parentSuiteId = 0) - these do NOT get added to results
-        if (suits[i].id == foundId && Helper.first) {
-
-          let suit: suiteData = new suiteData(
-            suits[i].title,
-            suits[i].id,
-            foundId,
-            this.level,
-            suits[i].description || ''
-          );
-          suit.url = url + project + '/_workitems/edit/' + suits[i].id;
-          Helper.first = false;
-          if (recursive == false) {
-            return this.suitList;
-          }
+    const childrenByParent = new Map<string, any[]>();
+    for (const suite of suits) {
+      if (suite.parentSuiteId != 0) {
+        const key = String(suite.parentSuiteId);
+        const list = childrenByParent.get(key);
+        if (list) {
+          list.push(suite);
+        } else {
+          childrenByParent.set(key, [suite]);
         }
       }
     }
 
-    return this.suitList;
+    const selfSuite = suits.find((suite) => suite.id == foundId);
+    const result: suiteData[] = [];
+    if (!selfSuite) {
+      return result;
+    }
+
+    const buildUrl = (suiteId: any) =>
+      url + project + '/_testManagement?planId=' + planId + '&suiteId=' + suiteId + '&_a=tests';
+
+    const visitChildren = (parentId: any, level: number) => {
+      const children = childrenByParent.get(String(parentId)) || [];
+      for (const child of children) {
+        const suit = new suiteData(child.title, child.id, parentId, level, child.description || '');
+        suit.url = buildUrl(child.id);
+        result.push(suit);
+        visitChildren(child.id, level + 1);
+      }
+    };
+
+    if (selfSuite.parentSuiteId == 0) {
+      // Root suite match: the root itself is never emitted, only its descendants.
+      if (!recursive) {
+        return result;
+      }
+      visitChildren(selfSuite.id, 1);
+    } else {
+      // Nested suite match: emitted first, at level 1; children start at level 2.
+      const suit = new suiteData(
+        selfSuite.title,
+        selfSuite.id,
+        selfSuite.parentSuiteId,
+        1,
+        selfSuite.description || ''
+      );
+      suit.url = buildUrl(selfSuite.id);
+      result.push(suit);
+      if (!recursive) {
+        return result;
+      }
+      visitChildren(selfSuite.id, 2);
+    }
+
+    return result;
   }
 
 
