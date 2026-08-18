@@ -326,7 +326,7 @@ describe('TestDataProvider', () => {
       const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
 
       expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
-        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&api-version=7.0`,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&asTreeView=true&api-version=7.0`,
         mockBearerToken,
         'get',
         {},
@@ -368,7 +368,7 @@ describe('TestDataProvider', () => {
       const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
 
       expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
-        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&api-version=7.0`,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&asTreeView=true&api-version=7.0`,
         mockBearerToken,
         'get',
         {},
@@ -407,6 +407,7 @@ describe('TestDataProvider', () => {
         const calledUrl = (TFSServices.getItemContentWithHeaders as jest.Mock).mock.calls[0][0] as string;
         expect(calledUrl).toContain(`/_apis/testplan/Plans/${mockPlanId}/suites`);
         expect(calledUrl).toContain('expand=children');
+        expect(calledUrl).toContain('asTreeView=true');
         expect(calledUrl).toContain('api-version=7.0');
         expect(calledUrl).not.toContain('includeChildren');
       });
@@ -480,6 +481,82 @@ describe('TestDataProvider', () => {
         expect(callCount).toBeGreaterThan(0);
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('reached MAX_PAGES'));
       });
+
+      it('should flatten a nested asTreeView=true payload into DFS pre-order', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        const treePayload = {
+          value: [
+            {
+              id: 1,
+              name: 'Root',
+              children: [
+                { id: 20, name: 'Suite B', parentSuite: { id: 1 } },
+                {
+                  id: 10,
+                  name: 'Suite A',
+                  parentSuite: { id: 1 },
+                  children: [{ id: 11, name: 'Suite A.1', parentSuite: { id: 10 } }],
+                },
+              ],
+            },
+          ],
+          count: 1,
+        };
+        (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+          data: treePayload,
+          headers: {},
+        });
+
+        const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        expect(result.testSuites.map((s: any) => s.id)).toEqual([1, 20, 10, 11]);
+        expect(result.testSuites.map((s: any) => s.treeOrder)).toEqual([0, 1, 2, 3]);
+      });
+
+      it('should derive tree order from a flat list whose elements carry populated children[], without duplicating suites', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        // Server ignored/does-not-support asTreeView and returned a flat, id-ordered list,
+        // but each suite still carries its own children[] in display order.
+        const flatWithChildren = {
+          value: [
+            { id: 10, name: 'Suite A', parentSuite: { id: 1 }, children: [{ id: 11, name: 'Suite A.1' }] },
+            { id: 11, name: 'Suite A.1', parentSuite: { id: 10 } },
+            { id: 1, name: 'Root', children: [{ id: 10, name: 'Suite A' }, { id: 20, name: 'Suite B' }] },
+            { id: 20, name: 'Suite B', parentSuite: { id: 1 } },
+          ],
+          count: 4,
+        };
+        (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+          data: flatWithChildren,
+          headers: {},
+        });
+
+        const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        expect(result.testSuites.map((s: any) => s.id)).toEqual([10, 11, 1, 20]);
+        expect(result.testSuites).toHaveLength(4);
+      });
+
+      it('should leave order unchanged for a flat list with no children field (regression guard)', async () => {
+        const bearerProvider = new TestDataProvider(mockOrgUrl, mockBearerToken);
+        const flatPayload = {
+          value: [
+            { id: 40, name: 'Suite D' },
+            { id: 20, name: 'Suite B' },
+            { id: 10, name: 'Suite A' },
+          ],
+          count: 3,
+        };
+        (TFSServices.getItemContentWithHeaders as jest.Mock).mockResolvedValueOnce({
+          data: flatPayload,
+          headers: {},
+        });
+
+        const result = await bearerProvider.GetTestSuitesForPlan(mockProject, mockPlanId);
+
+        expect(result.testSuites.map((s: any) => s.id)).toEqual([40, 20, 10]);
+        expect(result.testSuites.map((s: any) => s.treeOrder)).toEqual([0, 1, 2]);
+      });
     });
 
     describe('PAT-token branch — regression guard', () => {
@@ -548,7 +625,7 @@ describe('TestDataProvider', () => {
       const result = await bearerProvider.GetTestSuiteById(mockProject, mockPlanId, mockSuiteId, true);
 
       expect(TFSServices.getItemContentWithHeaders).toHaveBeenCalledWith(
-        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&api-version=7.0`,
+        `${mockOrgUrl.replace(/\/+$/, '')}/${mockProject}/_apis/testplan/Plans/${mockPlanId}/suites?expand=children&asTreeView=true&api-version=7.0`,
         mockBearerToken,
         'get',
         {},
@@ -669,6 +746,31 @@ describe('TestDataProvider', () => {
       const res = await testDataProvider.GetTestSuitesByPlan(mockProject, mockPlanId, true, suiteIdsFilter);
 
       expect(getByIdSpy).toHaveBeenCalledTimes(2);
+      expect(res).toEqual([{ id: '10' }, { id: '11' }]);
+    });
+
+    it('should emit multiple hierarchies in tree order, not in suiteIdsFilter order', async () => {
+      jest.spyOn(testDataProvider, 'GetTestSuitesForPlan').mockResolvedValueOnce({
+        testSuites: [
+          { id: 1, parentSuiteId: 0, treeOrder: 0 },
+          { id: 2, parentSuiteId: 0, treeOrder: 1 },
+          { id: 10, parentSuiteId: 1, treeOrder: 2 },
+          { id: 11, parentSuiteId: 2, treeOrder: 3 },
+        ],
+      } as any);
+
+      // Caller lists the second hierarchy's suite (11) before the first (10),
+      // but suite 10 (treeOrder 2) precedes suite 11 (treeOrder 3) in the tree.
+      const suiteIdsFilter = [11, 10];
+      const getByIdSpy = jest
+        .spyOn(testDataProvider, 'GetTestSuiteById')
+        .mockResolvedValueOnce([{ id: '10' }])
+        .mockResolvedValueOnce([{ id: '11' }]);
+
+      const res = await testDataProvider.GetTestSuitesByPlan(mockProject, mockPlanId, true, suiteIdsFilter);
+
+      expect(getByIdSpy).toHaveBeenNthCalledWith(1, mockProject, mockPlanId, '10', true, suiteIdsFilter);
+      expect(getByIdSpy).toHaveBeenNthCalledWith(2, mockProject, mockPlanId, '11', true, suiteIdsFilter);
       expect(res).toEqual([{ id: '10' }, { id: '11' }]);
     });
 

@@ -4,9 +4,6 @@ import { Query, Workitem } from '../../models/tfs-data';
 describe('Helper', () => {
   beforeEach(() => {
     // Reset static state before each test
-    Helper.suitList = [];
-    Helper.level = 1;
-    Helper.first = true;
     Helper.levelList = [];
   });
 
@@ -240,6 +237,75 @@ describe('Helper', () => {
 
       // Assert
       expect(result.length).toBe(5);
+    });
+
+    it('should emit siblings in array (tree) order even when their ids are not ascending', () => {
+      // Arrange - array order mirrors a manually reordered ADO tree: D, B, A, C
+      const suits = [
+        { id: '1', title: 'Root', parentSuiteId: 0 },
+        { id: '40', title: 'Suite D', parentSuiteId: '1' },
+        { id: '20', title: 'Suite B', parentSuiteId: '1' },
+        { id: '10', title: 'Suite A', parentSuiteId: '1' },
+        { id: '30', title: 'Suite C', parentSuiteId: '1' },
+      ];
+
+      // Act
+      const result = Helper.findSuitesRecursive(mockPlanId, mockUrl, mockProject, suits, '1', true);
+
+      // Assert
+      expect(result.map((s) => s.name)).toEqual(['Suite D', 'Suite B', 'Suite A', 'Suite C']);
+    });
+
+    it('should emit the selected nested suite first even when it appears last in the source array', () => {
+      // Arrange
+      const suits = [
+        { id: '3', title: 'Grandchild Suite', parentSuiteId: '2' },
+        { id: '1', title: 'Root Suite', parentSuiteId: 0 },
+        { id: '2', title: 'Child Suite 1', parentSuiteId: '1' },
+      ];
+
+      // Act
+      const result = Helper.findSuitesRecursive(mockPlanId, mockUrl, mockProject, suits, '2', true);
+
+      // Assert
+      expect(result.map((s) => s.name)).toEqual(['Child Suite 1', 'Grandchild Suite']);
+    });
+
+    it('should compute levels correctly regardless of source array position', () => {
+      // Arrange - grandchild appears before its parent in the array
+      const suits = [
+        { id: '3', title: 'Level 2', parentSuiteId: '2' },
+        { id: '1', title: 'Root', parentSuiteId: 0 },
+        { id: '2', title: 'Level 1', parentSuiteId: '1' },
+      ];
+
+      // Act
+      const result = Helper.findSuitesRecursive(mockPlanId, mockUrl, mockProject, suits, '1', true);
+
+      // Assert
+      expect(result.find((s) => s.name === 'Level 1')?.level).toBe(1);
+      expect(result.find((s) => s.name === 'Level 2')?.level).toBe(2);
+    });
+
+    it('should not leak state between sequential calls', () => {
+      // Arrange
+      const suitsA = [
+        { id: '1', title: 'Root A', parentSuiteId: 0 },
+        { id: '2', title: 'Child A', parentSuiteId: '1' },
+      ];
+      const suitsB = [
+        { id: '10', title: 'Root B', parentSuiteId: 0 },
+        { id: '20', title: 'Child B1', parentSuiteId: '10' },
+        { id: '30', title: 'Child B2', parentSuiteId: '10' },
+      ];
+
+      // Act
+      const resultA = Helper.findSuitesRecursive(mockPlanId, mockUrl, mockProject, suitsA, '1', true);
+      const resultB = Helper.findSuitesRecursive(mockPlanId, mockUrl, mockProject, suitsB, '10', true);
+
+      // Assert - resultB is unaffected by resultA's traversal
+      expect(resultA.map((s) => s.name)).toEqual(['Child A']);
+      expect(resultB.map((s) => s.name)).toEqual(['Child B1', 'Child B2']);
     });
   });
 

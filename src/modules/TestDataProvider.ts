@@ -115,20 +115,45 @@ export default class TestDataProvider {
     return descriptions;
   }
 
+  // DFS pre-order flatten of a suite payload that may be a nested tree (asTreeView=true),
+  // a flat list whose elements also carry populated `children[]`, or a plain flat list.
+  // The `seen` guard means a suite is only emitted once even if it appears both in the
+  // top-level array and nested under a `children` array, so tree order always wins when
+  // available, with no duplicates and no change in behavior when `children` is absent.
+  private flattenSuitesTreeOrder(suites: any[]): any[] {
+    const flat: any[] = [];
+    const seen = new Set<any>();
+
+    const visit = (suite: any) => {
+      if (!suite || seen.has(suite.id)) return;
+      seen.add(suite.id);
+      const { children, ...rest } = suite;
+      flat.push(rest);
+      if (Array.isArray(children)) {
+        children.forEach(visit);
+      }
+    };
+
+    suites.forEach(visit);
+    return flat;
+  }
+
   private async normalizeAndEnrichSuitesResponse(project: string, data: any): Promise<any> {
-    const suites = Array.isArray(data?.testSuites)
+    const rawSuites = Array.isArray(data?.testSuites)
       ? data.testSuites
       : Array.isArray(data?.value)
       ? data.value
       : Array.isArray(data)
       ? data
       : [];
+    const suites = this.flattenSuitesTreeOrder(rawSuites);
 
-    const mapped = suites.map((suite: any) => ({
+    const mapped = suites.map((suite: any, index: number) => ({
       ...suite,
       title: suite?.title || suite?.name || '',
       parentSuiteId: suite?.parentSuiteId ?? suite?.parentSuite?.id ?? 0,
       description: this.getSuiteDescription(suite),
+      treeOrder: index,
     }));
 
     const missingDescriptionIds = mapped
@@ -190,7 +215,7 @@ export default class TestDataProvider {
 
     // Bearer branch — follow x-ms-continuationtoken until the server stops returning it.
     // Doc: https://learn.microsoft.com/en-us/rest/api/azure/devops/testplan/test-suites/get-test-suites-for-plan?view=azure-devops-rest-7.0
-    const base = `${this.joinOrgProject(project)}/_apis/testplan/Plans/${planid}/suites?expand=children&api-version=7.0`;
+    const base = `${this.joinOrgProject(project)}/_apis/testplan/Plans/${planid}/suites?expand=children&asTreeView=true&api-version=7.0`;
     const cacheKey = `${base}__all_pages`;
 
     if (this.cache.has(cacheKey)) {
@@ -276,6 +301,14 @@ export default class TestDataProvider {
           }
         }
       }
+
+      // Multiple hierarchies must be emitted in tree order, not in the order the
+      // caller happened to list suiteIdsFilter.
+      topLevelSuites.sort((a, b) => {
+        const orderA = suiteMap.get(a)?.treeOrder ?? suiteMap.get(parseInt(a))?.treeOrder ?? 0;
+        const orderB = suiteMap.get(b)?.treeOrder ?? suiteMap.get(parseInt(b))?.treeOrder ?? 0;
+        return orderA - orderB;
+      });
 
       if (topLevelSuites.length === 0) {
         // Fallback: use first suite if no clear top-level suites found
