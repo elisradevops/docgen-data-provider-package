@@ -276,6 +276,50 @@ describe('MangementDataProvider', () => {
       );
     });
   });
+
+  describe('GetIdentityById', () => {
+    it('should call getItemContent with the exact documented URL shape', async () => {
+      const mockResponse = {
+        count: 1,
+        value: [{ id: 'id-1', properties: { Domain: { $value: 'GALAXY' }, Account: { $value: 'EdenS' } } }],
+      };
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce(mockResponse);
+
+      const result = await managementDataProvider.GetIdentityById('69c3a88a-e668-4ed9-b9e8-9c2eb96fc30e');
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}_apis/identities?identityIds=69c3a88a-e668-4ed9-b9e8-9c2eb96fc30e&queryMembership=None&api-version=6.0`,
+        mockToken,
+        'get',
+        null,
+        null,
+        false
+      );
+      expect(result).toEqual(mockResponse);
+    });
+
+    it('should URL-encode an identity id that needs escaping', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({ count: 0, value: [] });
+
+      await managementDataProvider.GetIdentityById('id with spaces');
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledWith(
+        `${mockOrgUrl}_apis/identities?identityIds=id%20with%20spaces&queryMembership=None&api-version=6.0`,
+        mockToken,
+        'get',
+        null,
+        null,
+        false
+      );
+    });
+
+    it('should propagate an error from the API call', async () => {
+      const expectedError = new Error('Identities API call failed');
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(expectedError);
+
+      await expect(managementDataProvider.GetIdentityById('id-1')).rejects.toThrow('Identities API call failed');
+    });
+  });
 });
 
 describe('MangementDataProvider - Additional Tests', () => {
