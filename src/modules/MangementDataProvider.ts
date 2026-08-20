@@ -62,4 +62,16 @@ export default class MangementDataProvider {
     // Use provided token or empty string for URL-only validation
     return TFSServices.getItemContent(url, token || '', 'get', null, null, false);
   }
+
+  // Resolves the AD domain/account for an on-prem, Windows-integrated-auth
+  // identity via the documented Identities REST API. Works with both PAT
+  // and bearer tokens — TFSServices.getItemContent/applyAuth already
+  // auto-detects which one it was given. printError=false: failure here is
+  // the EXPECTED, common case (any cloud/Entra-backed org), not a real error.
+  async GetIdentityById(identityId: string): Promise<any> {
+    const url = `${this.orgUrl}_apis/identities?identityIds=${encodeURIComponent(
+      identityId
+    )}&queryMembership=None&api-version=6.0`;
+    return TFSServices.getItemContent(url, this.token, 'get', null, null, false);
+  }
 }
