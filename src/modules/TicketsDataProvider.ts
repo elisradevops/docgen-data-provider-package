@@ -61,7 +61,7 @@ type HistoricalSnapshotResult = {
 
 const HISTORICAL_WIT_API_VERSIONS: Array<string | null> = ['7.1', '5.1', null];
 const HISTORICAL_BATCH_MAX_IDS = 200;
-const HISTORICAL_WORK_ITEM_FIELDS = [
+const HISTORICAL_REQUIRED_WORK_ITEM_FIELDS = [
   'System.Id',
   'System.WorkItemType',
   'System.Title',
@@ -72,8 +72,19 @@ const HISTORICAL_WORK_ITEM_FIELDS = [
   'System.ChangedDate',
   'System.Description',
   'Microsoft.VSTS.TCM.Steps',
-  'Elisra.TestPhase',
-  'Custom.TestPhase',
+];
+// Process-template-specific: not every project defines either of these.
+// workitemsbatch's `fields` filter validates every requested reference name
+// against the project's schema and throws TF51535 ("Cannot find field ...")
+// if one is missing — unlike an unfiltered per-item GET, which just omits an
+// unknown field from the response. toHistoricalWorkItemSnapshot already
+// reads TestPhase via a 4-way fallback expecting it might be absent, so it's
+// safe to drop these on a TF51535 and retry without them (see
+// fetchHistoricalWorkItemsBatch).
+const HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS = ['Elisra.TestPhase', 'Custom.TestPhase'];
+const HISTORICAL_WORK_ITEM_FIELDS = [
+  ...HISTORICAL_REQUIRED_WORK_ITEM_FIELDS,
+  ...HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS,
 ];
 
 /** Default fields fetched per work item in tree/flat query parsing. */
@@ -85,6 +96,9 @@ export default class TicketsDataProvider {
   token: string = '';
   queriesList: Array<any> = new Array<any>();
   private limit = pLimit(10);
+  // Set once a workitemsbatch call reports one of HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS
+  // as unknown for this project, so only the first chunk pays the retry cost.
+  private historicalFieldsOverride: string[] | null = null;
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
@@ -1969,6 +1983,90 @@ export default class TicketsDataProvider {
     return status === 404 || status === 410;
   }
 
+  private isHistoricalUnknownFieldError(error: any): boolean {
+    const message = this.historicalErrorMessage(error);
+    return /TF51535|Cannot find field/i.test(message);
+  }
+
+  // ADO's TF51535 names the specific field it couldn't find, e.g.
+  // "TF51535: Cannot find field 'Elisra.TestPhase'." — different networks
+  // define this optional field under different reference names (Elisra.* vs
+  // Custom.*), so drop only the one ADO actually rejected rather than every
+  // optional field, or a network that defines Custom.TestPhase but not
+  // Elisra.TestPhase would lose Test Phase comparison entirely for no reason.
+  private extractHistoricalUnknownFieldName(error: any): string | null {
+    const message = this.historicalErrorMessage(error);
+    const quoted = message.match(/Cannot find field\s*'([^']+)'/i);
+    if (quoted?.[1]) return quoted[1];
+    return HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.find((field) => message.includes(field)) || null;
+  }
+
+  private fetchHistoricalFieldsBatchAttempt(
+    workItemsBatchUrl: string,
+    idChunk: number[],
+    asOf: string,
+    fieldsForRequest: string[],
+    attemptsRemaining: number,
+  ): Promise<any> {
+    return this.limit(() =>
+      TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
+        ids: idChunk,
+        asOf,
+        fields: fieldsForRequest,
+        errorPolicy: 'Omit',
+      }),
+    ).catch((error: any) => {
+      if (attemptsRemaining <= 0 || !this.isHistoricalUnknownFieldError(error)) {
+        throw error;
+      }
+      const unknownField = this.extractHistoricalUnknownFieldName(error);
+      // Only strip fields this call actually recognizes as droppable
+      // (named explicitly, or one of the known optional fields as a
+      // last-resort fallback if the message doesn't parse) — never strip a
+      // required field, so an unrelated schema issue still surfaces as an
+      // error instead of silently losing data.
+      const reducedFields = unknownField
+        ? fieldsForRequest.filter((field) => field !== unknownField)
+        : fieldsForRequest.filter((field) => !HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.includes(field));
+      if (reducedFields.length === fieldsForRequest.length) {
+        throw error;
+      }
+      // Concurrent chunks can each discover a different bad field before any
+      // of them updates the shared override — intersect rather than
+      // overwrite, so one chunk's retry never re-requests a field another
+      // chunk already proved invalid for this project.
+      this.historicalFieldsOverride = this.historicalFieldsOverride
+        ? this.historicalFieldsOverride.filter((field) => reducedFields.includes(field))
+        : reducedFields;
+      logger.warn(
+        `[historical-workitems] field${unknownField ? ` '${unknownField}'` : '(s)'} not defined ` +
+          `for this project; retrying workitemsbatch without it: ${this.historicalErrorMessage(error)}`,
+      );
+      return this.fetchHistoricalFieldsBatchAttempt(
+        workItemsBatchUrl,
+        idChunk,
+        asOf,
+        reducedFields,
+        attemptsRemaining - 1,
+      );
+    });
+  }
+
+  private fetchHistoricalFieldsBatch(
+    workItemsBatchUrl: string,
+    idChunk: number[],
+    asOf: string,
+  ): Promise<any> {
+    const fieldsForRequest = this.historicalFieldsOverride || HISTORICAL_WORK_ITEM_FIELDS;
+    return this.fetchHistoricalFieldsBatchAttempt(
+      workItemsBatchUrl,
+      idChunk,
+      asOf,
+      fieldsForRequest,
+      HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.length,
+    );
+  }
+
   private async fetchHistoricalWorkItemsBatch(
     project: string,
     ids: number[],
@@ -1995,14 +2093,7 @@ export default class TicketsDataProvider {
           // two units against the shared concurrency cap, not one — otherwise
           // the real ceiling on simultaneous ADO calls would silently double.
           Promise.all([
-            this.limit(() =>
-              TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
-                ids: idChunk,
-                asOf,
-                fields: HISTORICAL_WORK_ITEM_FIELDS,
-                errorPolicy: 'Omit',
-              }),
-            ),
+            this.fetchHistoricalFieldsBatch(workItemsBatchUrl, idChunk, asOf),
             this.limit(() =>
               TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
                 ids: idChunk,
