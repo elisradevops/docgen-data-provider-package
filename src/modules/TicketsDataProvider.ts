@@ -98,9 +98,11 @@ export default class TicketsDataProvider {
   token: string = '';
   queriesList: Array<any> = new Array<any>();
   private limit = pLimit(10);
-  // Set once a workitemsbatch call reports one of HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS
-  // as unknown for this project, so only the first chunk pays the retry cost.
-  private historicalFieldsOverride: string[] | null = null;
+  // Resolved once per project via resolveHistoricalTestPhaseField, so a
+  // compare's baseline and compareTo snapshots (and repeated queries against
+  // the same provider instance) only pay the discovery call once. Value is
+  // the real reference name, or null if the project defines no such field.
+  private historicalTestPhaseFieldByProject = new Map<string, Promise<string | null>>();
 
   constructor(orgUrl: string, token: string) {
     this.orgUrl = orgUrl;
@@ -2042,25 +2044,61 @@ export default class TicketsDataProvider {
     return /TF51535|Cannot find field/i.test(message);
   }
 
-  // ADO's TF51535 names the specific field it couldn't find, e.g.
-  // "TF51535: Cannot find field 'Elisra.TestPhase'." — different networks
-  // define this optional field under different reference names (Elisra.* vs
-  // Custom.*), so drop only the one ADO actually rejected rather than every
-  // optional field, or a network that defines Custom.TestPhase but not
-  // Elisra.TestPhase would lose Test Phase comparison entirely for no reason.
-  private extractHistoricalUnknownFieldName(error: any): string | null {
-    const message = this.historicalErrorMessage(error);
-    const quoted = message.match(/Cannot find field\s*'([^']+)'/i);
-    if (quoted?.[1]) return quoted[1];
-    return HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.find((field) => message.includes(field)) || null;
+  // Different networks define the "Test Phase" custom field under different
+  // reference names (Elisra.TestPhase vs Custom.TestPhase, or something else
+  // entirely on a third network) — hardcoding candidate names and guessing is
+  // inherently fragile. Resolve the project's real field list once (Fields -
+  // List: GET {org}/{project}/_apis/wit/fields, supported since old TFS API
+  // versions) and use whichever reference name actually matches, by
+  // reference name or by friendly name. Resolves to null if the project
+  // defines no such field at all.
+  //
+  // Caches the in-flight promise, not just the resolved value: a compare's
+  // baseline and compareTo snapshots run concurrently against the same
+  // provider instance, and both would otherwise read the cache before either
+  // had a value to store, issuing the discovery request twice.
+  private resolveHistoricalTestPhaseField(project: string, apiVersion: string | null): Promise<string | null> {
+    const cached = this.historicalTestPhaseFieldByProject.get(project);
+    if (cached) return cached;
+    const promise = this.discoverHistoricalTestPhaseField(project, apiVersion);
+    this.historicalTestPhaseFieldByProject.set(project, promise);
+    return promise;
   }
 
-  private fetchHistoricalFieldsBatchAttempt(
+  private async discoverHistoricalTestPhaseField(
+    project: string,
+    apiVersion: string | null,
+  ): Promise<string | null> {
+    const fieldsUrl = this.appendApiVersion(`${this.orgUrl}${project}/_apis/wit/fields`, apiVersion);
+    try {
+      const response = await TFSServices.getItemContent(fieldsUrl, this.token);
+      const fields = Array.isArray(response?.value) ? response.value : [];
+      const match =
+        fields.find((field: any) =>
+          HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.some(
+            (candidate) => String(field?.referenceName || '').toLowerCase() === candidate.toLowerCase(),
+          ),
+        ) || fields.find((field: any) => /test\s*phase/i.test(String(field?.name || '')));
+      const resolved = match?.referenceName ? String(match.referenceName) : null;
+      if (!resolved) {
+        logger.warn(`[historical-workitems] no Test Phase field defined for project '${project}'`);
+      }
+      return resolved;
+    } catch (error: any) {
+      logger.warn(
+        `[historical-workitems] could not list fields for project '${project}' to resolve the ` +
+          `Test Phase field name, omitting it: ${this.historicalErrorMessage(error)}`,
+      );
+      return null;
+    }
+  }
+
+  private fetchHistoricalFieldsBatch(
     workItemsBatchUrl: string,
     idChunk: number[],
     asOf: string,
+    project: string,
     fieldsForRequest: string[],
-    attemptsRemaining: number,
   ): Promise<any> {
     return this.limit(() =>
       TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
@@ -2070,55 +2108,29 @@ export default class TicketsDataProvider {
         errorPolicy: 'Omit',
       }),
     ).catch((error: any) => {
-      if (attemptsRemaining <= 0 || !this.isHistoricalUnknownFieldError(error)) {
+      // Defensive net: the resolved field name came from the project's own
+      // field list, so this shouldn't fire, but if it somehow still does,
+      // fall back to the required fields and poison the cache so later
+      // chunks/queries for this project stop requesting it too.
+      const hasOptionalField = HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.some((f) => fieldsForRequest.includes(f))
+        || fieldsForRequest.some((f) => !HISTORICAL_REQUIRED_WORK_ITEM_FIELDS.includes(f));
+      if (!hasOptionalField || !this.isHistoricalUnknownFieldError(error)) {
         throw error;
       }
-      const unknownField = this.extractHistoricalUnknownFieldName(error);
-      // Only strip fields this call actually recognizes as droppable
-      // (named explicitly, or one of the known optional fields as a
-      // last-resort fallback if the message doesn't parse) — never strip a
-      // required field, so an unrelated schema issue still surfaces as an
-      // error instead of silently losing data.
-      const reducedFields = unknownField
-        ? fieldsForRequest.filter((field) => field !== unknownField)
-        : fieldsForRequest.filter((field) => !HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.includes(field));
-      if (reducedFields.length === fieldsForRequest.length) {
-        throw error;
-      }
-      // Concurrent chunks can each discover a different bad field before any
-      // of them updates the shared override — intersect rather than
-      // overwrite, so one chunk's retry never re-requests a field another
-      // chunk already proved invalid for this project.
-      this.historicalFieldsOverride = this.historicalFieldsOverride
-        ? this.historicalFieldsOverride.filter((field) => reducedFields.includes(field))
-        : reducedFields;
       logger.warn(
-        `[historical-workitems] field${unknownField ? ` '${unknownField}'` : '(s)'} not defined ` +
-          `for this project; retrying workitemsbatch without it: ${this.historicalErrorMessage(error)}`,
+        `[historical-workitems] resolved Test Phase field was rejected by workitemsbatch for ` +
+          `project '${project}'; retrying without it: ${this.historicalErrorMessage(error)}`,
       );
-      return this.fetchHistoricalFieldsBatchAttempt(
-        workItemsBatchUrl,
-        idChunk,
-        asOf,
-        reducedFields,
-        attemptsRemaining - 1,
+      this.historicalTestPhaseFieldByProject.set(project, Promise.resolve(null));
+      return this.limit(() =>
+        TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
+          ids: idChunk,
+          asOf,
+          fields: HISTORICAL_REQUIRED_WORK_ITEM_FIELDS,
+          errorPolicy: 'Omit',
+        }),
       );
     });
-  }
-
-  private fetchHistoricalFieldsBatch(
-    workItemsBatchUrl: string,
-    idChunk: number[],
-    asOf: string,
-  ): Promise<any> {
-    const fieldsForRequest = this.historicalFieldsOverride || HISTORICAL_WORK_ITEM_FIELDS;
-    return this.fetchHistoricalFieldsBatchAttempt(
-      workItemsBatchUrl,
-      idChunk,
-      asOf,
-      fieldsForRequest,
-      HISTORICAL_OPTIONAL_WORK_ITEM_FIELDS.length,
-    );
   }
 
   private async fetchHistoricalWorkItemsBatch(
@@ -2131,6 +2143,12 @@ export default class TicketsDataProvider {
       `${this.orgUrl}${project}/_apis/wit/workitemsbatch`,
       apiVersion,
     );
+    // Resolved once per project, before any chunk starts, so every chunk
+    // shares the same field list — no per-request guessing or retry race.
+    const testPhaseField = await this.resolveHistoricalTestPhaseField(project, apiVersion);
+    const fieldsForRequest = testPhaseField
+      ? [...HISTORICAL_REQUIRED_WORK_ITEM_FIELDS, testPhaseField]
+      : HISTORICAL_REQUIRED_WORK_ITEM_FIELDS;
     const idChunks = this.chunkHistoricalWorkItemIds(ids);
     try {
       const chunkResults = await Promise.all(
@@ -2147,7 +2165,7 @@ export default class TicketsDataProvider {
           // two units against the shared concurrency cap, not one — otherwise
           // the real ceiling on simultaneous ADO calls would silently double.
           Promise.all([
-            this.fetchHistoricalFieldsBatch(workItemsBatchUrl, idChunk, asOf),
+            this.fetchHistoricalFieldsBatch(workItemsBatchUrl, idChunk, asOf, project, fieldsForRequest),
             this.limit(() =>
               TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
                 ids: idChunk,

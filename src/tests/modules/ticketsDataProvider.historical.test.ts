@@ -1162,73 +1162,158 @@ describe('TicketsDataProvider historical queries', () => {
     ).toBe(true);
   });
 
-  it('GetHistoricalQueryResults drops only the specific field ADO names in TF51535, keeping Custom.TestPhase when only Elisra.TestPhase is undefined for this project', async () => {
+  it('GetHistoricalQueryResults resolves the real Test Phase reference name from the project\'s own field list instead of guessing', async () => {
     const asOfIso = '2026-02-01T00:00:00.000Z';
-    // 205 ids -> 2 chunks (200 + 5), both dispatched with the full field list
-    // near-simultaneously — this proves the retry is decided per-call, not
-    // from the shared override flag, since both chunks fail before either
-    // one sets it.
-    const allIds = Array.from({ length: 205 }, (_, idx) => idx + 1);
 
     (TFSServices.getItemContent as jest.Mock).mockImplementation(
       async (url: string, _pat: string, method?: string, data?: any) => {
-        if (url.includes('/_apis/wit/queries/q-unknown-field') && url.includes('api-version=7.1')) {
-          return { name: 'Unknown Field Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        if (url.includes('/_apis/wit/queries/q-resolve-field') && url.includes('api-version=7.1')) {
+          return { name: 'Resolve Field Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
         }
         if (url.includes('/_apis/wit/wiql?') && method === 'post') {
-          return { workItems: allIds.map((id) => ({ id })) };
+          return { workItems: [{ id: 501 }] };
+        }
+        if (url.endsWith('/_apis/wit/fields?api-version=7.1')) {
+          // Neither Elisra.TestPhase nor Custom.TestPhase — a third,
+          // project-specific reference name, discovered only by friendly
+          // name ("Test Phase").
+          return {
+            value: [
+              { name: 'Title', referenceName: 'System.Title' },
+              { name: 'Test Phase', referenceName: 'MyCompany.QaPhase' },
+            ],
+          };
         }
         if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
           if (data?.$expand === 'Relations') {
-            return {
-              value: (Array.isArray(data?.ids) ? data.ids : []).map((id: number) => ({ id, relations: [] })),
-            };
+            return { value: [{ id: 501, relations: [] }] };
           }
-          if (Array.isArray(data?.fields) && data.fields.includes('Elisra.TestPhase')) {
-            throw {
-              response: {
-                status: 400,
-                data: { message: "TF51535: Cannot find field 'Elisra.TestPhase'." },
-              },
-            };
-          }
-          // Custom.TestPhase is the real field on this project and must
-          // still be requested — only the unrecognized alias should be
-          // dropped, not every optional field.
-          expect(data.fields).toEqual(expect.arrayContaining(['Custom.TestPhase']));
-          expect(data.fields).not.toEqual(expect.arrayContaining(['Elisra.TestPhase']));
+          expect(data.fields).toEqual(expect.arrayContaining(['MyCompany.QaPhase']));
+          expect(data.fields).not.toEqual(
+            expect.arrayContaining(['Elisra.TestPhase', 'Custom.TestPhase']),
+          );
           return {
-            value: (Array.isArray(data?.ids) ? data.ids : []).map((id: number) => ({
-              id,
-              rev: 1,
-              fields: {
-                'System.WorkItemType': 'Test Case',
-                'System.Title': `Test ${id}`,
-                'System.State': 'Active',
-                'System.ChangedDate': asOfIso,
-                'Custom.TestPhase': 'FAT',
+            value: [
+              {
+                id: 501,
+                rev: 1,
+                fields: {
+                  'System.WorkItemType': 'Test Case',
+                  'System.Title': 'Resolved',
+                  'System.State': 'Active',
+                  'System.ChangedDate': asOfIso,
+                  'MyCompany.QaPhase': 'FAT',
+                },
               },
-            })),
+            ],
           };
         }
         throw new Error(`unexpected URL: ${url}`);
       },
     );
 
-    const result = await provider.GetHistoricalQueryResults('q-unknown-field', project, asOfIso);
+    const result = await provider.GetHistoricalQueryResults('q-resolve-field', project, asOfIso);
 
-    // Every id came back — nothing fell to the 2xN per-item fallback, which
-    // would have thrown on any call not covered by the handler above.
-    expect(result.total).toBe(205);
-    const fieldsCallsWithElisraAlias = (TFSServices.getItemContent as jest.Mock).mock.calls.filter(
-      (call) => Array.isArray(call[3]?.fields) && call[3].fields.includes('Elisra.TestPhase'),
+    expect(result.total).toBe(1);
+    const fieldsListCalls = (TFSServices.getItemContent as jest.Mock).mock.calls.filter((call) =>
+      String(call[0]).endsWith('/_apis/wit/fields?api-version=7.1'),
     );
-    // Both chunks start with the full field list before the override is set,
-    // so both legitimately fail once and both must retry — not just one.
-    expect(fieldsCallsWithElisraAlias).toHaveLength(2);
+    expect(fieldsListCalls).toHaveLength(1);
+  });
+
+  it('GetHistoricalQueryResults reuses the resolved field across baseline and compareTo without re-querying fields', async () => {
+    const baselineIso = '2026-02-20T00:00:00.000Z';
+    const compareIso = '2026-02-25T00:00:00.000Z';
+    let fieldsListCallCount = 0;
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-cache-field') && url.includes('api-version=7.1')) {
+          return { name: 'Cache Field Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          return { workItems: [{ id: 601 }] };
+        }
+        if (url.endsWith('/_apis/wit/fields?api-version=7.1')) {
+          fieldsListCallCount += 1;
+          return { value: [{ name: 'Test Phase', referenceName: 'Custom.TestPhase' }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          if (data?.$expand === 'Relations') {
+            return { value: [{ id: 601, relations: [] }] };
+          }
+          return {
+            value: [
+              {
+                id: 601,
+                rev: 1,
+                fields: {
+                  'System.WorkItemType': 'Test Case',
+                  'System.Title': 'Cached',
+                  'System.State': 'Active',
+                  'System.ChangedDate': data.asOf,
+                },
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    await provider.CompareHistoricalQueryResults('q-cache-field', project, baselineIso, compareIso);
+
+    // Baseline and compareTo run concurrently against the same provider
+    // instance — the field list is fetched once, not once per snapshot.
+    expect(fieldsListCallCount).toBe(1);
+  });
+
+  it('GetHistoricalQueryResults omits Test Phase entirely when the project defines neither known name, without failing the batch', async () => {
+    const asOfIso = '2026-03-01T00:00:00.000Z';
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-no-field') && url.includes('api-version=7.1')) {
+          return { name: 'No Field Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          return { workItems: [{ id: 701 }] };
+        }
+        if (url.endsWith('/_apis/wit/fields?api-version=7.1')) {
+          return { value: [{ name: 'Title', referenceName: 'System.Title' }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          if (data?.$expand === 'Relations') {
+            return { value: [{ id: 701, relations: [] }] };
+          }
+          expect(data.fields).not.toEqual(
+            expect.arrayContaining(['Elisra.TestPhase', 'Custom.TestPhase']),
+          );
+          return {
+            value: [
+              {
+                id: 701,
+                rev: 1,
+                fields: {
+                  'System.WorkItemType': 'Bug',
+                  'System.Title': 'No test phase field',
+                  'System.State': 'Active',
+                  'System.ChangedDate': asOfIso,
+                },
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.GetHistoricalQueryResults('q-no-field', project, asOfIso);
+
+    expect(result.total).toBe(1);
     expect(
       (logger.warn as jest.Mock).mock.calls.some((call) =>
-        String(call[0]).includes("field 'Elisra.TestPhase' not defined for this project"),
+        String(call[0]).includes("no Test Phase field defined for project"),
       ),
     ).toBe(true);
   });
