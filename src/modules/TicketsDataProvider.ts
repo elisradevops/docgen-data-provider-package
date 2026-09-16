@@ -1981,21 +1981,67 @@ export default class TicketsDataProvider {
     );
     const idChunks = this.chunkHistoricalWorkItemIds(ids);
     try {
-      const batchResponses = await Promise.all(
+      const chunkResults = await Promise.all(
         idChunks.map((idChunk) =>
-          this.limit(() =>
-            TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
-              ids: idChunk,
-              asOf,
-              $expand: 'Relations',
-              fields: HISTORICAL_WORK_ITEM_FIELDS,
-            }),
-          ),
+          // ADO rejects a workitemsbatch request that combines `fields` with
+          // `$expand` in the same call ("the expand parameter can not be used
+          // with the fields parameter"), so fields and relations are fetched
+          // in two separate batched passes and merged by id below.
+          // errorPolicy: 'Omit' keeps one inaccessible/deleted work item from
+          // failing the whole chunk (ADO's default is 'Fail'), matching the
+          // per-item fallback's tolerance for missing items.
+          // Each pass gets its own this.limit(...) slot (rather than wrapping
+          // both in one) so the two concurrent calls per chunk still count as
+          // two units against the shared concurrency cap, not one — otherwise
+          // the real ceiling on simultaneous ADO calls would silently double.
+          Promise.all([
+            this.limit(() =>
+              TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
+                ids: idChunk,
+                asOf,
+                fields: HISTORICAL_WORK_ITEM_FIELDS,
+                errorPolicy: 'Omit',
+              }),
+            ),
+            this.limit(() =>
+              TFSServices.getItemContent(workItemsBatchUrl, this.token, 'post', {
+                ids: idChunk,
+                asOf,
+                $expand: 'Relations',
+                errorPolicy: 'Omit',
+              }),
+            ),
+          ]).then(([fieldsBatch, relationsBatch]) => {
+            const relationsById = new Map<number, any[]>();
+            (Array.isArray(relationsBatch?.value) ? relationsBatch.value : []).forEach(
+              (item: any) => {
+                const relId = Number(item?.id);
+                if (Number.isFinite(relId)) {
+                  relationsById.set(relId, Array.isArray(item?.relations) ? item.relations : []);
+                }
+              },
+            );
+
+            const fieldsValue = Array.isArray(fieldsBatch?.value) ? fieldsBatch.value : [];
+            const returnedIds = new Set<number>(fieldsValue.map((item: any) => Number(item?.id)));
+            const items = fieldsValue.map((item: any) => ({
+              ...item,
+              relations: relationsById.get(Number(item?.id)) || [],
+            }));
+            const skippedWorkItemIds = idChunk.filter((id) => !returnedIds.has(id));
+            if (skippedWorkItemIds.length > 0) {
+              logger.warn(
+                `[historical-workitems] workitemsbatch omitted ${skippedWorkItemIds.length} ` +
+                  `inaccessible/missing work item(s) for asOf ${asOf}: ${skippedWorkItemIds.join(', ')}`,
+              );
+            }
+            return { items, skippedWorkItemIds };
+          }),
         ),
       );
       return {
-        items: batchResponses.flatMap((batch) => (Array.isArray(batch?.value) ? batch.value : [])),
-        skippedWorkItemIds: [],
+        items: chunkResults.flatMap((chunk) => chunk.items),
+        skippedWorkItemIds: chunkResults.flatMap((chunk) => chunk.skippedWorkItemIds),
       };
     } catch (error: any) {
       logger.warn(
