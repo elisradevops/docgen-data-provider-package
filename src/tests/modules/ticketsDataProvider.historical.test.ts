@@ -269,9 +269,22 @@ describe('TicketsDataProvider historical queries', () => {
         String(call[0]).includes('api-version=5.1') &&
         String(call[2]).toLowerCase() === 'post',
     );
-    expect(batchCalls).toHaveLength(2);
-    expect(batchCalls[0][3].ids).toHaveLength(200);
-    expect(batchCalls[1][3].ids).toHaveLength(5);
+    // Two chunks (200 + 5 ids), two batched passes per chunk (fields-only,
+    // then $expand=Relations-only) — never both in the same request, since
+    // ADO rejects that combination.
+    expect(batchCalls).toHaveLength(4);
+    batchCalls.forEach((call) => {
+      const payload = call[3];
+      expect(payload.fields && payload.$expand).toBeUndefined();
+      expect(payload.errorPolicy).toBe('Omit');
+    });
+    const fieldsCalls = batchCalls.filter((call) => Array.isArray(call[3]?.fields));
+    const relationsCalls = batchCalls.filter((call) => call[3]?.$expand === 'Relations');
+    expect(fieldsCalls).toHaveLength(2);
+    expect(relationsCalls).toHaveLength(2);
+    const byLength = (a: number, b: number) => a - b;
+    expect(fieldsCalls.map((call) => call[3].ids.length).sort(byLength)).toEqual([5, 200]);
+    expect(relationsCalls.map((call) => call[3].ids.length).sort(byLength)).toEqual([5, 200]);
   });
 
   it('GetHistoricalQueryResults falls back to per-item retrieval when workitemsbatch fails', async () => {
@@ -872,5 +885,113 @@ describe('TicketsDataProvider historical queries', () => {
     expect(result.skippedWorkItems).toEqual(
       expect.objectContaining({ baselineCount: 1, compareToCount: 1, totalDistinct: 1 }),
     );
+  });
+
+  it('CompareHistoricalQueryResults merges relations from the separate $expand pass into relatedLinkCount', async () => {
+    const baselineIso = '2026-01-05T00:00:00.000Z';
+    const compareIso = '2026-01-10T00:00:00.000Z';
+
+    // Fields-only and relations-only responses are disjoint (as ADO actually
+    // returns them for each pass) to prove the merge-by-id, not just that a
+    // duplicated mock happens to satisfy both reads.
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-merge-relations') && url.includes('api-version=7.1')) {
+          return { name: 'Merge Relations Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          return { workItems: [{ id: 501 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          expect(data.fields && data.$expand).toBeUndefined();
+          expect(data.errorPolicy).toBe('Omit');
+          const isRelationsPass = data.$expand === 'Relations';
+          const isBaseline = data.asOf === baselineIso;
+          if (isRelationsPass) {
+            return {
+              value: [{ id: 501, relations: isBaseline ? [{ id: 'l-1' }] : [{ id: 'l-1' }, { id: 'l-2' }] }],
+            };
+          }
+          return {
+            value: [
+              {
+                id: 501,
+                rev: isBaseline ? 1 : 2,
+                fields: {
+                  'System.WorkItemType': 'Test Case',
+                  'System.Title': 'Merge Case',
+                  'System.State': 'Active',
+                  'Microsoft.VSTS.TCM.Steps': '<steps>same</steps>',
+                  'System.ChangedDate': isBaseline ? baselineIso : compareIso,
+                },
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.CompareHistoricalQueryResults(
+      'q-merge-relations',
+      project,
+      baselineIso,
+      compareIso,
+    );
+
+    const row = result.rows.find((r: any) => r.id === 501);
+    expect(row?.compareStatus).toBe('Changed');
+    expect(row?.changedFields).toEqual(['Related Link Count']);
+    const diff = row?.differences.find((d: any) => d.field === 'Related Link Count');
+    expect(diff).toEqual({ field: 'Related Link Count', baseline: '1', compareTo: '2' });
+  });
+
+  it('GetHistoricalQueryResults treats a workitemsbatch errorPolicy Omit as skipped without a per-item fallback', async () => {
+    const asOfIso = '2026-01-15T00:00:00.000Z';
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-omit') && url.includes('api-version=7.1')) {
+          return { name: 'Omit Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          return { workItems: [{ id: 601 }, { id: 602 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          expect(data.errorPolicy).toBe('Omit');
+          // Work item 602 is inaccessible/deleted and is omitted by ADO from
+          // `value` rather than failing the whole batch.
+          if (data.$expand === 'Relations') {
+            return { value: [{ id: 601, relations: [] }] };
+          }
+          return {
+            value: [
+              {
+                id: 601,
+                rev: 1,
+                fields: {
+                  'System.WorkItemType': 'Bug',
+                  'System.Title': 'Present Bug',
+                  'System.State': 'Active',
+                  'System.ChangedDate': asOfIso,
+                },
+              },
+            ],
+          };
+        }
+        // A call here would mean the per-item fallback ran despite the batch
+        // succeeding, which defeats the point of errorPolicy: 'Omit'.
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.GetHistoricalQueryResults('q-omit', project, asOfIso);
+
+    expect(result.total).toBe(1);
+    expect(result.skippedWorkItemsCount).toBe(1);
+    expect(result.rows.map((row: any) => row.id)).toEqual([601]);
+    expect(
+      (logger.warn as jest.Mock).mock.calls.some((call) => String(call[0]).includes('omitted 1')),
+    ).toBe(true);
   });
 });
