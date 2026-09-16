@@ -6,6 +6,8 @@ import { QueryType } from '../models/tfs-data';
 import { QueryAllTypes } from '../models/tfs-data';
 import { Column } from '../models/tfs-data';
 import { value } from '../models/tfs-data';
+import { TestSteps } from '../models/tfs-data';
+import TestStepParserHelper from '../utils/testStepParserHelper';
 
 import logger from '../utils/logger';
 const pLimit = require('p-limit');
@@ -1786,6 +1788,58 @@ export default class TicketsDataProvider {
     return String(value).trim();
   }
 
+  /**
+   * Stores rich-text fields (Description, Steps) with only whitespace trimmed, preserving markup
+   * so the report renderer can clean/render it faithfully. Equality between two snapshots must go
+   * through canonicalizeHistoricalRichTextForCompare instead of comparing this value directly.
+   */
+  private rawHistoricalRichText(value: unknown): string {
+    if (value == null) {
+      return '';
+    }
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+    return this.normalizeHistoricalCompareValue(value);
+  }
+
+  /**
+   * Canonicalizes a rich-text field for equality comparison only. Intentionally identical to the
+   * whitespace collapse previously applied at storage time, so Changed/No-changes verdicts and
+   * summary counts are unaffected by storing the raw value for rendering.
+   */
+  private canonicalizeHistoricalRichTextForCompare(value: unknown): string {
+    return this.normalizeHistoricalCompareValue(value);
+  }
+
+  /**
+   * Parses baseline/compareTo Steps XML into per-step Action/Expected arrays for a changed test
+   * case, so the report can render readable steps instead of raw Steps XML. Best-effort: a parse
+   * failure (malformed XML, shared-step lookup error) must not fail the whole comparison, so it
+   * logs and falls back to leaving the caller with only the raw XML strings.
+   */
+  private async parseHistoricalStepsForDiff(
+    testStepParserHelper: TestStepParserHelper,
+    baselineStepsXml: string,
+    compareToStepsXml: string,
+  ): Promise<{ baselineSteps: TestSteps[]; compareToSteps: TestSteps[] } | null> {
+    try {
+      const emptyRevisionMap = new Map<number, number>();
+      const [baselineSteps, compareToSteps] = await Promise.all([
+        baselineStepsXml
+          ? testStepParserHelper.parseTestSteps(baselineStepsXml, emptyRevisionMap)
+          : Promise.resolve([]),
+        compareToStepsXml
+          ? testStepParserHelper.parseTestSteps(compareToStepsXml, emptyRevisionMap)
+          : Promise.resolve([]),
+      ]);
+      return { baselineSteps, compareToSteps };
+    } catch (err: any) {
+      logger.warn(`Failed to parse historical Steps XML for diff rendering: ${err?.message || err}`);
+      return null;
+    }
+  }
+
   private normalizeTestPhaseValue(value: unknown): string {
     const rendered = this.normalizeHistoricalCompareValue(value);
     if (!rendered) {
@@ -2266,8 +2320,8 @@ export default class TicketsDataProvider {
       iterationPath: this.normalizeHistoricalCompareValue(fields['System.IterationPath']),
       versionId: this.toHistoricalRevision(workItem?.rev ?? fields['System.Rev']),
       versionTimestamp: this.normalizeHistoricalCompareValue(fields['System.ChangedDate']),
-      description: this.normalizeHistoricalCompareValue(fields['System.Description']),
-      steps: this.normalizeHistoricalCompareValue(fields['Microsoft.VSTS.TCM.Steps']),
+      description: this.rawHistoricalRichText(fields['System.Description']),
+      steps: this.rawHistoricalRichText(fields['Microsoft.VSTS.TCM.Steps']),
       testPhase: this.normalizeTestPhaseValue(testPhaseRaw),
       relatedLinkCount,
       workItemUrl: `${this.orgUrl}${project}/_workitems/edit/${id}`,
@@ -2448,8 +2502,9 @@ export default class TicketsDataProvider {
       ...Array.from(compareTo.snapshotMap.keys()),
     ]);
     const sortedIds = Array.from(allIds.values()).sort((a, b) => a - b);
+    const testStepParserHelper = new TestStepParserHelper(this.orgUrl, this.token);
 
-    const rows = sortedIds.map((id) => {
+    const rows = await Promise.all(sortedIds.map(async (id) => {
       const baselineRow = baseline.snapshotMap.get(id) || null;
       const compareToRow = compareTo.snapshotMap.get(id) || null;
       const workItemType = compareToRow?.workItemType || baselineRow?.workItemType || '';
@@ -2487,7 +2542,15 @@ export default class TicketsDataProvider {
       const safeCompareTo = compareToRow as HistoricalWorkItemSnapshot;
       const changedFields: string[] = [];
 
-      if (safeBaseline.description !== safeCompareTo.description) {
+      const descriptionChanged =
+        this.canonicalizeHistoricalRichTextForCompare(safeBaseline.description) !==
+        this.canonicalizeHistoricalRichTextForCompare(safeCompareTo.description);
+      const stepsChanged =
+        isTestCase &&
+        this.canonicalizeHistoricalRichTextForCompare(safeBaseline.steps) !==
+          this.canonicalizeHistoricalRichTextForCompare(safeCompareTo.steps);
+
+      if (descriptionChanged) {
         changedFields.push('Description');
       }
       if (safeBaseline.title !== safeCompareTo.title) {
@@ -2496,7 +2559,7 @@ export default class TicketsDataProvider {
       if (safeBaseline.state !== safeCompareTo.state) {
         changedFields.push('State');
       }
-      if (isTestCase && safeBaseline.steps !== safeCompareTo.steps) {
+      if (stepsChanged) {
         changedFields.push('Steps');
       }
       if (safeBaseline.testPhase !== safeCompareTo.testPhase) {
@@ -2506,28 +2569,41 @@ export default class TicketsDataProvider {
         changedFields.push('Related Link Count');
       }
 
-      const differences = changedFields.map((field) => {
-        switch (field) {
-          case 'Description':
-            return { field, baseline: safeBaseline.description, compareTo: safeCompareTo.description };
-          case 'Title':
-            return { field, baseline: safeBaseline.title, compareTo: safeCompareTo.title };
-          case 'State':
-            return { field, baseline: safeBaseline.state, compareTo: safeCompareTo.state };
-          case 'Steps':
-            return { field, baseline: safeBaseline.steps, compareTo: safeCompareTo.steps };
-          case 'Test Phase':
-            return { field, baseline: safeBaseline.testPhase, compareTo: safeCompareTo.testPhase };
-          case 'Related Link Count':
-            return {
-              field,
-              baseline: String(safeBaseline.relatedLinkCount),
-              compareTo: String(safeCompareTo.relatedLinkCount),
-            };
-          default:
-            return { field, baseline: '', compareTo: '' };
-        }
-      });
+      const differences = await Promise.all(
+        changedFields.map(async (field) => {
+          switch (field) {
+            case 'Description':
+              return { field, baseline: safeBaseline.description, compareTo: safeCompareTo.description };
+            case 'Title':
+              return { field, baseline: safeBaseline.title, compareTo: safeCompareTo.title };
+            case 'State':
+              return { field, baseline: safeBaseline.state, compareTo: safeCompareTo.state };
+            case 'Steps': {
+              const parsed = await this.parseHistoricalStepsForDiff(
+                testStepParserHelper,
+                safeBaseline.steps,
+                safeCompareTo.steps,
+              );
+              return {
+                field,
+                baseline: safeBaseline.steps,
+                compareTo: safeCompareTo.steps,
+                ...(parsed || {}),
+              };
+            }
+            case 'Test Phase':
+              return { field, baseline: safeBaseline.testPhase, compareTo: safeCompareTo.testPhase };
+            case 'Related Link Count':
+              return {
+                field,
+                baseline: String(safeBaseline.relatedLinkCount),
+                compareTo: String(safeCompareTo.relatedLinkCount),
+              };
+            default:
+              return { field, baseline: '', compareTo: '' };
+          }
+        }),
+      );
 
       return {
         id,
@@ -2540,7 +2616,7 @@ export default class TicketsDataProvider {
         differences,
         workItemUrl: safeCompareTo.workItemUrl || safeBaseline.workItemUrl,
       };
-    });
+    }));
 
     const summary = rows.reduce(
       (acc, row) => {

@@ -946,6 +946,173 @@ describe('TicketsDataProvider historical queries', () => {
     expect(diff).toEqual({ field: 'Related Link Count', baseline: '1', compareTo: '2' });
   });
 
+  it('CompareHistoricalQueryResults preserves raw markup for rendering while comparing on canonicalized whitespace', async () => {
+    const baselineIso = '2026-02-01T00:00:00.000Z';
+    const compareIso = '2026-02-05T00:00:00.000Z';
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-raw-html') && url.includes('api-version=7.1')) {
+          return { name: 'Raw Html Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          return { workItems: [{ id: 601 }, { id: 602 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          const isBaseline = data.asOf === baselineIso;
+          return {
+            value: [
+              {
+                id: 601,
+                rev: isBaseline ? 1 : 2,
+                fields: {
+                  'System.WorkItemType': 'Requirement',
+                  'System.Title': 'Whitespace-only edit',
+                  'System.State': 'Active',
+                  // Same content, differing only by internal whitespace: must compare as
+                  // unchanged (identical to the pre-existing collapse-then-compare behavior)
+                  // while the raw stored value keeps the original spacing for rendering.
+                  'System.Description': isBaseline
+                    ? '<p>Hello   world</p>'
+                    : '<p>Hello\nworld</p>',
+                  'System.ChangedDate': isBaseline ? baselineIso : compareIso,
+                },
+              },
+              {
+                id: 602,
+                rev: isBaseline ? 1 : 2,
+                fields: {
+                  'System.WorkItemType': 'Requirement',
+                  'System.Title': 'Real edit',
+                  'System.State': 'Active',
+                  'System.Description': isBaseline ? '<p>Hello world</p>' : '<p>Hello <b>world</b></p>',
+                  'System.ChangedDate': isBaseline ? baselineIso : compareIso,
+                },
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.CompareHistoricalQueryResults('q-raw-html', project, baselineIso, compareIso);
+    const byId = new Map<number, any>(result.rows.map((row: any) => [row.id, row]));
+
+    expect(byId.get(601)?.compareStatus).toBe('No changes');
+    expect(byId.get(602)?.compareStatus).toBe('Changed');
+    const diff = byId.get(602)?.differences.find((d: any) => d.field === 'Description');
+    // Raw markup is preserved on the difference payload, not collapsed to plain text.
+    expect(diff.baseline).toBe('<p>Hello world</p>');
+    expect(diff.compareTo).toBe('<p>Hello <b>world</b></p>');
+  });
+
+  it('CompareHistoricalQueryResults attaches parsed Action/Expected steps for a changed test case', async () => {
+    const baselineIso = '2026-02-10T00:00:00.000Z';
+    const compareIso = '2026-02-15T00:00:00.000Z';
+
+    const buildStepsXml = (expected: string) =>
+      `<steps id="0" last="1"><step id="1" type="ActionStep">` +
+      `<parameterizedString isformatted="true">Open the app</parameterizedString>` +
+      `<parameterizedString isformatted="true">${expected}</parameterizedString>` +
+      `</step></steps>`;
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-parsed-steps') && url.includes('api-version=7.1')) {
+          return { name: 'Parsed Steps Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          return { workItems: [{ id: 701 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          const isBaseline = data.asOf === baselineIso;
+          return {
+            value: [
+              {
+                id: 701,
+                rev: isBaseline ? 1 : 2,
+                fields: {
+                  'System.WorkItemType': 'Test Case',
+                  'System.Title': 'Login test',
+                  'System.State': 'Active',
+                  'Microsoft.VSTS.TCM.Steps': buildStepsXml(isBaseline ? 'Login page shown' : 'Dashboard shown'),
+                  'System.ChangedDate': isBaseline ? baselineIso : compareIso,
+                },
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.CompareHistoricalQueryResults(
+      'q-parsed-steps',
+      project,
+      baselineIso,
+      compareIso,
+    );
+    const row = result.rows.find((r: any) => r.id === 701);
+    expect(row?.compareStatus).toBe('Changed');
+    expect(row?.changedFields).toContain('Steps');
+    const diff = row?.differences.find((d: any) => d.field === 'Steps');
+    expect(diff.baselineSteps).toEqual([
+      expect.objectContaining({ action: 'Open the app', expected: 'Login page shown' }),
+    ]);
+    expect(diff.compareToSteps).toEqual([
+      expect.objectContaining({ action: 'Open the app', expected: 'Dashboard shown' }),
+    ]);
+  });
+
+  it('CompareHistoricalQueryResults falls back gracefully when Steps XML cannot be parsed', async () => {
+    const baselineIso = '2026-02-20T00:00:00.000Z';
+    const compareIso = '2026-02-25T00:00:00.000Z';
+
+    (TFSServices.getItemContent as jest.Mock).mockImplementation(
+      async (url: string, _pat: string, method?: string, data?: any) => {
+        if (url.includes('/_apis/wit/queries/q-bad-steps') && url.includes('api-version=7.1')) {
+          return { name: 'Bad Steps Q', wiql: 'SELECT [System.Id] FROM WorkItems' };
+        }
+        if (url.includes('/_apis/wit/wiql?') && method === 'post') {
+          return { workItems: [{ id: 801 }] };
+        }
+        if (url.includes('/_apis/wit/workitemsbatch') && method === 'post') {
+          const isBaseline = data.asOf === baselineIso;
+          return {
+            value: [
+              {
+                id: 801,
+                rev: isBaseline ? 1 : 2,
+                fields: {
+                  'System.WorkItemType': 'Test Case',
+                  'System.Title': 'Malformed steps case',
+                  'System.State': 'Active',
+                  'Microsoft.VSTS.TCM.Steps': isBaseline ? '<steps><unclosed>' : '<steps><unclosed2>',
+                  'System.ChangedDate': isBaseline ? baselineIso : compareIso,
+                },
+              },
+            ],
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      },
+    );
+
+    const result = await provider.CompareHistoricalQueryResults('q-bad-steps', project, baselineIso, compareIso);
+    const row = result.rows.find((r: any) => r.id === 801);
+    expect(row?.compareStatus).toBe('Changed');
+    expect(row?.changedFields).toContain('Steps');
+    const diff = row?.differences.find((d: any) => d.field === 'Steps');
+    expect(diff.baseline).toBe('<steps><unclosed>');
+    expect(diff.compareTo).toBe('<steps><unclosed2>');
+    // TestStepParserHelper.parseTestSteps already swallows its own parse errors and resolves to
+    // an empty list, so the diff carries empty parsed-steps arrays rather than raw XML garbage;
+    // the content-control adapter treats an empty array the same as "no parsed steps".
+    expect(diff.baselineSteps).toEqual([]);
+    expect(diff.compareToSteps).toEqual([]);
+  });
+
   it('GetHistoricalQueryResults treats a workitemsbatch errorPolicy Omit as skipped without a per-item fallback', async () => {
     const asOfIso = '2026-01-15T00:00:00.000Z';
 
