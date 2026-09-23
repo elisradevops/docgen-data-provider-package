@@ -263,8 +263,15 @@ export default class ResultDataProvider {
       if (error.response) {
         // Truncated to match the bound already used for this in tfs.ts — an untruncated ADO
         // response body isn't a credential, but it can still be large/sensitive work-item content
-        // and doesn't need to go into logs unbounded.
-        logger.error(`Response Data: ${JSON.stringify(error.response.data).substring(0, 200)}`);
+        // and doesn't need to go into logs unbounded. JSON.stringify itself (not just the
+        // output) can throw on a circular value, so that has to be guarded too, not just capped.
+        let responseSummary: string;
+        try {
+          responseSummary = JSON.stringify(error.response.data).substring(0, 200);
+        } catch {
+          responseSummary = '[unserializable response data]';
+        }
+        logger.error(`Response Data: ${responseSummary}`);
       }
       // Ensure the error is rethrown to propagate it correctly
       throw new Error(error.message || 'Unknown error occurred during getCombinedResultsSummary');
@@ -4598,7 +4605,7 @@ export default class ResultDataProvider {
           ? testCase.workItem.workItemFields
           : [];
         if (testCaseWorkItemFields.length === 0) {
-          logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
+          logger.warn(`Could not fetch the steps from WI ${testCase.workItem.id}`);
           if (!isTestReporter) {
             continue;
           }

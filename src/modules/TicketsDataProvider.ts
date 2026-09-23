@@ -2847,8 +2847,9 @@ export default class TicketsDataProvider {
       );
       return attachmentList;
     } catch (e) {
-      logger.error(`error fetching attachments for work item ${id}`);
-      logger.error(`${JSON.stringify(e)}`);
+      // JSON.stringify(e) on an Error returns "{}" — own enumerable props only, message/stack
+      // are non-enumerable — so this logged literally nothing useful. Pass it as meta instead.
+      logger.error(`error fetching attachments for work item ${id}`, e);
       return [];
     }
   }
