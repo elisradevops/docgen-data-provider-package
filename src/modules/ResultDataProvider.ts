@@ -259,20 +259,22 @@ export default class ResultDataProvider {
 
       return { combinedResults, openPcrToTestCaseTraceMap, testCaseToOpenPcrTraceMap };
     } catch (error: any) {
-      logger.error(`Error during getCombinedResultsSummary: ${error.message}`);
+      // One event, one record — this used to be two separate calls (message, then
+      // conditionally the response body), which interleave with other requests' output
+      // under concurrency and become two unrelated entries in the dashboard's error grouping.
+      let responseSummary: string | undefined;
       if (error.response) {
         // Truncated to match the bound already used for this in tfs.ts — an untruncated ADO
         // response body isn't a credential, but it can still be large/sensitive work-item content
         // and doesn't need to go into logs unbounded. JSON.stringify itself (not just the
         // output) can throw on a circular value, so that has to be guarded too, not just capped.
-        let responseSummary: string;
         try {
           responseSummary = JSON.stringify(error.response.data).substring(0, 200);
         } catch {
           responseSummary = '[unserializable response data]';
         }
-        logger.error(`Response Data: ${responseSummary}`);
       }
+      logger.error(`Error during getCombinedResultsSummary: ${error.message}`, { responseSummary });
       // Ensure the error is rethrown to propagate it correctly
       throw new Error(error.message || 'Unknown error occurred during getCombinedResultsSummary');
     }
