@@ -2697,8 +2697,10 @@ export default class TicketsDataProvider {
         const subRes = await postBatch(currentIds);
         res.push(...subRes.value);
       } catch (error) {
-        logger.error(`error populating workitems array`);
-        logger.error(JSON.stringify(error));
+        // JSON.stringify(error) on an AxiosError calls its own .toJSON(), which serializes
+        // config.auth.password / config.headers.Authorization — the PAT, in plaintext. Pass
+        // the error as meta instead and let the logger's redact format scrub it.
+        logger.error(`error populating workitems array`, error);
         return [];
       }
     }
@@ -2708,8 +2710,10 @@ export default class TicketsDataProvider {
         const subRes = await postBatch(currentIds);
         res.push(...subRes.value);
       } catch (error) {
-        logger.error(`error populating workitems array`);
-        logger.error(JSON.stringify(error));
+        // JSON.stringify(error) on an AxiosError calls its own .toJSON(), which serializes
+        // config.auth.password / config.headers.Authorization — the PAT, in plaintext. Pass
+        // the error as meta instead and let the logger's redact format scrub it.
+        logger.error(`error populating workitems array`, error);
         return [];
       }
     }
