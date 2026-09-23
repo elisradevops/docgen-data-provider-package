@@ -3273,8 +3273,7 @@ export default class ResultDataProvider {
       );
       return detailedPoints;
     } catch (err: any) {
-      logger.error(`Error during fetching Cross Test Points: ${err.message}`);
-      logger.error(`Error stack: ${err.stack}`);
+      logger.error('Error during fetching Cross Test Points', err);
       return [];
     }
   }
@@ -3915,10 +3914,7 @@ export default class ResultDataProvider {
         relatedCRs,
       };
     } catch (error: any) {
-      logger.error(`Error while fetching run result: ${error.message}`);
-      if (isTestReporter) {
-        logger.error(`Error stack: ${error.stack}`);
-      }
+      logger.error('Error while fetching run result', error);
       return null;
     }
   }
@@ -5070,8 +5066,7 @@ export default class ResultDataProvider {
         ? createResponseObject(resultData, testSuiteId, point, ...additionalArgs)
         : null;
     } catch (error: any) {
-      logger.error(`Error occurred for point ${point.testCaseId}: ${error.message}`);
-      logger.error(`Stack trace: ${error.stack}`);
+      logger.error(`Error occurred for point ${point.testCaseId}`, error);
       return null;
     }
   }
@@ -5165,8 +5160,7 @@ export default class ResultDataProvider {
           summarizedItemMap.set(wi.id, mappedItem);
         }
       } catch (error: any) {
-        logger.error(`Error occurred while fetching linked work items: ${error.message}`);
-        logger.error(`Error Stack: ${error.stack}`);
+        logger.error('Error occurred while fetching linked work items', error);
       }
     }
 
@@ -5838,8 +5832,7 @@ export default class ResultDataProvider {
           }
           return resultDataResponse;
         } catch (err: any) {
-          logger.error(`Error occurred while fetching result data: ${err.message}`);
-          logger.error(`Error stack: ${err.stack}`);
+          logger.error('Error occurred while fetching result data', err);
           return null;
         }
       },

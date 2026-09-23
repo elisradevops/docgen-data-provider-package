@@ -248,7 +248,7 @@ export class TFSServices {
 
         // Log error if needed
         if (printError) {
-          this.logDetailedError(e, url);
+          this.logDetailedError(e, url, attempts);
         }
 
         throw e;
@@ -286,23 +286,27 @@ export class TFSServices {
   /**
    * Log detailed error information
    */
-  private static logDetailedError(error: any, url: string): void {
-    if (error.response) {
-      logger.error(`Error for ${url} - ${error.message}`);
-      logger.error(`Status: ${error.response.status}`);
-
-      if (error.response.data) {
-        if (typeof error.response.data === 'string') {
-          logger.error(`Response: ${error.response.data.substring(0, 200)}`);
-        } else {
-          const dataMessage =
-            error.response.data.message || JSON.stringify(error.response.data).substring(0, 200);
-          logger.error(`Response: ${dataMessage}`);
+  private static logDetailedError(error: any, url: string, attempt?: number): void {
+    let responseExcerpt: string | undefined;
+    if (error.response?.data) {
+      if (typeof error.response.data === 'string') {
+        responseExcerpt = error.response.data.substring(0, 200);
+      } else {
+        try {
+          responseExcerpt = error.response.data.message || JSON.stringify(error.response.data).substring(0, 200);
+        } catch {
+          responseExcerpt = '[unserializable response data]';
         }
       }
-    } else {
-      logger.error(`Error for ${url} - ${error.message}`);
     }
+    logger.error('ADO request failed', {
+      message: error.message,
+      stack: error.stack,
+      url,
+      status: error.response?.status,
+      responseExcerpt,
+      attempt,
+    });
   }
 
   private static getErrorMessage(error: any): string {

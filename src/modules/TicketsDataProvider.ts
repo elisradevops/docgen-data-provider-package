@@ -783,11 +783,9 @@ export default class TicketsDataProvider {
         : null;
     } catch (err: any) {
       logger.error(
-        `Error occurred while constructing the customer query list ${err.message} with query ${JSON.stringify(
-          rootQuery,
-        )}`,
+        `Error occurred while constructing the customer query list with query ${JSON.stringify(rootQuery)}`,
+        err,
       );
-      logger.error(`Error stack ${err.message}`);
       return null;
     }
   }
@@ -3166,11 +3164,9 @@ export default class TicketsDataProvider {
       return { tree1: tree1Node, tree2: tree2Node };
     } catch (err: any) {
       logger.error(
-        `Error occurred while constructing the query list ${err.message} with query ${JSON.stringify(
-          rootQuery,
-        )}`,
+        `Error occurred while constructing the query list with query ${JSON.stringify(rootQuery)}`,
+        err,
       );
-      logger.error(`Error stack ${err.message}`);
     }
   }
 
