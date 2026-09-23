@@ -2,7 +2,17 @@
 import * as winston from 'winston';
 import * as fs from 'fs';
 import * as path from 'path';
+import { runContextStore } from './runContext';
 let logger: winston.Logger;
+
+// Merges the ambient runId (set by content-control's request middleware, once Phase 3 lands
+// there) into every log record. A never-populated store is a harmless no-op — this package
+// only reads it, never sets it.
+export const withRunContext = winston.format((info) => {
+  const runId = runContextStore.getStore()?.runId;
+  if (runId) (info as Record<string, unknown>).runId = runId;
+  return info;
+});
 
 // Defense-in-depth: scrubs known-sensitive keys out of any object attached to a log call
 // (meta, splat, an Error's own enumerable props — e.g. AxiosError.toJSON()'s
@@ -104,6 +114,7 @@ logger = winston.createLogger({
     ? winston.format.combine(
         winston.format.errors({ stack: true }),
         winston.format.timestamp(),
+        withRunContext(),
         redact(),
         winston.format.splat(),
         winston.format.json()
@@ -111,6 +122,7 @@ logger = winston.createLogger({
     : winston.format.combine(
         winston.format.errors({ stack: true }),
         winston.format.timestamp(),
+        withRunContext(),
         redact(),
         winston.format.splat(),
         textFormat
