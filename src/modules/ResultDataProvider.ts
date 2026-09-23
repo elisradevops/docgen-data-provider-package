@@ -261,7 +261,10 @@ export default class ResultDataProvider {
     } catch (error: any) {
       logger.error(`Error during getCombinedResultsSummary: ${error.message}`);
       if (error.response) {
-        logger.error(`Response Data: ${JSON.stringify(error.response.data)}`);
+        // Truncated to match the bound already used for this in tfs.ts — an untruncated ADO
+        // response body isn't a credential, but it can still be large/sensitive work-item content
+        // and doesn't need to go into logs unbounded.
+        logger.error(`Response Data: ${JSON.stringify(error.response.data).substring(0, 200)}`);
       }
       // Ensure the error is rethrown to propagate it correctly
       throw new Error(error.message || 'Unknown error occurred during getCombinedResultsSummary');
