@@ -3,6 +3,10 @@ import { AsyncLocalStorage } from 'async_hooks';
 
 export interface RunContext {
   runId: string;
+  // Phase 6b — this package never sets it, only reads it: content-control (the host process
+  // this package runs in-process inside) populates it via its own attachRunContext, and this
+  // package's DiagnosticsTransport reads the same in-process ALS store.
+  captureMode?: 'verbose' | 'retain-on-failure';
 }
 
 // Symbol.for uses the global symbol registry, so every duplicated copy of this file across

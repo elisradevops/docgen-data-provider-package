@@ -2,6 +2,7 @@ import * as winston from 'winston';
 import Transport = require('winston-transport');
 import { redact, DiagnosticsTransport } from '../../utils/logger';
 import { installLogSink, LogSink, DiagnosticEvent } from '../../utils/logSink';
+import { runContextStore } from '../../utils/runContext';
 
 const applyRedact = (info: Record<string, unknown>) => (redact() as any).transform({ ...info });
 
@@ -177,5 +178,93 @@ describe('textFormat safety (regression)', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const logger = require('../../utils/logger').default;
     expect(() => logger.error(Symbol('x'))).not.toThrow();
+  });
+});
+
+describe('DiagnosticsTransport capture policy (Phase 6b)', () => {
+  function makeDiagnosticsLogger() {
+    const capture = new CaptureTransport();
+    const logger = winston.createLogger({
+      level: 'silly',
+      format: winston.format.combine(
+        winston.format.errors({ stack: true }),
+        winston.format.timestamp(),
+        redact(),
+        winston.format.splat(),
+        winston.format.json()
+      ),
+      transports: [capture, new DiagnosticsTransport()],
+    });
+    return { logger, capture };
+  }
+
+  test('normal mode (no captureMode) does not persist debug/info', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const { logger } = makeDiagnosticsLogger();
+    runContextStore.run({ runId: 'run-1' }, () => {
+      logger.debug('a debug line');
+      logger.info('an info line');
+    });
+    expect(events).toHaveLength(0);
+  });
+
+  test('verbose mode persists debug and info', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const { logger } = makeDiagnosticsLogger();
+    runContextStore.run({ runId: 'run-2', captureMode: 'verbose' }, () => {
+      logger.debug('a debug line');
+      logger.info('an info line');
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0].retainPending).toBeUndefined();
+  });
+
+  test('warn/error persist regardless of capture mode', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const { logger } = makeDiagnosticsLogger();
+    runContextStore.run({ runId: 'run-3' }, () => {
+      logger.warn('a warning');
+      logger.error('an error');
+    });
+    expect(events).toHaveLength(2);
+  });
+
+  test('retain-on-failure persists debug/info tagged retainPending: true', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const { logger } = makeDiagnosticsLogger();
+    runContextStore.run({ runId: 'run-4', captureMode: 'retain-on-failure' }, () => {
+      logger.debug('a debug line');
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].retainPending).toBe(true);
+  });
+
+  test('retain-on-failure does not tag warn/error as retainPending', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const { logger } = makeDiagnosticsLogger();
+    runContextStore.run({ runId: 'run-5', captureMode: 'retain-on-failure' }, () => {
+      logger.error('an error');
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].retainPending).toBeUndefined();
+  });
+
+  test('a concurrent normal-mode run is unaffected by a sibling verbose run', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const { logger } = makeDiagnosticsLogger();
+    runContextStore.run({ runId: 'verbose-run', captureMode: 'verbose' }, () => {
+      logger.debug('verbose debug');
+    });
+    runContextStore.run({ runId: 'normal-run' }, () => {
+      logger.debug('normal debug');
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].message).toBe('verbose debug');
   });
 });
