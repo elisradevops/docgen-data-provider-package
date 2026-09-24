@@ -20,7 +20,10 @@ export const withRunContext = winston.format((info) => {
 // leaking via `logger.error(JSON.stringify(error))` on ADO REST failures). Does not
 // redact secrets interpolated into a message string — that's the corresponding call-site
 // fixes' job; this is a backstop for structured fields.
-const SENSITIVE_KEY = /token|pat|password|secret|authorization|minioaccesskey|miniosecretkey/i;
+// "accesskey" (not just "minioaccesskey") so this also catches an *AccessKeyId-style field —
+// a real gap found in api-gate's copy during the Phase 5 manifest work: only the *SecretKey
+// sibling was covered before, via "secret". Applied here too to keep the four copies in sync.
+const SENSITIVE_KEY = /token|pat|password|secret|authorization|accesskey|minioaccesskey|miniosecretkey/i;
 
 // A per-key try/catch on the *read*, not just around the whole loop: a getter that throws
 // (e.g. `{ get boom() { throw ... } }`) would otherwise abort redaction for every remaining
