@@ -4,7 +4,7 @@ import { TestSteps, createMomRelation, createRequirementRelation } from '../mode
 import { TestCase } from '../models/tfs-data';
 import * as xml2js from 'xml2js';
 import logger from '../utils/logger';
-import { describeError } from '../helpers/requestContext';
+import { logCaughtError } from '../helpers/requestContext';
 import Utils from '../utils/testStepParserHelper';
 import DataProviderUtils from '../utils/DataProviderUtils';
 const pLimit = require('p-limit');
@@ -57,7 +57,7 @@ export default class TestDataProvider {
 
       return result;
     } catch (error: any) {
-      logger.error(`Error fetching ${url}:`, describeError(error));
+      logCaughtError(`Error fetching ${url}:`, error);
       throw error;
     }
   }
@@ -188,7 +188,7 @@ export default class TestDataProvider {
     try {
       return await this.fetchWithCache(testsuitesUrl);
     } catch (e: any) {
-      logger.error('Failed to get test suites:', describeError(e));
+      logCaughtError('Failed to get test suites:', e);
       return null;
     }
   }
@@ -600,7 +600,7 @@ export default class TestDataProvider {
         }
       }
     } catch (err: any) {
-      logger.error(`Error while trying to structure testCases for test suite ${suite.id}:`, describeError(err));
+      logCaughtError(`Error while trying to structure testCases for test suite ${suite.id}:`, err);
     }
 
     return testCasesUrlList;

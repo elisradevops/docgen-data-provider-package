@@ -1,7 +1,7 @@
 import { TFSServices } from '../helpers/tfs';
 import TicketsDataProvider from './TicketsDataProvider';
 import logger from '../utils/logger';
-import { describeError } from '../helpers/requestContext';
+import { describeError, logCaughtError } from '../helpers/requestContext';
 import {
   createLinkedRelation,
   createRequirementRelation,
@@ -1120,7 +1120,7 @@ export default class GitDataProvider {
         submodules.push(subModule);
       }
     } catch (error: any) {
-      logger.error('Error in getSubmodulesData:', describeError(error));
+      logCaughtError('Error in getSubmodulesData:', error);
     } finally {
       return submodules;
     }

@@ -1,3 +1,4 @@
+import logger from '../../utils/logger';
 import {
   sanitizeUrl,
   summarizeBody,
@@ -5,6 +6,9 @@ import {
   buildAdoRequestContext,
   annotateAdoError,
   maskWiqlLiterals,
+  templatePath,
+  describeError,
+  logCaughtError,
 } from '../../helpers/requestContext';
 
 describe('maskWiqlLiterals', () => {
@@ -198,5 +202,51 @@ describe('annotateAdoError', () => {
     expect(() => annotateAdoError(Object.freeze(new Error('x')), { url: 'u' })).not.toThrow();
     expect(() => annotateAdoError('a string' as any, { url: 'u' })).not.toThrow();
     expect(() => annotateAdoError(undefined as any, { url: 'u' })).not.toThrow();
+  });
+});
+
+describe('templatePath', () => {
+  it('drops origin and query and collapses numeric / guid segments', () => {
+    expect(templatePath('https://dev.azure.com/org/p/_apis/wit/workitems/123?api-version=7')).toBe(
+      '/org/p/_apis/wit/workitems/{id}'
+    );
+    expect(templatePath('https://h/a/3f2504e0-4f89-11d3-9a0c-0305e82c3301/b')).toBe('/a/{id}/b');
+  });
+  it('copes with a relative or missing url', () => {
+    expect(templatePath('/rel/42?x=1')).toBe('/rel/{id}');
+    expect(templatePath(undefined)).toBe('(unknown url)');
+  });
+});
+
+describe('describeError', () => {
+  it('carries the original message separately so the dashboard err.message is not the combined line', () => {
+    expect(describeError(new Error('boom'))).toMatchObject({ message: 'boom', errMessage: 'boom' });
+  });
+});
+
+describe('logCaughtError', () => {
+  beforeEach(() => {
+    jest.spyOn(logger, 'warn').mockImplementation((() => logger) as any);
+    jest.spyOn(logger, 'error').mockImplementation((() => logger) as any);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('logs at warn when TFSServices already reported the error', () => {
+    const err = annotateAdoError(new Error('x'), { method: 'GET', url: 'https://h/y', reported: true });
+    logCaughtError('Could not fetch Y:', err);
+    expect(logger.warn).toHaveBeenCalledWith('Could not fetch Y:', expect.objectContaining({ message: 'x' }));
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('stays at error when the error was annotated but not reported (printError=false)', () => {
+    const err = annotateAdoError(new Error('x'), { method: 'GET', url: 'https://h/y', reported: false });
+    logCaughtError('Could not fetch Y:', err);
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('stays at error for a non-ADO error', () => {
+    logCaughtError('Could not fetch Y:', new Error('plain'));
+    expect(logger.error).toHaveBeenCalledTimes(1);
   });
 });

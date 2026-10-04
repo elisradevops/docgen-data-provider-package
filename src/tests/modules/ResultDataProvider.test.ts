@@ -6032,6 +6032,7 @@ describe('ResultDataProvider', () => {
       // record with the response summary as meta (docgen-log-redaction / Phase 2/4).
       expect(logger.error).toHaveBeenCalledWith('Error during getCombinedResultsSummary:', {
         message: 'boom',
+        errMessage: 'boom',
         stack: expect.any(String),
         responseSummary: '{"detail":"bad"}',
       });

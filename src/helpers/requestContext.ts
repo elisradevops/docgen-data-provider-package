@@ -1,4 +1,4 @@
-import { redactValue } from '../utils/logger';
+import logger, { redactValue } from '../utils/logger';
 import { CONTEXT_LIMITS } from '../utils/logSink';
 
 // What a failed Azure DevOps request looks like to whoever is triaging it. Built once, at the
@@ -13,6 +13,8 @@ export interface AdoRequestContext {
   attempt?: number;
   requestBody?: string;
   responseExcerpt?: string;
+  // True once TFSServices has emitted its dedicated 'ADO request failed' record for this error.
+  reported?: boolean;
 }
 
 const MAX_URL_LEN = CONTEXT_LIMITS.url;
@@ -67,6 +69,27 @@ export function sanitizeUrl(raw: unknown): string | undefined {
  */
 export function maskWiqlLiterals(text: string): string {
   return text.replace(/'(?:[^']|'')*'/g, (m) => `'[${m.length - 2} chars]'`);
+}
+
+/**
+ * Origin- and query-free request path with ids collapsed — `/org/proj/_apis/wit/workitems/123`
+ * becomes `/org/proj/_apis/wit/workitems/{id}`. Stable across occurrences, so it can sit in a
+ * log message and still group (the full URL stays in the structured context).
+ */
+export function templatePath(url: unknown): string {
+  if (typeof url !== 'string' || !url) return '(unknown url)';
+  let pathname = url;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    pathname = url.split(/[?#]/)[0];
+  }
+  return (
+    pathname
+      .split('/')
+      .map((seg) => (/^\d+$/.test(seg) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg) ? '{id}' : seg))
+      .join('/') || '/'
+  );
 }
 
 function isBinaryLike(data: unknown): boolean {
@@ -149,7 +172,7 @@ export function summarizeBody(data: unknown, method?: string): string | undefine
       !Array.isArray(data) && typeof (data as { query?: unknown }).query === 'string'
         ? { ...(data as Record<string, unknown>), query: maskWiqlLiterals((data as { query: string }).query) }
         : data;
-    return truncate(JSON.stringify(clampValues(redactValue(body))), MAX_BODY_LEN);
+    return truncate(JSON.stringify(redactValue(clampValues(body))), MAX_BODY_LEN);
   } catch {
     return '[unserializable body]';
   }
@@ -215,8 +238,21 @@ export function annotateAdoError<T>(error: T, context: AdoRequestContext): T {
 export function describeError(error: unknown): Record<string, unknown> {
   if (!error || typeof error !== 'object') return { message: String(error) };
   const e = error as Record<string, unknown>;
-  const meta: Record<string, unknown> = { message: e.message, stack: e.stack };
+  const meta: Record<string, unknown> = { message: e.message, stack: e.stack, errMessage: e.message };
   if (typeof e.code === 'string') meta.code = e.code;
   if (e.adoRequest) meta.adoRequest = e.adoRequest;
   return meta;
+}
+
+/**
+ * Logs a caught error from a caller of TFSServices. TFSServices already emitted the one
+ * error-level 'ADO request failed' record (with the full request context) for an error it
+ * reported, so repeating it at error level would create a second, third, ... Issue for the
+ * same root cause — the caller's "what was being fetched" wording is kept, at warn. An error
+ * TFSServices did not report (printError=false, or not an ADO error at all) stays at error.
+ */
+export function logCaughtError(message: string, error: unknown): void {
+  const reported = !!(error as { adoRequest?: AdoRequestContext } | null | undefined)?.adoRequest?.reported;
+  if (reported) logger.warn(message, describeError(error));
+  else logger.error(message, describeError(error));
 }

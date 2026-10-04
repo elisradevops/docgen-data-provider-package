@@ -1,7 +1,7 @@
 import { TFSServices } from '../helpers/tfs';
 
 import logger from '../utils/logger';
-import { describeError } from '../helpers/requestContext';
+import { logCaughtError } from '../helpers/requestContext';
 
 export default class JfrogDataProvider {
   orgUrl: string = '';
@@ -57,7 +57,7 @@ export default class JfrogDataProvider {
       logger.debug(`CI Url from JFROG: ${getCiResponse.buildInfo.url}`);
       return getCiResponse.buildInfo.url;
     } catch (err: any) {
-      logger.error('Error occurred during querying JFrog using:', describeError(err));
+      logCaughtError('Error occurred during querying JFrog using:', err);
       throw err;
     }
   }
