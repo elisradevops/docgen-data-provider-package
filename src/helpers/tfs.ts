@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import logger from '../utils/logger';
-import { AdoRequestContext, annotateAdoError, buildAdoRequestContext } from './requestContext';
+import { AdoRequestContext, annotateAdoError, buildAdoRequestContext, templatePath } from './requestContext';
 
 // Environment detection
 const isNode = typeof window === 'undefined' && typeof process !== 'undefined' && process.versions?.node;
@@ -242,7 +242,11 @@ export class TFSServices {
           const jitter = Math.random() * 0.3 + 0.85; // Between 0.85 and 1.15
           const delay = Math.min(baseDelay * Math.pow(2, attempts - 1) * jitter, 5000);
 
-          logger.warn(`Request failed. Retrying in ${Math.round(delay)}ms (${attempts}/${maxAttempts})`);
+          const retryCtx = buildAdoRequestContext(e, { method: config.method, url, data: config.data }, attempts);
+          logger.warn(
+            `ADO request retrying: ${retryCtx.method} ${templatePath(retryCtx.url)} -> ${retryCtx.status ?? e?.code ?? 'no response'} (${attempts}/${maxAttempts}, in ${Math.round(delay)}ms)`,
+            { adoRequest: retryCtx }
+          );
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
@@ -294,6 +298,7 @@ export class TFSServices {
     print: boolean = true
   ): void {
     const context = buildAdoRequestContext(error, request, attempt);
+    context.reported = print;
     annotateAdoError(error, context);
     if (print) {
       this.logDetailedError(error, context);
@@ -304,7 +309,10 @@ export class TFSServices {
    * Log detailed error information
    */
   private static logDetailedError(error: any, context: AdoRequestContext): void {
-    logger.error('ADO request failed', {
+    // The method, templated path and status go in the message itself: Issue grouping keys off
+    // the message, and a bare "ADO request failed" folded 401/404/500 on every endpoint into one.
+    const outcome = context.status ?? error?.code ?? 'no response';
+    logger.error(`ADO request failed: ${context.method ?? 'GET'} ${templatePath(context.url)} -> ${outcome}`, {
       message: error?.message,
       stack: error?.stack,
       adoRequest: context,

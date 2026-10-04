@@ -1,6 +1,6 @@
 import * as winston from 'winston';
 import Transport = require('winston-transport');
-import { redact, DiagnosticsTransport } from '../../utils/logger';
+import { redact, DiagnosticsTransport, isSensitiveKey, skipUncaptured } from '../../utils/logger';
 import { installLogSink, LogSink, DiagnosticEvent } from '../../utils/logSink';
 import { runContextStore } from '../../utils/runContext';
 
@@ -377,5 +377,39 @@ describe('DiagnosticsTransport capture policy (Phase 6b)', () => {
     });
     expect(events).toHaveLength(1);
     expect(events[0].message).toBe('verbose debug');
+  });
+});
+
+describe('isSensitiveKey', () => {
+  it.each(['token', 'accessToken', 'x-docgen-ingest-token', 'PAT', 'pat', 'password', 'DB_PASSWORD', 'Authorization', 'minioSecretKey', 'minioAccessKey', 'apiKey', 'clientSecret', 'cookie'])(
+    'redacts %s',
+    (key) => expect(isSensitiveKey(key)).toBe(true)
+  );
+  it.each(['areaPath', 'IterationPath', 'path', 'filePath', 'patch', 'dispatch', 'compatibility', 'tokenCount', 'System.AreaPath', 'url'])(
+    'keeps %s',
+    (key) => expect(isSensitiveKey(key)).toBe(false)
+  );
+  it('redact() leaves areaPath visible but scrubs a token', () => {
+    const out = applyRedact({ message: 'm', areaPath: 'P\\Area', accessToken: 'abc' });
+    expect(out.areaPath).toBe('P\\Area');
+    expect(out.accessToken).toBe('[REDACTED]');
+  });
+});
+
+describe('skipUncaptured', () => {
+  const run = (level: string) => (skipUncaptured() as any).transform({ level, message: 'm' });
+  it('keeps what stdout prints and always keeps warn/error', () => {
+    expect(run('error')).toBeTruthy();
+    expect(run('warn')).toBeTruthy();
+    expect(run('info')).toBeTruthy();
+  });
+  it('drops debug in normal mode', () => {
+    expect(run('debug')).toBe(false);
+  });
+  it('keeps debug inside a verbose run', () => {
+    const { runContextStore } = require('../../utils/runContext');
+    runContextStore.run({ runId: 'r1', captureMode: 'verbose' }, () => {
+      expect(run('debug')).toBeTruthy();
+    });
   });
 });

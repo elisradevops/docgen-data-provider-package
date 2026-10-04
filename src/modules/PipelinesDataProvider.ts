@@ -2,7 +2,7 @@ import { PipelineRun, Repository, ResourceRepository } from '../models/tfs-data'
 import { TFSServices } from '../helpers/tfs';
 
 import logger from '../utils/logger';
-import { describeError } from '../helpers/requestContext';
+import { logCaughtError } from '../helpers/requestContext';
 import GitDataProvider from './GitDataProvider';
 const pLimit = require('p-limit');
 const MAX_DISCOVERY_PAGES = 50;
@@ -1332,7 +1332,7 @@ export default class PipelinesDataProvider {
       }
       return res;
     } catch (err: any) {
-      logger.error('Could not fetch Pipeline Run History:', describeError(err));
+      logCaughtError('Could not fetch Pipeline Run History:', err);
     }
   }
 
@@ -1402,7 +1402,7 @@ export default class PipelinesDataProvider {
         // Azure DevOps returns continuation token header for next page
         continuationToken = this.getContinuationToken(headers);
       } catch (err: any) {
-        logger.error('GetAllReleaseHistory failed:', describeError(err));
+        logCaughtError('GetAllReleaseHistory failed:', err);
         throw err;
       }
     } while (continuationToken);
@@ -1464,7 +1464,7 @@ export default class PipelinesDataProvider {
         }
       }
     } catch (err: any) {
-      logger.error(`Error fetching pipeline ${pipelineRunId} with url ${url} :`, describeError(err));
+      logCaughtError(`Error fetching pipeline ${pipelineRunId} with url ${url} :`, err);
       return undefined;
     }
   }

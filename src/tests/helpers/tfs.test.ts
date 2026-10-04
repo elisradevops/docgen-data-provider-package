@@ -1115,6 +1115,7 @@ describe('TFSServices request-context annotation', () => {
       url: 'https://dev.azure.com/org/_apis/wit/queries/q1',
       status: 404,
       attempt: 1,
+      reported: false,
       responseExcerpt: 'TF401232: Work item 5 does not exist',
     });
     expect(logger.error).not.toHaveBeenCalled();
@@ -1127,11 +1128,31 @@ describe('TFSServices request-context annotation', () => {
 
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledWith(
-      'ADO request failed',
+      'ADO request failed: GET /org/_apis/x -> 404',
       expect.objectContaining({
-        adoRequest: expect.objectContaining({ method: 'GET', url: 'https://dev.azure.com/org/_apis/x', status: 404 }),
+        adoRequest: expect.objectContaining({
+          method: 'GET',
+          url: 'https://dev.azure.com/org/_apis/x',
+          status: 404,
+          reported: true,
+        }),
       })
     );
+  });
+
+  it('puts status and templated path in the message so 401 and 404 group separately', async () => {
+    const e401: any = new Error('Request failed with status code 401');
+    e401.response = { status: 401, data: {} };
+    mockAxiosInstance.request.mockRejectedValueOnce(e401);
+    await TFSServices.getItemContent('https://dev.azure.com/org/p/_apis/wit/workitems/123', 'pat').catch(() => undefined);
+    mockAxiosInstance.request.mockRejectedValueOnce(notFound());
+    await TFSServices.getItemContent('https://dev.azure.com/org/p/_apis/wit/workitems/456', 'pat').catch(() => undefined);
+
+    const messages = (logger.error as jest.Mock).mock.calls.map((c) => c[0]);
+    expect(messages).toEqual([
+      'ADO request failed: GET /org/p/_apis/wit/workitems/{id} -> 401',
+      'ADO request failed: GET /org/p/_apis/wit/workitems/{id} -> 404',
+    ]);
   });
 
   it('never leaks the PAT: credentials are applied to the axios config, not the description', async () => {

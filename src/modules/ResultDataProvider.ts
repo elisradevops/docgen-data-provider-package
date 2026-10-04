@@ -22,7 +22,7 @@ import type {
   MewpRunStatus,
 } from '../models/mewp-reporting';
 import logger from '../utils/logger';
-import { describeError } from '../helpers/requestContext';
+import { describeError, logCaughtError } from '../helpers/requestContext';
 import MewpExternalIngestionUtils from '../utils/mewpExternalIngestionUtils';
 import MewpExternalTableUtils, {
   MewpExternalFileValidationError,
@@ -140,7 +140,7 @@ export default class ResultDataProvider {
           this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId)
             .then((testPointsItems) => ({ ...suite, testPointsItems }))
             .catch((error: any) => {
-              logger.error(`Error occurred for suite ${suite.testSuiteId}:`, describeError(error));
+              logCaughtError(`Error occurred for suite ${suite.testSuiteId}:`, error);
               return { ...suite, testPointsItems: [] };
             })
         )
@@ -403,7 +403,7 @@ export default class ResultDataProvider {
 
       return fetchedTestResults;
     } catch (error: any) {
-      logger.error('Error during getTestReporterResults:', describeError(error));
+      logCaughtError('Error during getTestReporterResults:', error);
     }
   }
 
@@ -444,7 +444,7 @@ export default class ResultDataProvider {
 
       return { planId: testPlanId, planName, rows: rows || [] };
     } catch (error: any) {
-      logger.error('Error during getTestReporterFlatResults:', describeError(error));
+      logCaughtError('Error during getTestReporterFlatResults:', error);
       return { planId: testPlanId, planName: '', rows: [] };
     }
   }
@@ -746,7 +746,7 @@ export default class ResultDataProvider {
         rows,
       };
     } catch (error: any) {
-      logger.error('Error during getMewpL2CoverageFlatResults:', describeError(error));
+      logCaughtError('Error during getMewpL2CoverageFlatResults:', error);
       if (error instanceof MewpExternalFileValidationError) {
         throw error;
       }
@@ -1123,7 +1123,7 @@ export default class ResultDataProvider {
         rows,
       };
     } catch (error: any) {
-      logger.error('Error during getMewpInternalValidationFlatResults:', describeError(error));
+      logCaughtError('Error during getMewpInternalValidationFlatResults:', error);
       return defaultPayload;
     }
   }
@@ -3072,7 +3072,7 @@ export default class ResultDataProvider {
       const testPlan = await TFSServices.getItemContent(url, this.token);
       return testPlan.name;
     } catch (error: any) {
-      logger.error('Error during fetching Test Plan Name:', describeError(error));
+      logCaughtError('Error during fetching Test Plan Name:', error);
       return '';
     }
   }
@@ -3120,7 +3120,7 @@ export default class ResultDataProvider {
         };
       });
     } catch (error: any) {
-      logger.error('Error during fetching Test Suites:', describeError(error));
+      logCaughtError('Error during fetching Test Suites:', error);
       return [];
     }
   }
@@ -3293,7 +3293,7 @@ export default class ResultDataProvider {
 
       return count !== 0 ? testPoints.map((testPoint: any) => this.mapTestPoint(testPoint, projectName)) : [];
     } catch (error: any) {
-      logger.error('Error during fetching Test Points:', describeError(error));
+      logCaughtError('Error during fetching Test Points:', error);
       return [];
     }
   }
@@ -4474,7 +4474,7 @@ export default class ResultDataProvider {
             relatedCRs.push({ id, title, workItemType: 'Change Request', url });
           }
         } catch (err: any) {
-          logger.error(`Could not append related work item to test case ${wiByRevision.id}:`, describeError(err));
+          logCaughtError(`Could not append related work item to test case ${wiByRevision.id}:`, err);
         }
       }
     }
@@ -4857,7 +4857,7 @@ export default class ResultDataProvider {
 
             return { ...suite, testPointsItems, testCasesItems };
           } catch (error: any) {
-            logger.error(`Error occurred for suite ${suite.testSuiteId}:`, describeError(error));
+            logCaughtError(`Error occurred for suite ${suite.testSuiteId}:`, error);
             return suite;
           }
         })
