@@ -1252,7 +1252,7 @@ export default class PipelinesDataProvider {
       },
       parameters: parameter, //'{"Test":"123"}'
     };
-    logger.info(JSON.stringify(data));
+    logger.info('Triggering build', data);
     let url = `${this.orgUrl}${projectName}/_apis/build/builds?api-version=5.0`;
     let res = await TFSServices.postRequest(url, this.token, 'post', data, null);
     return res;

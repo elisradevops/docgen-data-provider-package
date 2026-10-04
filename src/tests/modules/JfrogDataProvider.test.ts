@@ -36,7 +36,9 @@ describe('JfrogDataProvider', () => {
         `${mockOrgUrl}${mockTeamProject}/_apis/serviceendpoint/endpoints/${mockConnectionId}?api-version=7.1`,
         mockTfsToken
       );
-      expect(logger.debug).toHaveBeenCalledWith(`service connection url "${mockResponse.url}"`);
+      // The log used JSON.stringify(url), which wraps a plain string in quotes for no reason —
+      // fixed to interpolate the string directly (see docgen-log-redaction / Phase 2).
+      expect(logger.debug).toHaveBeenCalledWith(`service connection url ${mockResponse.url}`);
       expect(result).toBe(mockResponse.url);
     });
 

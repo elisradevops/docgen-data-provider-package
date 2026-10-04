@@ -6027,8 +6027,12 @@ describe('ResultDataProvider', () => {
         resultDataProvider.getCombinedResultsSummary(mockTestPlanId, mockProjectName)
       ).rejects.toThrow('boom');
 
-      expect(logger.error).toHaveBeenCalledWith('Error during getCombinedResultsSummary: boom');
-      expect(logger.error).toHaveBeenCalledWith('Response Data: {"detail":"bad"}');
+      // Was two separate calls (message, then the response body) — consolidated into one
+      // record with the response summary as meta (docgen-log-redaction / Phase 2/4).
+      expect(logger.error).toHaveBeenCalledWith('Error during getCombinedResultsSummary: boom', {
+        responseSummary: '{"detail":"bad"}',
+      });
+      expect(logger.error).toHaveBeenCalledTimes(1);
     });
   });
 

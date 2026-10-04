@@ -259,10 +259,22 @@ export default class ResultDataProvider {
 
       return { combinedResults, openPcrToTestCaseTraceMap, testCaseToOpenPcrTraceMap };
     } catch (error: any) {
-      logger.error(`Error during getCombinedResultsSummary: ${error.message}`);
+      // One event, one record — this used to be two separate calls (message, then
+      // conditionally the response body), which interleave with other requests' output
+      // under concurrency and become two unrelated entries in the dashboard's error grouping.
+      let responseSummary: string | undefined;
       if (error.response) {
-        logger.error(`Response Data: ${JSON.stringify(error.response.data)}`);
+        // Truncated to match the bound already used for this in tfs.ts — an untruncated ADO
+        // response body isn't a credential, but it can still be large/sensitive work-item content
+        // and doesn't need to go into logs unbounded. JSON.stringify itself (not just the
+        // output) can throw on a circular value, so that has to be guarded too, not just capped.
+        try {
+          responseSummary = JSON.stringify(error.response.data).substring(0, 200);
+        } catch {
+          responseSummary = '[unserializable response data]';
+        }
       }
+      logger.error(`Error during getCombinedResultsSummary: ${error.message}`, { responseSummary });
       // Ensure the error is rethrown to propagate it correctly
       throw new Error(error.message || 'Unknown error occurred during getCombinedResultsSummary');
     }
@@ -3261,8 +3273,7 @@ export default class ResultDataProvider {
       );
       return detailedPoints;
     } catch (err: any) {
-      logger.error(`Error during fetching Cross Test Points: ${err.message}`);
-      logger.error(`Error stack: ${err.stack}`);
+      logger.error('Error during fetching Cross Test Points', err);
       return [];
     }
   }
@@ -3903,10 +3914,7 @@ export default class ResultDataProvider {
         relatedCRs,
       };
     } catch (error: any) {
-      logger.error(`Error while fetching run result: ${error.message}`);
-      if (isTestReporter) {
-        logger.error(`Error stack: ${error.stack}`);
-      }
+      logger.error('Error while fetching run result', error);
       return null;
     }
   }
@@ -4595,7 +4603,7 @@ export default class ResultDataProvider {
           ? testCase.workItem.workItemFields
           : [];
         if (testCaseWorkItemFields.length === 0) {
-          logger.warn(`Could not fetch the steps from WI ${JSON.stringify(testCase.workItem.id)}`);
+          logger.warn(`Could not fetch the steps from WI ${testCase.workItem.id}`);
           if (!isTestReporter) {
             continue;
           }
@@ -5058,8 +5066,7 @@ export default class ResultDataProvider {
         ? createResponseObject(resultData, testSuiteId, point, ...additionalArgs)
         : null;
     } catch (error: any) {
-      logger.error(`Error occurred for point ${point.testCaseId}: ${error.message}`);
-      logger.error(`Stack trace: ${error.stack}`);
+      logger.error(`Error occurred for point ${point.testCaseId}`, error);
       return null;
     }
   }
@@ -5153,8 +5160,7 @@ export default class ResultDataProvider {
           summarizedItemMap.set(wi.id, mappedItem);
         }
       } catch (error: any) {
-        logger.error(`Error occurred while fetching linked work items: ${error.message}`);
-        logger.error(`Error Stack: ${error.stack}`);
+        logger.error('Error occurred while fetching linked work items', error);
       }
     }
 
@@ -5826,8 +5832,7 @@ export default class ResultDataProvider {
           }
           return resultDataResponse;
         } catch (err: any) {
-          logger.error(`Error occurred while fetching result data: ${err.message}`);
-          logger.error(`Error stack: ${err.stack}`);
+          logger.error('Error occurred while fetching result data', err);
           return null;
         }
       },

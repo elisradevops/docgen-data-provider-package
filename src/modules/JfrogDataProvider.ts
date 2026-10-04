@@ -19,7 +19,7 @@ export default class JfrogDataProvider {
     if (!serviceConnectionResponse?.url) {
       throw new Error(`Service connection ${connectionId} returned no URL — identity may lack service-endpoint read permission`);
     }
-    logger.debug(`service connection url ${JSON.stringify(serviceConnectionResponse.url)}`);
+    logger.debug(`service connection url ${serviceConnectionResponse.url}`);
     return serviceConnectionResponse.url;
   }
 
