@@ -105,7 +105,10 @@ describe('TestDataProvider', () => {
 
       // Act & Assert
       await expect(invokeFetchWithCache(testDataProvider, mockUrl)).rejects.toThrow('API call failed');
-      expect(logger.error).toHaveBeenCalledWith(`Error fetching ${mockUrl}: API call failed`);
+      expect(logger.error).toHaveBeenCalledWith(
+        `Error fetching ${mockUrl}:`,
+        expect.objectContaining({ message: 'API call failed' })
+      );
     });
   });
 

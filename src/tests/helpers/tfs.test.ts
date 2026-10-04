@@ -1089,3 +1089,89 @@ describe('TFSServices', () => {
     });
   });
 });
+
+describe('TFSServices request-context annotation', () => {
+  // Math.random is pinned and setTimeout collapsed so a retried failure doesn't slow the suite.
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockAxiosInstance.request.mockReset();
+  });
+
+  const notFound = () => {
+    const e: any = new Error('Request failed with status code 404');
+    e.response = { status: 404, data: { message: 'TF401232: Work item 5 does not exist' } };
+    return e;
+  };
+
+  it('annotates the thrown error with the request even when printError is false, without logging', async () => {
+    mockAxiosInstance.request.mockRejectedValue(notFound());
+
+    const caught = await TFSServices.getItemContent('https://dev.azure.com/org/_apis/wit/queries/q1', 'pat', 'get', {}, {}, false).catch(
+      (e) => e
+    );
+
+    expect(caught.adoRequest).toEqual({
+      method: 'GET',
+      url: 'https://dev.azure.com/org/_apis/wit/queries/q1',
+      status: 404,
+      attempt: 1,
+      responseExcerpt: 'TF401232: Work item 5 does not exist',
+    });
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('with printError, also emits the one "ADO request failed" record carrying the same context', async () => {
+    mockAxiosInstance.request.mockRejectedValue(notFound());
+
+    await TFSServices.getItemContent('https://dev.azure.com/org/_apis/x', 'pat').catch(() => undefined);
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      'ADO request failed',
+      expect.objectContaining({
+        adoRequest: expect.objectContaining({ method: 'GET', url: 'https://dev.azure.com/org/_apis/x', status: 404 }),
+      })
+    );
+  });
+
+  it('never leaks the PAT: credentials are applied to the axios config, not the description', async () => {
+    mockAxiosInstance.request.mockRejectedValue(notFound());
+
+    const caught = await TFSServices.getItemContent('https://dev.azure.com/org/_apis/x', 'super-secret-pat', 'get', {}, {}, false).catch(
+      (e) => e
+    );
+
+    expect(JSON.stringify(caught.adoRequest)).not.toContain('super-secret-pat');
+  });
+
+  it('postRequest describes a JSON-Patch body by op + path only', async () => {
+    mockAxiosInstance.request.mockRejectedValue(notFound());
+
+    const caught = await TFSServices.postRequest(
+      'https://dev.azure.com/org/_apis/wit/workitems/9',
+      'pat',
+      'PATCH',
+      [{ op: 'add', path: '/fields/System.Title', value: 'confidential title' }]
+    ).catch((e) => e);
+
+    expect(caught.adoRequest.method).toBe('PATCH');
+    expect(caught.adoRequest.requestBody).toContain('add /fields/System.Title');
+    expect(caught.adoRequest.requestBody).not.toContain('confidential');
+  });
+
+  it('getJfrogRequest annotates too', async () => {
+    mockAxiosInstance.request.mockRejectedValue(notFound());
+
+    const caught = await TFSServices.getJfrogRequest('https://jfrog.example/api/x').catch((e) => e);
+
+    expect(caught.adoRequest).toEqual(expect.objectContaining({ method: 'GET', url: 'https://jfrog.example/api/x', status: 404 }));
+  });
+
+  it('downloadZipFile annotates the error it rethrows', async () => {
+    mockAxiosInstance.request.mockRejectedValue(notFound());
+
+    const caught = await TFSServices.downloadZipFile('https://dev.azure.com/org/file.zip', 'pat').catch((e) => e);
+
+    expect(caught.adoRequest).toEqual(expect.objectContaining({ method: 'GET', url: 'https://dev.azure.com/org/file.zip', status: 404 }));
+  });
+});

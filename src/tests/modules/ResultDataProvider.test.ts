@@ -5324,7 +5324,8 @@ describe('ResultDataProvider', () => {
       );
 
       expect(logger.error).toHaveBeenCalledWith(
-        expect.stringContaining('Could not append related work item to test case 999')
+        'Could not append related work item to test case 999:',
+        expect.objectContaining({ message: 'network' })
       );
     });
   });
@@ -6029,7 +6030,9 @@ describe('ResultDataProvider', () => {
 
       // Was two separate calls (message, then the response body) — consolidated into one
       // record with the response summary as meta (docgen-log-redaction / Phase 2/4).
-      expect(logger.error).toHaveBeenCalledWith('Error during getCombinedResultsSummary: boom', {
+      expect(logger.error).toHaveBeenCalledWith('Error during getCombinedResultsSummary:', {
+        message: 'boom',
+        stack: expect.any(String),
         responseSummary: '{"detail":"bad"}',
       });
       expect(logger.error).toHaveBeenCalledTimes(1);

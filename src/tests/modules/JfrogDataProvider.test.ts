@@ -162,7 +162,8 @@ describe('JfrogDataProvider', () => {
       ).rejects.toThrow('JFrog API error');
 
       expect(logger.error).toHaveBeenCalledWith(
-        `Error occurred during querying JFrog using: JFrog API error`
+        'Error occurred during querying JFrog using:',
+        expect.objectContaining({ message: 'JFrog API error' })
       );
     });
   });

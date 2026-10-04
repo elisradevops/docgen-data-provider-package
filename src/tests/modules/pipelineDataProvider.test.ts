@@ -305,7 +305,8 @@ describe('PipelinesDataProvider', () => {
         null
       );
       expect(logger.error).toHaveBeenCalledWith(
-        `Could not fetch Pipeline Run History: ${expectedError.message}`
+        'Could not fetch Pipeline Run History:',
+        expect.objectContaining({ message: expectedError.message })
       );
       expect(result).toBeUndefined();
     });

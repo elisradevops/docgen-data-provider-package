@@ -169,6 +169,117 @@ describe('DiagnosticsTransport (Phase 6a)', () => {
   });
 });
 
+describe('DiagnosticsTransport request context', () => {
+  function makeLogger() {
+    return winston.createLogger({
+      level: 'silly',
+      format: winston.format.combine(
+        winston.format.errors({ stack: true }),
+        winston.format.timestamp(),
+        redact(),
+        winston.format.splat(),
+        winston.format.json()
+      ),
+      transports: [new DiagnosticsTransport()],
+    });
+  }
+
+  test('persists an annotated error\'s request as event.context, however the call site words its message', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const err = Object.assign(new Error('Request failed with status code 404'), {
+      adoRequest: { method: 'GET', url: 'https://dev.azure.com/org/_apis/x', status: 404, attempt: 1, responseExcerpt: 'nope' },
+    });
+
+    makeLogger().error(err); // the bare-error shape (3 call sites) — no stable message at all
+
+    expect(events[0].context).toEqual({
+      method: 'GET',
+      url: 'https://dev.azure.com/org/_apis/x',
+      status: 404,
+      attempt: 1,
+      responseExcerpt: 'nope',
+    });
+  });
+
+  test('also works for the stable-message + error shape and for the explicit meta shape', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const logger = makeLogger();
+    const ctx = { method: 'POST', url: 'https://h/wiql', requestBody: '{"query":"q"}' };
+
+    logger.error('Failed querying work items', Object.assign(new Error('boom'), { adoRequest: ctx }));
+    logger.error('ADO request failed', { message: 'boom', stack: 'at x', adoRequest: ctx });
+
+    expect(events[0].context).toEqual(ctx);
+    expect(events[1].context).toEqual(ctx);
+  });
+
+  test('an event with no request context has no context field', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    makeLogger().error('plain failure', new Error('boom'));
+    expect(events[0].context).toBeUndefined();
+  });
+
+  test('re-validates the shape at the transport: unknown keys, wrong types and oversize values are dropped or bounded', () => {
+    const events: DiagnosticEvent[] = [];
+    installLogSink({ push: (e) => events.push(e) });
+    const err = Object.assign(new Error('x'), {
+      adoRequest: {
+        method: 'GET',
+        url: 'u'.repeat(5000),
+        status: 'not-a-number',
+        attempt: 2,
+        requestBody: 'b'.repeat(5000),
+        secretHeader: 'Bearer abc',
+      },
+    });
+
+    makeLogger().error('m', err);
+
+    const ctx = events[0].context!;
+    expect(ctx.url!.length).toBe(1000);
+    expect(ctx.requestBody!.length).toBe(2000);
+    expect(ctx.status).toBeUndefined();
+    expect(ctx.attempt).toBe(2);
+    expect(ctx).not.toHaveProperty('secretHeader');
+  });
+});
+
+describe('text format request suffix', () => {
+  // The default (LOG_FORMAT unset) prints only the message — without this the URL would never
+  // reach stdout for a record whose own message doesn't carry it. A stream transport on the
+  // real logger receives the already-formatted line, independent of how jest wires console.
+  test('appends the request to the printed line when the error carries one, and never throws', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const logger = require('../../utils/logger').default;
+    const { Writable } = require('stream');
+    const lines: string[] = [];
+    const sink = new winston.transports.Stream({
+      stream: new Writable({
+        write(chunk: Buffer, _enc: string, cb: () => void) {
+          lines.push(chunk.toString());
+          cb();
+        },
+      }),
+    });
+    logger.add(sink);
+    try {
+      const err = Object.assign(new Error('Request failed with status code 404'), {
+        adoRequest: { method: 'GET', url: 'https://dev.azure.com/org/_apis/x', status: 404 },
+      });
+      expect(() => logger.error('Failed fetching', err)).not.toThrow();
+      expect(() => logger.error('odd', Object.assign(new Error('e'), { adoRequest: { url: 123 } }))).not.toThrow();
+    } finally {
+      logger.remove(sink);
+    }
+    const joined = lines.join('');
+    expect(joined).toContain('[GET https://dev.azure.com/org/_apis/x -> 404]');
+    expect(joined).toContain('Failed fetching');
+  });
+});
+
 describe('textFormat safety (regression)', () => {
   // The hostile-input matrix above exercises makeTestLogger()'s json() pipeline — it never
   // touched the real singleton logger's text-format branch (LOG_FORMAT's default), which is
