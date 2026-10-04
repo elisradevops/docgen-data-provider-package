@@ -22,6 +22,7 @@ import type {
   MewpRunStatus,
 } from '../models/mewp-reporting';
 import logger from '../utils/logger';
+import { describeError } from '../helpers/requestContext';
 import MewpExternalIngestionUtils from '../utils/mewpExternalIngestionUtils';
 import MewpExternalTableUtils, {
   MewpExternalFileValidationError,
@@ -139,7 +140,7 @@ export default class ResultDataProvider {
           this.fetchTestPoints(projectName, testPlanId, suite.testSuiteId)
             .then((testPointsItems) => ({ ...suite, testPointsItems }))
             .catch((error: any) => {
-              logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
+              logger.error(`Error occurred for suite ${suite.testSuiteId}:`, describeError(error));
               return { ...suite, testPointsItems: [] };
             })
         )
@@ -274,7 +275,7 @@ export default class ResultDataProvider {
           responseSummary = '[unserializable response data]';
         }
       }
-      logger.error(`Error during getCombinedResultsSummary: ${error.message}`, { responseSummary });
+      logger.error('Error during getCombinedResultsSummary:', { ...describeError(error), responseSummary });
       // Ensure the error is rethrown to propagate it correctly
       throw new Error(error.message || 'Unknown error occurred during getCombinedResultsSummary');
     }
@@ -402,7 +403,7 @@ export default class ResultDataProvider {
 
       return fetchedTestResults;
     } catch (error: any) {
-      logger.error(`Error during getTestReporterResults: ${error.message}`);
+      logger.error('Error during getTestReporterResults:', describeError(error));
     }
   }
 
@@ -443,7 +444,7 @@ export default class ResultDataProvider {
 
       return { planId: testPlanId, planName, rows: rows || [] };
     } catch (error: any) {
-      logger.error(`Error during getTestReporterFlatResults: ${error.message}`);
+      logger.error('Error during getTestReporterFlatResults:', describeError(error));
       return { planId: testPlanId, planName: '', rows: [] };
     }
   }
@@ -745,7 +746,7 @@ export default class ResultDataProvider {
         rows,
       };
     } catch (error: any) {
-      logger.error(`Error during getMewpL2CoverageFlatResults: ${error.message}`);
+      logger.error('Error during getMewpL2CoverageFlatResults:', describeError(error));
       if (error instanceof MewpExternalFileValidationError) {
         throw error;
       }
@@ -1122,7 +1123,7 @@ export default class ResultDataProvider {
         rows,
       };
     } catch (error: any) {
-      logger.error(`Error during getMewpInternalValidationFlatResults: ${error.message}`);
+      logger.error('Error during getMewpInternalValidationFlatResults:', describeError(error));
       return defaultPayload;
     }
   }
@@ -3071,7 +3072,7 @@ export default class ResultDataProvider {
       const testPlan = await TFSServices.getItemContent(url, this.token);
       return testPlan.name;
     } catch (error: any) {
-      logger.error(`Error during fetching Test Plan Name: ${error.message}`);
+      logger.error('Error during fetching Test Plan Name:', describeError(error));
       return '';
     }
   }
@@ -3119,7 +3120,7 @@ export default class ResultDataProvider {
         };
       });
     } catch (error: any) {
-      logger.error(`Error during fetching Test Suites: ${error.message}`);
+      logger.error('Error during fetching Test Suites:', describeError(error));
       return [];
     }
   }
@@ -3292,7 +3293,7 @@ export default class ResultDataProvider {
 
       return count !== 0 ? testPoints.map((testPoint: any) => this.mapTestPoint(testPoint, projectName)) : [];
     } catch (error: any) {
-      logger.error(`Error during fetching Test Points: ${error.message}`);
+      logger.error('Error during fetching Test Points:', describeError(error));
       return [];
     }
   }
@@ -4473,7 +4474,7 @@ export default class ResultDataProvider {
             relatedCRs.push({ id, title, workItemType: 'Change Request', url });
           }
         } catch (err: any) {
-          logger.error(`Could not append related work item to test case ${wiByRevision.id}: ${err.message}`);
+          logger.error(`Could not append related work item to test case ${wiByRevision.id}:`, describeError(err));
         }
       }
     }
@@ -4856,7 +4857,7 @@ export default class ResultDataProvider {
 
             return { ...suite, testPointsItems, testCasesItems };
           } catch (error: any) {
-            logger.error(`Error occurred for suite ${suite.testSuiteId}: ${error.message}`);
+            logger.error(`Error occurred for suite ${suite.testSuiteId}:`, describeError(error));
             return suite;
           }
         })

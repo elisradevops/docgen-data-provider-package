@@ -367,7 +367,8 @@ describe('GitDataProvider - GetFileFromGitRepo', () => {
 
     // Assert
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`File ${mockFileName} could not be read: ${mockError.message}`)
+      `File ${mockFileName} could not be read:`,
+      expect.objectContaining({ message: mockError.message })
     );
     expect(result).toBeUndefined();
   });

@@ -10,6 +10,7 @@ import { TestSteps } from '../models/tfs-data';
 import TestStepParserHelper from '../utils/testStepParserHelper';
 
 import logger from '../utils/logger';
+import { describeError } from '../helpers/requestContext';
 const pLimit = require('p-limit');
 
 type FallbackFetchOutcome = {
@@ -491,7 +492,7 @@ export default class TicketsDataProvider {
           break;
       }
     } catch (err: any) {
-      logger.error(`Error occurred during fetching shared queries: ${err.message}`);
+      logger.error('Error occurred during fetching shared queries:', describeError(err));
       throw err;
     }
   }
@@ -527,7 +528,7 @@ export default class TicketsDataProvider {
           })
       );
     } catch (err: any) {
-      logger.error(`Error occurred during fetching fields by type: ${err.message}`);
+      logger.error('Error occurred during fetching fields by type:', describeError(err));
       throw err;
     }
   }
@@ -558,7 +559,7 @@ export default class TicketsDataProvider {
       }
       return { types, states: Array.from(stateSet) };
     } catch (err: any) {
-      logger.error(`Error fetching work item type states: ${err.message}`);
+      logger.error('Error fetching work item type states:', describeError(err));
       throw err;
     }
   }
@@ -1286,7 +1287,7 @@ export default class TicketsDataProvider {
           break;
       }
     } catch (err: any) {
-      logger.error(`Could not fetch query results for ${wiqlHref}: ${err.message}`);
+      logger.error(`Could not fetch query results for ${wiqlHref}:`, describeError(err));
     }
   }
 
@@ -1662,7 +1663,7 @@ export default class TicketsDataProvider {
       }
       return [...workItemsResultMap.values()];
     } catch (error: any) {
-      logger.error(`could not parse requested flat query: ${error.message}`);
+      logger.error('could not parse requested flat query:', describeError(error));
     }
   }
 
@@ -3562,7 +3563,7 @@ export default class TicketsDataProvider {
 
       item.fields = { ...parsedFields };
     } catch (err: any) {
-      logger.error(`Cannot filter columns: ${err.message}`);
+      logger.error('Cannot filter columns:', describeError(err));
       throw err;
     }
   }
@@ -3617,7 +3618,7 @@ export default class TicketsDataProvider {
 
       return workItemTypesWithIcons;
     } catch (err: any) {
-      logger.error(`Error occurred during fetching work item types: ${err.message}`);
+      logger.error('Error occurred during fetching work item types:', describeError(err));
       throw err;
     }
   }
@@ -3770,7 +3771,7 @@ export default class TicketsDataProvider {
             categorizedRequirements['Precedence and Criticality of Requirements'].push(requirementItem);
           }
         } catch (err: any) {
-          logger.warn(`Could not fetch work item ${workItemId}: ${err.message}`);
+          logger.warn(`Could not fetch work item ${workItemId}:`, describeError(err));
         }
       }
 
@@ -3792,7 +3793,7 @@ export default class TicketsDataProvider {
         totalCount: workItemIds.length,
       };
     } catch (err: any) {
-      logger.error(`Could not fetch categorized requirements: ${err.message}`);
+      logger.error('Could not fetch categorized requirements:', describeError(err));
       throw err;
     }
   }
@@ -3887,7 +3888,7 @@ export default class TicketsDataProvider {
           const relations = qr?.workItemRelations || [];
           result['req-test'] = await resolveQuerySides(cols, relations, true);
         } catch (err: any) {
-          logger.error(`GetTraceColumnsByType[req-test] failed: ${err.message}`);
+          logger.error('GetTraceColumnsByType[req-test] failed:', describeError(err));
           result['req-test'] = { Requirement: [], 'Test Case': [] };
         }
       }
@@ -3899,14 +3900,14 @@ export default class TicketsDataProvider {
           const relations = qr?.workItemRelations || [];
           result['test-req'] = await resolveQuerySides(cols, relations, false);
         } catch (err: any) {
-          logger.error(`GetTraceColumnsByType[test-req] failed: ${err.message}`);
+          logger.error('GetTraceColumnsByType[test-req] failed:', describeError(err));
           result['test-req'] = { Requirement: [], 'Test Case': [] };
         }
       }
 
       return result;
     } catch (err: any) {
-      logger.error(`GetTraceColumnsByType failed: ${err.message}`);
+      logger.error('GetTraceColumnsByType failed:', describeError(err));
       return {};
     }
   }

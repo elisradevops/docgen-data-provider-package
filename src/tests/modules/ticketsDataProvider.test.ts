@@ -1108,7 +1108,7 @@ describe('TicketsDataProvider', () => {
       expect(() =>
         (ticketsDataProvider as any).filterFieldsByColumns(item, columnsToFilterMap, resultedRefNameMap),
       ).toThrow();
-      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Cannot filter columns'));
+      expect(logger.error).toHaveBeenCalledWith('Cannot filter columns:', expect.objectContaining({ message: expect.any(String) }));
     });
   });
 
@@ -2779,7 +2779,7 @@ describe('TicketsDataProvider', () => {
       expect(res.categories['Security and Privacy Requirements']).toHaveLength(1);
       expect(res.categories['Precedence and Criticality of Requirements']).toHaveLength(1);
       expect(res.categories['Other Requirements']).toHaveLength(1);
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Could not fetch work item 13'));
+      expect(logger.warn).toHaveBeenCalledWith('Could not fetch work item 13:', expect.objectContaining({ message: 'boom' }));
     });
 
     it('should extract IDs from workItemRelations for OneHop queries', async () => {

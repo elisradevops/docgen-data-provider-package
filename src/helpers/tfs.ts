@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import logger from '../utils/logger';
+import { AdoRequestContext, annotateAdoError, buildAdoRequestContext } from './requestContext';
 
 // Environment detection
 const isNode = typeof window === 'undefined' && typeof process !== 'undefined' && process.versions?.node;
@@ -83,7 +84,7 @@ export class TFSServices {
       return res;
     } catch (e) {
       logger.error(`error download zip file , url : ${url}`);
-      throw new Error(String(e));
+      throw annotateAdoError(new Error(String(e)), buildAdoRequestContext(e, { method: 'GET', url }));
     }
   }
 
@@ -178,7 +179,7 @@ export class TFSServices {
       const result = await this.axiosInstance.request(config);
       return result.data;
     } catch (e: any) {
-      this.logDetailedError(e, url);
+      this.reportFailure(e, { method: 'GET', url });
       throw e;
     }
   }
@@ -203,7 +204,7 @@ export class TFSServices {
       const result = await this.axiosInstance.request(config);
       return result;
     } catch (e: any) {
-      this.logDetailedError(e, url);
+      this.reportFailure(e, { method: requestMethod, url, data });
       throw e;
     }
   }
@@ -246,10 +247,9 @@ export class TFSServices {
           continue;
         }
 
-        // Log error if needed
-        if (printError) {
-          this.logDetailedError(e, url, attempts);
-        }
+        // Always annotate (so any caller that logs this error — however it words its own
+        // message — carries the request), log the dedicated record only when asked to.
+        this.reportFailure(e, { method: config.method, url, data: config.data }, attempts, printError);
 
         throw e;
       }
@@ -284,28 +284,30 @@ export class TFSServices {
   }
 
   /**
+   * Describes the failed request once, attaches it to the error, and (optionally) emits the one
+   * dedicated "ADO request failed" record.
+   */
+  private static reportFailure(
+    error: any,
+    request: { method?: string; url: string; data?: unknown },
+    attempt?: number,
+    print: boolean = true
+  ): void {
+    const context = buildAdoRequestContext(error, request, attempt);
+    annotateAdoError(error, context);
+    if (print) {
+      this.logDetailedError(error, context);
+    }
+  }
+
+  /**
    * Log detailed error information
    */
-  private static logDetailedError(error: any, url: string, attempt?: number): void {
-    let responseExcerpt: string | undefined;
-    if (error.response?.data) {
-      if (typeof error.response.data === 'string') {
-        responseExcerpt = error.response.data.substring(0, 200);
-      } else {
-        try {
-          responseExcerpt = error.response.data.message || JSON.stringify(error.response.data).substring(0, 200);
-        } catch {
-          responseExcerpt = '[unserializable response data]';
-        }
-      }
-    }
+  private static logDetailedError(error: any, context: AdoRequestContext): void {
     logger.error('ADO request failed', {
-      message: error.message,
-      stack: error.stack,
-      url,
-      status: error.response?.status,
-      responseExcerpt,
-      attempt,
+      message: error?.message,
+      stack: error?.stack,
+      adoRequest: context,
     });
   }
 

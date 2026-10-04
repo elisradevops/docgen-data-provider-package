@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as Transport from 'winston-transport';
 import { runContextStore } from './runContext';
-import { getLogSink, DiagnosticEvent } from './logSink';
+import { getLogSink, DiagnosticEvent, CONTEXT_LIMITS } from './logSink';
 let logger: winston.Logger;
 
 // Merges the ambient runId (set by content-control's request middleware, once Phase 3 lands
@@ -44,7 +44,7 @@ function safeRead(obj: Record<string, unknown>, key: string): { ok: true; value:
     return { ok: false };
   }
 }
-function redactValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
   if (depth > 6 || value === null || typeof value !== 'object') return value;
   if (seen.has(value as object)) return '[Circular]';
   seen.add(value as object);
@@ -116,7 +116,26 @@ function readOwnVersion(): string {
 const safeMessageString = (value: unknown): string =>
   typeof value === 'symbol' ? value.toString() : String(value);
 
-const textFormat = winston.format.printf((info) => `${info.timestamp} - ${info.level}: ${safeMessageString(info.message)}`);
+// A failed ADO request's description (helpers/requestContext.ts), attached to the thrown error
+// and merged onto the record by winston. In text mode — the default, which prints only the
+// message — this is the only way the URL reaches stdout for a record whose own message doesn't
+// carry it. Never throws: this runs inside the formatter, which has no try/catch around it.
+const requestSuffix = (ctx: unknown): string => {
+  try {
+    if (!ctx || typeof ctx !== 'object') return '';
+    const c = ctx as Record<string, unknown>;
+    if (typeof c.url !== 'string') return '';
+    const method = typeof c.method === 'string' ? `${c.method} ` : '';
+    const status = typeof c.status === 'number' ? ` -> ${c.status}` : '';
+    return ` [${method}${c.url}${status}]`;
+  } catch {
+    return '';
+  }
+};
+
+const textFormat = winston.format.printf(
+  (info) => `${info.timestamp} - ${info.level}: ${safeMessageString(info.message)}${requestSuffix(info.adoRequest)}`
+);
 
 // Bounded so one oversized message/stack can't produce an unbounded LogEvent document.
 const MAX_MESSAGE_LEN = 2000;
@@ -124,6 +143,26 @@ const MAX_STACK_LEN = 4000;
 function clamp(value: unknown, max: number): string | undefined {
   if (typeof value !== 'string') return undefined;
   return value.length > max ? value.slice(0, max) : value;
+}
+
+// Re-validates the request description at the transport instead of trusting its shape — it
+// arrives via an Error's own properties, which anything upstream could have set. Allowlisted
+// keys only, each type-checked and bounded.
+function pickContext(raw: unknown): DiagnosticEvent['context'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = raw as Record<string, unknown>;
+  const context: NonNullable<DiagnosticEvent['context']> = {};
+  const method = clamp(c.method, CONTEXT_LIMITS.method);
+  const url = clamp(c.url, CONTEXT_LIMITS.url);
+  const requestBody = clamp(c.requestBody, CONTEXT_LIMITS.requestBody);
+  const responseExcerpt = clamp(c.responseExcerpt, CONTEXT_LIMITS.responseExcerpt);
+  if (method) context.method = method;
+  if (url) context.url = url;
+  if (requestBody) context.requestBody = requestBody;
+  if (responseExcerpt) context.responseExcerpt = responseExcerpt;
+  if (typeof c.status === 'number' && Number.isFinite(c.status)) context.status = c.status;
+  if (typeof c.attempt === 'number' && Number.isFinite(c.attempt)) context.attempt = c.attempt;
+  return Object.keys(context).length ? context : undefined;
 }
 
 // Ships warn/error records to whatever LogSink the host process (docgen-content-control's
@@ -182,6 +221,7 @@ export class DiagnosticsTransport extends Transport {
                 stack: clamp(info.stack, MAX_STACK_LEN),
               }
             : undefined,
+          context: pickContext(info.adoRequest),
           retainPending: !isWarnOrError && captureMode === 'retain-on-failure' ? true : undefined,
         };
         getLogSink()?.push(event);
