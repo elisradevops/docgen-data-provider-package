@@ -9,6 +9,11 @@ import {
   LinkedRelation,
   value,
 } from '../models/tfs-data';
+// TFSServices throws this when the server says the item does not exist (or cannot be read with this
+// token — it cannot tell the two apart). It is a definitive answer, not a transient failure.
+const isFileNotFound = (err: any): boolean =>
+  typeof err?.message === 'string' && err.message.startsWith('File not found or insufficient permissions');
+
 export default class GitDataProvider {
   orgUrl: string = '';
   token: string = '';
@@ -98,6 +103,9 @@ export default class GitDataProvider {
     fileName: string,
     version: GitVersionDescriptor,
     gitRepoUrl: string = '',
+    // True when the caller is only probing for a file that may legitimately not exist (a repo
+    // without .gitmodules has no submodules): its absence is an expected outcome, not a warning.
+    optional: boolean = false,
   ) {
     // get a single tag
     let versionFix = '';
@@ -125,6 +133,10 @@ export default class GitDataProvider {
       }
       return undefined;
     } catch (err: any) {
+      if (optional && isFileNotFound(err)) {
+        logger.debug(`Optional file ${fileName} not found in ${repoId} at ${version?.version}; treating it as absent`);
+        return undefined;
+      }
       logger.warn(`File ${fileName} could not be read:`, describeError(err));
       return undefined;
     }
@@ -1014,7 +1026,7 @@ export default class GitDataProvider {
   ) {
     let submodules: any[] = [];
     try {
-      const gitModulesFile = await this.GetFileFromGitRepo(projectName, repoId, '.gitmodules', targetVersion);
+      const gitModulesFile = await this.GetFileFromGitRepo(projectName, repoId, '.gitmodules', targetVersion, '', true);
       let gitRepoUrl = `${this.orgUrl}${projectName}/_apis/git/repositories/${repoId}`;
       if (!gitModulesFile) {
         // No submodules found

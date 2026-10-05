@@ -3268,6 +3268,11 @@ export default class TicketsDataProvider {
     };
   }
 
+  /** The saved query's path (or name) for log messages; never an id. */
+  private describeQueryNode(queryNode: any): string {
+    return String(queryNode?.path || queryNode?.name || '').trim();
+  }
+
   private getProjectFromQueryNode(queryNode: any): string | null {
     const href =
       queryNode?._links?.wiql?.href ||
@@ -3416,7 +3421,7 @@ export default class TicketsDataProvider {
     if (!project) return false;
 
     for (const id of ids) {
-      const wiType = await this.getWorkItemTypeById(project, id, workItemTypeCache);
+      const wiType = await this.getWorkItemTypeById(project, id, workItemTypeCache, this.describeQueryNode(queryNode));
       if (!wiType) return false;
       if (!allowed.has(String(wiType).toLowerCase())) return false;
     }
@@ -3460,7 +3465,7 @@ export default class TicketsDataProvider {
     if (!project) return false;
 
     for (const id of ids) {
-      const wiType = await this.getWorkItemTypeById(project, id, workItemTypeCache);
+      const wiType = await this.getWorkItemTypeById(project, id, workItemTypeCache, this.describeQueryNode(queryNode));
       if (!wiType) return false;
       if (!allowed.has(String(wiType).toLowerCase())) return false;
     }
@@ -3481,6 +3486,7 @@ export default class TicketsDataProvider {
     project: string,
     id: string,
     workItemTypeCache: Map<string, Promise<string | null>>,
+    queryLabel?: string,
   ): Promise<string | null> {
     const cacheKey = `${project}:${id}`;
     // The in-flight promise is cached, not the settled value: the query tree is filtered with many
@@ -3500,8 +3506,11 @@ export default class TicketsDataProvider {
         return wiType ? String(wiType) : null;
       } catch (e: any) {
         if (e?.response?.status === 404) {
+          // Names the saved query (what someone can go and fix), not the project: `project` here is
+          // the GUID parsed from the query's link, and the record's own Project column already
+          // carries the project name.
           logger.warn(
-            `Work item ${id} referenced by a saved query in project ${project} was not found; treating it as no match`
+            `Work item ${id} referenced by saved query "${queryLabel || 'unknown'}" was not found; treating it as no match`
           );
         } else {
           logCaughtError(`Could not look up the type of work item ${id}:`, e);

@@ -22,6 +22,50 @@ function makeLogger() {
   return { logger, events };
 }
 
+describe('step and content control reach log events', () => {
+  test('stamped from the ambient run, and an explicit value in the call wins', () => {
+    const { logger, events } = makeLogger();
+    runContextStore.run(
+      { runId: 'r1', step: 'generate-content-control', contentControlType: 'release-range', contentControlTitle: 'release-range-content-control' },
+      () => {
+        logger.error('from the ambient context');
+        logger.error('explicit title', { contentControlTitle: 'explicit' });
+      }
+    );
+    expect(events[0]).toMatchObject({
+      step: 'generate-content-control',
+      contentControlType: 'release-range',
+      contentControlTitle: 'release-range-content-control',
+    });
+    expect(events[1]).toMatchObject({ step: 'generate-content-control', contentControlTitle: 'explicit' });
+  });
+
+  test('concurrent requests each keep their own step and content control', async () => {
+    const { logger, events } = makeLogger();
+    await Promise.all(
+      ['A', 'B', 'C'].map((id) =>
+        runContextStore.run({ runId: `run-${id}`, step: 'generate-content-control', contentControlTitle: `cc-${id}` }, async () => {
+          await pause(Math.random() * 5);
+          logger.error(`msg-${id}`);
+        })
+      )
+    );
+    events.forEach((e) => {
+      const id = e.message.split('-')[1];
+      expect(e).toMatchObject({ runId: `run-${id}`, contentControlTitle: `cc-${id}` });
+    });
+  });
+
+  test('nothing is added outside a run, or when the run has none', () => {
+    const { logger, events } = makeLogger();
+    logger.error('outside');
+    runContextStore.run({ runId: 'r2' }, () => logger.error('inside, no step'));
+    expect(events[0].step).toBeUndefined();
+    expect(events[1].step).toBeUndefined();
+    expect(events[1].contentControlTitle).toBeUndefined();
+  });
+});
+
 describe('run context reaches log events from the places the data provider logs from', () => {
   test('from tasks queued behind a per-instance p-limit, and from a retry timer', async () => {
     const { logger, events } = makeLogger();

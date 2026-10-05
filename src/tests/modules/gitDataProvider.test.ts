@@ -336,6 +336,42 @@ describe('GitDataProvider - GetFileFromGitRepo', () => {
     );
   });
 
+  describe('optional file probes (a repo without .gitmodules has no submodules)', () => {
+    const notFound = () =>
+      new Error('File not found or insufficient permissions: https://dev.azure.com/orgname/p/_apis/git/repositories/r/items?path=.gitmodules');
+
+    it('an absent optional file is a single quiet debug line: no warning, no stack', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(notFound());
+      const result = await gitDataProvider.GetFileFromGitRepo(mockProjectName, mockRepoId, '.gitmodules', mockVersion, '', true);
+      expect(result).toBeUndefined();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(logger.debug).toHaveBeenCalledTimes(1);
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('.gitmodules'));
+    });
+
+    it('the same absence is still a warning for a file the caller needs (not optional)', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(notFound());
+      await gitDataProvider.GetFileFromGitRepo(mockProjectName, mockRepoId, 'needed.txt', mockVersion);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('a different failure on an optional file (not "not found") is still a warning', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(
+        Object.assign(new Error('Request failed with status code 500'), { response: { status: 500 } })
+      );
+      await gitDataProvider.GetFileFromGitRepo(mockProjectName, mockRepoId, '.gitmodules', mockVersion, '', true);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.debug).not.toHaveBeenCalled();
+    });
+
+    it('getSubmodulesData probes .gitmodules as optional, so a repo without submodules is silent', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(notFound());
+      const result = await gitDataProvider.getSubmodulesData(mockProjectName, mockRepoId, mockVersion as any, mockVersion as any, []);
+      expect(result).toEqual([]);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+  });
+
   it('should return undefined when file does not exist', async () => {
     // Arrange
     (TFSServices.getItemContent as jest.Mock).mockResolvedValueOnce({});
