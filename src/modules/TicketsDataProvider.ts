@@ -2997,11 +2997,11 @@ export default class TicketsDataProvider {
     excludedFolderNames: string[] = [],
     includeFlatQueries: boolean = false,
     includeOneHopQueries: boolean = true,
-    workItemTypeCache?: Map<string, string | null>,
+    workItemTypeCache?: Map<string, Promise<string | null>>,
   ): Promise<any> {
     try {
       // Per-invocation cache for ID->WorkItemType lookups; avoids global state and is safe for concurrency.
-      const typeCache = workItemTypeCache ?? new Map<string, string | null>();
+      const typeCache = workItemTypeCache ?? new Map<string, Promise<string | null>>();
       const shouldSkipFolder =
         rootQuery?.isFolder &&
         excludedFolderNames.some(
@@ -3219,7 +3219,7 @@ export default class TicketsDataProvider {
     wiql: string,
     source: string[],
     target: string[],
-    workItemTypeCache: Map<string, string | null>,
+    workItemTypeCache: Map<string, Promise<string | null>>,
   ): Promise<boolean> {
     /**
      * Matches source+target constraints for link WIQL.
@@ -3249,7 +3249,7 @@ export default class TicketsDataProvider {
     queryNode: any,
     wiql: string,
     allowedTypes: string[],
-    workItemTypeCache: Map<string, string | null>,
+    workItemTypeCache: Map<string, Promise<string | null>>,
   ): Promise<boolean> {
     return this.isFlatQueryAllowedByTypeOrId(queryNode, wiql, allowedTypes, workItemTypeCache);
   }
@@ -3389,7 +3389,7 @@ export default class TicketsDataProvider {
     wiql: string,
     context: 'Source' | 'Target',
     allowedTypes: string[],
-    workItemTypeCache: Map<string, string | null>,
+    workItemTypeCache: Map<string, Promise<string | null>>,
   ): Promise<boolean> {
     const wiqlStr = String(wiql || '');
 
@@ -3437,7 +3437,7 @@ export default class TicketsDataProvider {
     queryNode: any,
     wiql: string,
     allowedTypes: string[],
-    workItemTypeCache: Map<string, string | null>,
+    workItemTypeCache: Map<string, Promise<string | null>>,
   ): Promise<boolean> {
     const wiqlStr = String(wiql || '');
 
@@ -3480,24 +3480,37 @@ export default class TicketsDataProvider {
   private async getWorkItemTypeById(
     project: string,
     id: string,
-    workItemTypeCache: Map<string, string | null>,
+    workItemTypeCache: Map<string, Promise<string | null>>,
   ): Promise<string | null> {
     const cacheKey = `${project}:${id}`;
-    if (workItemTypeCache.has(cacheKey)) {
-      return workItemTypeCache.get(cacheKey) ?? null;
-    }
+    // The in-flight promise is cached, not the settled value: the query tree is filtered with many
+    // queries in parallel, and several of them often reference the same work item. Caching only
+    // after the lookup finished let every one of them issue its own request (nine identical 404s
+    // for one deleted work item).
+    const cached = workItemTypeCache.get(cacheKey);
+    if (cached) return cached;
 
-    try {
-      const url = `${this.orgUrl}${project}/_apis/wit/workitems/${id}?fields=System.WorkItemType`;
-      const wi = await this.limit(() => TFSServices.getItemContent(url, this.token));
-      const wiType = wi?.fields?.['System.WorkItemType'];
-      const normalized = wiType ? String(wiType) : null;
-      workItemTypeCache.set(cacheKey, normalized);
-      return normalized;
-    } catch (e) {
-      workItemTypeCache.set(cacheKey, null);
-      return null;
-    }
+    const lookup = (async (): Promise<string | null> => {
+      try {
+        const url = `${this.orgUrl}${project}/_apis/wit/workitems/${id}?fields=System.WorkItemType`;
+        // printError off: a missing work item is an expected outcome here (a saved query can
+        // reference one that was deleted) and is handled below, not a failure to report.
+        const wi = await this.limit(() => TFSServices.getItemContent(url, this.token, 'get', {}, {}, false));
+        const wiType = wi?.fields?.['System.WorkItemType'];
+        return wiType ? String(wiType) : null;
+      } catch (e: any) {
+        if (e?.response?.status === 404) {
+          logger.warn(
+            `Work item ${id} referenced by a saved query in project ${project} was not found; treating it as no match`
+          );
+        } else {
+          logCaughtError(`Could not look up the type of work item ${id}:`, e);
+        }
+        return null;
+      }
+    })();
+    workItemTypeCache.set(cacheKey, lookup);
+    return lookup;
   }
 
   /**
