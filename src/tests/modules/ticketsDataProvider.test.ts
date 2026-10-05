@@ -1057,6 +1057,27 @@ describe('TicketsDataProvider', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('136373'));
     });
 
+    it('names the saved query in the warning and never the project id (which is a GUID here)', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(notFound());
+      const guid = '26ca7842-0f36-4518-9860-1fcde8578d3c';
+      await (ticketsDataProvider as any).getWorkItemTypeById(guid, '136373', new Map(), 'Shared Queries/SVD/Requirements');
+      const message = (logger.warn as jest.Mock).mock.calls[0][0] as string;
+      expect(message).toContain('Shared Queries/SVD/Requirements');
+      expect(message).toContain('136373');
+      expect(message).not.toContain(guid);
+    });
+
+    it('the callers label the lookup with the query node path', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(notFound());
+      const node = {
+        path: 'Shared Queries/Trace/Stale',
+        _links: { wiql: { href: 'https://dev.azure.com/org/26ca7842-0f36-4518-9860-1fcde8578d3c/_apis/wit/wiql/abc' } },
+      };
+      const wiql = 'SELECT [System.Id] FROM WorkItems WHERE [System.Id] = 136373';
+      await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId(node, wiql, ['requirement'], new Map());
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Shared Queries/Trace/Stale'));
+    });
+
     it('asks TFSServices not to print its own error for the lookup', async () => {
       (TFSServices.getItemContent as jest.Mock).mockResolvedValue({ fields: {} });
       await lookup(new Map());

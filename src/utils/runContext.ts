@@ -12,6 +12,12 @@ export interface RunContext {
   // Phase 7c — same read-only treatment; set by content-control's attachRunContext via
   // x-docgen-project, visible here through the shared in-process ALS store.
   project?: string;
+  // Which stage of the generation this request is, and which content control it serves — set by
+  // content-control's request handlers on the per-request store, so every record the data provider
+  // emits while serving it can be attributed to them. Same read-only treatment as project above.
+  step?: string;
+  contentControlType?: string;
+  contentControlTitle?: string;
 }
 
 // Symbol.for uses the global symbol registry, so every duplicated copy of this file across
