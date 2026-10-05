@@ -7,6 +7,7 @@ import logger from '../utils/logger';
 import { logCaughtError } from '../helpers/requestContext';
 import Utils from '../utils/testStepParserHelper';
 import DataProviderUtils from '../utils/DataProviderUtils';
+import { fetchSettledBounded } from '../utils/boundedFetch';
 const pLimit = require('p-limit');
 
 export default class TestDataProvider {
@@ -60,6 +61,32 @@ export default class TestDataProvider {
       logCaughtError(`Error fetching ${url}:`, error);
       throw error;
     }
+  }
+
+  // Fetches independent GETs with a small bounded pool (see fetchSettledBounded) so the loop that
+  // then reads the same URLs sequentially keeps its ordering and error semantics but pays no further
+  // round trip. Not this.limit: callers already run inside it, and nesting would deadlock once every
+  // slot is held by an outer task. A failed URL is remembered in `failures` so the loop rethrows it
+  // instead of fetching and logging it a second time.
+  private async prefetchUrls(
+    urls: string[],
+    prefetched: Map<string, any>,
+    failures: Map<string, any>
+  ): Promise<void> {
+    const outcomes = await fetchSettledBounded(
+      urls.filter((url) => !prefetched.has(url)),
+      (url) => this.fetchWithCache(url)
+    );
+    outcomes.forEach((outcome, url) => {
+      if (outcome.ok) prefetched.set(url, outcome.value);
+      else failures.set(url, outcome.error);
+    });
+  }
+
+  private async fetchPrefetched(url: string, prefetched: Map<string, any>, failures: Map<string, any>): Promise<any> {
+    if (prefetched.has(url)) return prefetched.get(url);
+    if (failures.has(url)) throw failures.get(url);
+    return this.fetchWithCache(url);
   }
 
   private getSuiteDescription(suite: any): string {
@@ -472,15 +499,44 @@ export default class TestDataProvider {
         return [];
       }
 
+      const buildCaseUrl = (index: number): string => {
+        const stepDetail = stepResultDetailsMap?.get(testCases.value[index].testCase.id.toString());
+        return !stepDetail?.testCaseRevision
+          ? testCases.value[index].testCase.url + '?$expand=All'
+          : `${testCases.value[index].testCase.url}/revisions/${stepDetail.testCaseRevision}?$expand=All`;
+      };
+      // The test cases, then their related work items, are independent GETs: fetch each wave with
+      // bounded concurrency up front. The loop below is unchanged and reads them from the cache.
+      const prefetched = new Map<string, any>();
+      const prefetchFailures = new Map<string, any>();
+      const caseUrls: string[] = [];
+      for (let i = 0; i < testCases.count; i++) {
+        try {
+          caseUrls.push(buildCaseUrl(i));
+        } catch {
+          // Malformed entry: the loop below reports it as it always did.
+        }
+      }
+      await this.prefetchUrls(caseUrls, prefetched, prefetchFailures);
+      const relationUrls: string[] = [];
+      for (const caseUrl of caseUrls) {
+        const relations = prefetched.get(caseUrl)?.relations;
+        if (!Array.isArray(relations)) continue;
+        for (const relation of relations) {
+          if (typeof relation?.url === 'string' && relation.url.includes('/workItems/')) {
+            relationUrls.push(relation.url);
+          }
+        }
+      }
+      await this.prefetchUrls(relationUrls, prefetched, prefetchFailures);
+
       for (let i = 0; i < testCases.count; i++) {
         try {
           let stepDetailObject =
             stepResultDetailsMap?.get(testCases.value[i].testCase.id.toString()) || undefined;
 
-          let newurl = !stepDetailObject?.testCaseRevision
-            ? testCases.value[i].testCase.url + '?$expand=All'
-            : `${testCases.value[i].testCase.url}/revisions/${stepDetailObject.testCaseRevision}?$expand=All`;
-          let test: any = await this.fetchWithCache(newurl);
+          let newurl = buildCaseUrl(i);
+          let test: any = await this.fetchPrefetched(newurl, prefetched, prefetchFailures);
           let testCase: TestCase = new TestCase();
 
           testCase.title = test.fields['System.Title'];
@@ -508,7 +564,7 @@ export default class TestDataProvider {
               // Only proceed if the URL contains 'workItems'
               if (relation.url.includes('/workItems/')) {
                 try {
-                  let relatedItemContent: any = await this.fetchWithCache(relation.url);
+                  let relatedItemContent: any = await this.fetchPrefetched(relation.url, prefetched, prefetchFailures);
                   // Check if the WorkItemType is "Requirement" before adding to relations
                   if (relatedItemContent.fields['System.WorkItemType'] === 'Requirement') {
                     const newRequirementRelation = this.createNewRequirement(

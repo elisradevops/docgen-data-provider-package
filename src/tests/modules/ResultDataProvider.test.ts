@@ -894,6 +894,86 @@ describe('ResultDataProvider', () => {
     });
   });
 
+  describe('fetchWorkItemsByIds fetch pattern', () => {
+    afterEach(() => (TFSServices.getItemContent as jest.Mock).mockReset());
+
+    const idsOf = (url: string) => (/ids=([\d,]+)/.exec(url)?.[1] || '').split(',').map(Number);
+
+    it('fetches 200-id chunks with bounded concurrency and returns items in chunk order', async () => {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        const ids = idsOf(url);
+        // Earlier chunks answer slower, so completion order differs from chunk order.
+        await new Promise((resolve) => setTimeout(resolve, ids[0] === 1 ? 30 : 5));
+        inFlight--;
+        return { value: ids.map((id) => ({ id })) };
+      });
+
+      const workItemIds = Array.from({ length: 900 }, (_, i) => i + 1);
+      const items = await (resultDataProvider as any).fetchWorkItemsByIds('p', workItemIds, false);
+
+      expect(TFSServices.getItemContent).toHaveBeenCalledTimes(5);
+      expect(items.map((item: any) => item.id)).toEqual(workItemIds);
+      expect(maxInFlight).toBeGreaterThan(1);
+      expect(maxInFlight).toBeLessThanOrEqual(4);
+    });
+
+    it('rejects when a chunk fails, as the sequential loop did', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        const ids = idsOf(url);
+        if (ids[0] === 201) throw new Error('chunk 2 failed');
+        return { value: ids.map((id) => ({ id })) };
+      });
+
+      await expect(
+        (resultDataProvider as any).fetchWorkItemsByIds(
+          'p',
+          Array.from({ length: 450 }, (_, i) => i + 1),
+          false
+        )
+      ).rejects.toThrow('chunk 2 failed');
+    });
+  });
+
+  describe('fetchLinkedWi fetch pattern', () => {
+    afterEach(() => (TFSServices.getItemContent as jest.Mock).mockReset());
+
+    const idsOf = (url: string) => (/ids=([\d,]+)/.exec(url)?.[1] || '').split(',').map(Number);
+
+    it('maps linked bugs/CRs per test case in order, and a failing batch stops at that work item', async () => {
+      const testItems = [1, 2, 3].map((id) => ({ testId: id, testName: `T${id}`, testCaseUrl: `u${id}` }));
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        const ids = idsOf(url);
+        if (url.includes('$expand=relations')) {
+          return {
+            value: ids.map((id) => ({
+              id,
+              relations: [{ url: `https://x/_apis/wit/workItems/${id * 10}` }],
+            })),
+          };
+        }
+        if (ids[0] === 20) throw new Error('related batch failed');
+        return {
+          value: ids.map((id) => ({
+            id,
+            fields: { 'System.WorkItemType': 'Bug', 'System.State': 'Active', 'System.Title': `B${id}` },
+          })),
+        };
+      });
+
+      const result = await (resultDataProvider as any).fetchLinkedWi('p', testItems);
+
+      expect(result.map((r: any) => r.testId)).toEqual([1, 2, 3]);
+      expect(result[0].linkItems.map((l: any) => l.pcrId)).toEqual([10]);
+      // Work item 2's related batch failed: it and the later ones keep an empty list, as before.
+      expect(result[1].linkItems).toEqual([]);
+      expect(result[2].linkItems).toEqual([]);
+    });
+  });
+
   describe('fetchLinkedWi', () => {
     it('should fetch linked work items and filter only open Bugs/Change Requests', async () => {
       const testItems = [
@@ -5327,6 +5407,85 @@ describe('ResultDataProvider', () => {
         'Could not append related work item to test case 999:',
         expect.objectContaining({ message: 'network' })
       );
+    });
+  });
+
+  describe('appendLinkedRelations fetch pattern', () => {
+    afterEach(() => (TFSServices.getItemContent as jest.Mock).mockReset());
+
+    const relations = Array.from({ length: 10 }, (_, i) => ({
+      rel: 'System.LinkTypes.Related',
+      url: `https://example.com/wi/${i + 1}`,
+    }));
+    const item = (id: number) => ({
+      id,
+      fields: { 'System.WorkItemType': 'Bug', 'System.Title': `Bug ${id}`, 'System.State': 'Active' },
+      _links: { html: { href: `http://example.com/${id}` } },
+    });
+
+    it('keeps the original relation order and fetches with bounded concurrency', async () => {
+      let inFlight = 0;
+      let maxInFlight = 0;
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // Later relations answer faster, so completion order differs from relation order.
+        const id = Number(url.split('/').pop());
+        await new Promise((resolve) => setTimeout(resolve, 20 - id));
+        inFlight--;
+        return item(id);
+      });
+      const relatedBugs: any[] = [];
+
+      await (resultDataProvider as any).appendLinkedRelations(
+        relations,
+        [],
+        relatedBugs,
+        [],
+        { id: 1 },
+        new Set(['associatedBug'])
+      );
+
+      expect(relatedBugs.map((bug) => bug.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(TFSServices.getItemContent).toHaveBeenCalledTimes(10);
+      expect(maxInFlight).toBeGreaterThan(1);
+      expect(maxInFlight).toBeLessThanOrEqual(4);
+    });
+
+    it('skips a failing relation, logs it once, and keeps the others', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        const id = Number(url.split('/').pop());
+        if (id === 4) throw new Error('boom');
+        return item(id);
+      });
+      const relatedBugs: any[] = [];
+
+      await (resultDataProvider as any).appendLinkedRelations(
+        relations,
+        [],
+        relatedBugs,
+        [],
+        { id: 77 },
+        new Set(['associatedBug'])
+      );
+
+      expect(relatedBugs.map((bug) => bug.id)).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10]);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fetch relations that are not link relations', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => item(1));
+
+      await (resultDataProvider as any).appendLinkedRelations(
+        [{ rel: 'AttachedFile', url: 'https://example.com/attachment/1' }],
+        [],
+        [],
+        [],
+        { id: 1 },
+        new Set(['associatedBug'])
+      );
+
+      expect(TFSServices.getItemContent).not.toHaveBeenCalled();
     });
   });
 
