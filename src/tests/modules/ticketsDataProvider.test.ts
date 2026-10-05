@@ -1029,6 +1029,59 @@ describe('TicketsDataProvider', () => {
     });
   });
 
+  describe('getWorkItemTypeById (query-picker type lookups)', () => {
+    const lookup = (cache: Map<string, Promise<string | null>>, id = '136373') =>
+      (ticketsDataProvider as any).getWorkItemTypeById(mockProject, id, cache);
+    const notFound = () => Object.assign(new Error('Request failed with status code 404'), { response: { status: 404 } });
+
+    it('shares one request between parallel lookups of the same work item', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue({ fields: { 'System.WorkItemType': 'Requirement' } });
+      const cache = new Map<string, Promise<string | null>>();
+
+      const results = await Promise.all(Array.from({ length: 9 }, () => lookup(cache)));
+
+      expect(results).toEqual(Array(9).fill('Requirement'));
+      expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
+    });
+
+    it('a deleted work item (404) is a quiet "no match": no error record, one warning, one request', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(notFound());
+      const cache = new Map<string, Promise<string | null>>();
+
+      const results = await Promise.all(Array.from({ length: 9 }, () => lookup(cache)));
+
+      expect(results).toEqual(Array(9).fill(null));
+      expect(TFSServices.getItemContent).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('136373'));
+    });
+
+    it('asks TFSServices not to print its own error for the lookup', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue({ fields: {} });
+      await lookup(new Map());
+      const args = (TFSServices.getItemContent as jest.Mock).mock.calls[0];
+      expect(args[5]).toBe(false);
+    });
+
+    it('any other failure is still reported as an error, and still resolves to no match', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 500'), { response: { status: 500 } })
+      );
+      const result = await lookup(new Map(), '42');
+      expect(result).toBeNull();
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('different work items are looked up separately', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue({ fields: { 'System.WorkItemType': 'Bug' } });
+      const cache = new Map<string, Promise<string | null>>();
+      await Promise.all([lookup(cache, '1'), lookup(cache, '2'), lookup(cache, '1')]);
+      expect(TFSServices.getItemContent).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('isFlatQueryAllowedByTypeOrId', () => {
     it('should accept when allowedTypes is empty and WIQL references [System.WorkItemType]', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] = 'Bug'";
