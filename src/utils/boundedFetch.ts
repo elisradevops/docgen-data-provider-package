@@ -1,5 +1,18 @@
 export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
+const DEFAULT_FETCH_CONCURRENCY = 4;
+const MAX_FETCH_CONCURRENCY = 8;
+
+/**
+ * How many independent Azure DevOps reads one prefetch runs at once: DOCGEN_FETCH_CONCURRENCY, default 4,
+ * between 1 and 8. Read at call time so an operator can lower it (an Azure DevOps that throttles) without a
+ * release. It applies per prefetch; several suites each run their own, so the total in flight is a multiple.
+ */
+export function fetchConcurrency(raw: string | undefined = process.env.DOCGEN_FETCH_CONCURRENCY): number {
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, MAX_FETCH_CONCURRENCY) : DEFAULT_FETCH_CONCURRENCY;
+}
+
 /**
  * Runs `fetcher` for each unique key with a small bounded pool and returns every outcome by key.
  * Callers that then walk their data in the original order read from the map, so ordering and
@@ -9,7 +22,7 @@ export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
 export async function fetchSettledBounded<T>(
   keys: string[],
   fetcher: (key: string) => Promise<T>,
-  concurrency = 4
+  concurrency = fetchConcurrency()
 ): Promise<Map<string, Settled<T>>> {
   const outcomes = new Map<string, Settled<T>>();
   const pending = Array.from(new Set(keys));

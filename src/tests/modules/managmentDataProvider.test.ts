@@ -1,5 +1,5 @@
 import { TFSServices } from '../../helpers/tfs';
-import MangementDataProvider from '../../modules/MangementDataProvider';
+import MangementDataProvider, { accessOutcomeOfError } from '../../modules/MangementDataProvider';
 import logger from '../../utils/logger';
 
 jest.mock('../../helpers/tfs');
@@ -464,6 +464,113 @@ describe('MangementDataProvider - Additional Tests', () => {
 
       // Assert
       expect(result).toEqual(unusualProfileData);
+    });
+  });
+
+  describe('ProbeProjectAccess', () => {
+    const http = (status: number) => Object.assign(new Error(`status ${status}`), { response: { status } });
+    // Answers per area by URL; anything not overridden succeeds with 3 items.
+    const answers = (overrides: Record<string, () => Promise<any> | any> = {}) => {
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        for (const [needle, answer] of Object.entries(overrides)) {
+          if (url.includes(needle)) return answer();
+        }
+        if (url.includes('/_apis/projects')) return { value: [{ id: 'p-1', name: 'MEWP' }, { id: 'p-2', name: 'Other' }] };
+        if (url.includes('/wit/wiql')) return { workItems: [{ id: 1 }] };
+        return { count: 3, value: [{}, {}, {}] };
+      });
+    };
+
+    it('reports the count of what the credential can see in every area', async () => {
+      answers();
+
+      const access = await managementDataProvider.ProbeProjectAccess('MEWP');
+
+      expect(access).toEqual({
+        project: { status: 'ok' },
+        repositories: { status: 'ok', count: 3 },
+        workItems: { status: 'ok', count: 1 },
+        builds: { status: 'ok', count: 3 },
+        releases: { status: 'ok', count: 3 },
+        testPlans: { status: 'ok', count: 3 },
+      });
+    });
+
+    it('is read-only, quiet about errors, and asks for the release definitions on the vsrm host', async () => {
+      answers();
+
+      await managementDataProvider.ProbeProjectAccess('MEWP');
+
+      const calls = (TFSServices.getItemContent as jest.Mock).mock.calls;
+      expect(calls.every((call) => call[5] === false)).toBe(true); // printError off
+      expect(calls.map((c) => c[0])).toContain(`https://vsrm.dev.azure.com/organization/MEWP/_apis/release/definitions?$top=200`);
+      expect(calls.filter((c) => c[2] === 'post').map((c) => c[0])).toEqual([`${mockOrgUrl}MEWP/_apis/wit/wiql?$top=1`]);
+    });
+
+    it('marks a 401 or 403 as denied and keeps the other areas', async () => {
+      answers({ '/release/definitions': () => { throw http(403); }, '/build/definitions': () => { throw http(401); } });
+
+      const access = await managementDataProvider.ProbeProjectAccess('MEWP');
+
+      expect(access.releases).toEqual({ status: 'denied', httpStatus: 403 });
+      expect(access.builds).toEqual({ status: 'denied', httpStatus: 401 });
+      expect(access.repositories).toEqual({ status: 'ok', count: 3 });
+    });
+
+    it('does not call a 404 a denial (an older server without the API answers it too)', async () => {
+      answers({ '/test/plans': () => { throw http(404); } });
+
+      expect((await managementDataProvider.ProbeProjectAccess('MEWP')).testPlans).toEqual({ status: 'notFound', httpStatus: 404 });
+    });
+
+    it('records a server error as an error, not as a permission problem', async () => {
+      answers({ '/git/repositories': () => { throw http(500); } });
+
+      expect((await managementDataProvider.ProbeProjectAccess('MEWP')).repositories).toEqual({ status: 'error', httpStatus: 500 });
+    });
+
+    it('a 200 with an empty list is "ok with 0", which is how a reader without access often looks', async () => {
+      answers({ '/git/repositories': () => ({ count: 0, value: [] }), '/wit/wiql': () => ({ workItems: [] }) });
+
+      const access = await managementDataProvider.ProbeProjectAccess('MEWP');
+
+      expect(access.repositories).toEqual({ status: 'ok', count: 0 });
+      expect(access.workItems).toEqual({ status: 'ok', count: 0 });
+    });
+
+    it('asks for the project directly and says it is not visible on a 404', async () => {
+      answers({ '/_apis/projects/Secret': () => { throw http(404); } });
+
+      const access = await managementDataProvider.ProbeProjectAccess('Secret');
+
+      expect(access.project).toEqual({ status: 'notFound', httpStatus: 404 });
+      const calls = (TFSServices.getItemContent as jest.Mock).mock.calls.map((c) => c[0]);
+      expect(calls).toContain(`${mockOrgUrl}_apis/projects/Secret`);
+      expect(calls.some((u: string) => u.includes('_apis/projects?$top='))).toBe(false); // no first-page-only list
+    });
+
+    it('records the rethrown "could not be found" answer (no status on the error) as notFound, not error', async () => {
+      // exactly what TFSServices.executeWithRetry throws for that message
+      answers({ '/test/plans': () => { throw new Error(`File not found or insufficient permissions: ${mockOrgUrl}MEWP/_apis/test/plans`); } });
+
+      expect((await managementDataProvider.ProbeProjectAccess('MEWP')).testPlans).toEqual({ status: 'notFound', httpStatus: 404 });
+    });
+
+    it('never throws and gives up on a read that hangs', async () => {
+      answers({ '/build/definitions': () => new Promise(() => undefined) });
+
+      const access = await managementDataProvider.ProbeProjectAccess('MEWP', 30);
+
+      expect(access.builds).toEqual({ status: 'error' });
+      expect(access.repositories.status).toBe('ok');
+    });
+
+    it('accessOutcomeOfError maps statuses, including errors with no response', () => {
+      expect(accessOutcomeOfError({ response: { status: 403 } })).toEqual({ status: 'denied', httpStatus: 403 });
+      expect(accessOutcomeOfError({ response: { status: 404 } })).toEqual({ status: 'notFound', httpStatus: 404 });
+      expect(accessOutcomeOfError({ code: 'ETIMEDOUT' })).toEqual({ status: 'error' });
+      expect(accessOutcomeOfError(new Error('File not found or insufficient permissions: http://x'))).toEqual({ status: 'notFound', httpStatus: 404 });
+      expect(accessOutcomeOfError(undefined)).toEqual({ status: 'error' });
     });
   });
 });

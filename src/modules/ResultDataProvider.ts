@@ -5162,37 +5162,41 @@ export default class ResultDataProvider {
           }
           return urls;
         };
-        // The related-item batches of every work item in this chunk are independent: fetch them with
-        // bounded concurrency up front, then walk the work items in order below. A failed batch is
-        // rethrown where the sequential loop would have hit it, so earlier work items keep their results.
-        const relatedFetched = await fetchSettledBounded(
-          (workItems || [])
-            .filter((wi: any) => summarizedItemMap.get(wi.id) && wi.relations)
-            .flatMap((wi: any) => relatedUrlsOf(wi)),
-          (relatedUrl) => TFSServices.getItemContent(relatedUrl, this.token)
-        );
+        // The related-item batches of a group of work items are independent: fetch them with bounded
+        // concurrency, then walk the group in order. Groups of RELATED_GROUP_SIZE (not the whole chunk) bound
+        // how many related work items are held at once. A failed batch is rethrown where the sequential loop
+        // would have hit it, so earlier work items keep their results and later ones are never fetched.
+        const RELATED_GROUP_SIZE = 10;
+        const eligible = (workItems || []).filter((wi: any) => summarizedItemMap.get(wi.id) && wi.relations);
+        for (let g = 0; g < eligible.length; g += RELATED_GROUP_SIZE) {
+          const group = eligible.slice(g, g + RELATED_GROUP_SIZE);
+          const urlsByItem = new Map<any, string[]>(group.map((wi: any) => [wi, relatedUrlsOf(wi)]));
+          const relatedFetched = await fetchSettledBounded(
+            group.flatMap((wi: any) => urlsByItem.get(wi) as string[]),
+            (relatedUrl) => TFSServices.getItemContent(relatedUrl, this.token)
+          );
 
-        for (const wi of workItems || []) {
-          const mappedItem = summarizedItemMap.get(wi.id);
-          if (!mappedItem || !wi.relations) continue;
+          for (const wi of group) {
+            const mappedItem = summarizedItemMap.get(wi.id);
 
-          // Related items, in batches
-          const allRelatedWi: any[] = [];
-          for (const relatedUrl of relatedUrlsOf(wi)) {
-            const outcome = relatedFetched.get(relatedUrl)!;
-            if (!outcome.ok) throw outcome.error;
-            allRelatedWi.push(...outcome.value.value);
+            // Related items, in batches
+            const allRelatedWi: any[] = [];
+            for (const relatedUrl of urlsByItem.get(wi) as string[]) {
+              const outcome = relatedFetched.get(relatedUrl)!;
+              if (!outcome.ok) throw outcome.error;
+              allRelatedWi.push(...outcome.value.value);
+            }
+
+            // Filter
+            const filtered = allRelatedWi.filter(({ fields }) => {
+              const t = fields?.['System.WorkItemType'];
+              const s = fields?.['System.State'];
+              return (t === 'Change Request' || t === 'Bug') && s !== 'Closed' && s !== 'Resolved';
+            });
+
+            mappedItem.linkItems = filtered.length > 0 ? this.MapLinkedWorkItem(filtered, project) : [];
+            summarizedItemMap.set(wi.id, mappedItem);
           }
-
-          // Filter
-          const filtered = allRelatedWi.filter(({ fields }) => {
-            const t = fields?.['System.WorkItemType'];
-            const s = fields?.['System.State'];
-            return (t === 'Change Request' || t === 'Bug') && s !== 'Closed' && s !== 'Resolved';
-          });
-
-          mappedItem.linkItems = filtered.length > 0 ? this.MapLinkedWorkItem(filtered, project) : [];
-          summarizedItemMap.set(wi.id, mappedItem);
         }
       } catch (error: any) {
         logger.error('Error occurred while fetching linked work items', error);
