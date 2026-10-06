@@ -1,4 +1,5 @@
 import DataProviderUtils from '../utils/DataProviderUtils';
+import { fetchSettledBounded } from '../utils/boundedFetch';
 import { TFSServices } from '../helpers/tfs';
 import { OpenPcrRequest, PlainTestResult, TestSteps } from '../models/tfs-data';
 import { AdoWorkItemComment, AdoWorkItemCommentsResponse } from '../models/ado-comments';
@@ -2767,13 +2768,21 @@ export default class ResultDataProvider {
     const CHUNK_SIZE = 200;
     const allItems: any[] = [];
 
+    const expandParam = includeRelations ? '&$expand=relations' : '';
+    const urls: string[] = [];
     for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
-      const chunk = ids.slice(i, i + CHUNK_SIZE);
-      const idsQuery = chunk.join(',');
-      const expandParam = includeRelations ? '&$expand=relations' : '';
-      const url = `${this.orgUrl}${projectName}/_apis/wit/workitems?ids=${idsQuery}${expandParam}&api-version=7.1-preview.3`;
-      const response = await TFSServices.getItemContent(url, this.token);
-      const values = Array.isArray(response?.value) ? response.value : [];
+      const idsQuery = ids.slice(i, i + CHUNK_SIZE).join(',');
+      urls.push(
+        `${this.orgUrl}${projectName}/_apis/wit/workitems?ids=${idsQuery}${expandParam}&api-version=7.1-preview.3`
+      );
+    }
+    // Chunks are independent: fetch them with bounded concurrency, then read them in chunk order so
+    // the result order (and the first failure surfaced) match the sequential loop.
+    const fetched = await fetchSettledBounded(urls, (url) => TFSServices.getItemContent(url, this.token));
+    for (const url of urls) {
+      const outcome = fetched.get(url)!;
+      if (!outcome.ok) throw outcome.error;
+      const values = Array.isArray(outcome.value?.value) ? outcome.value.value : [];
       allItems.push(...values);
     }
 
@@ -4430,14 +4439,21 @@ export default class ResultDataProvider {
     wiByRevision: any,
     selectedLinkedFieldSet: Set<string>
   ) {
+    const isLinkRelation = (relation: any) =>
+      relation.rel?.includes('System.LinkTypes') || relation.rel?.includes('Microsoft.VSTS.Common.TestedBy');
+    // The related work items are independent GETs: fetch them with bounded concurrency, then walk the
+    // relations in their original order below, so the three result lists keep their ordering.
+    const fetched = await fetchSettledBounded(
+      relations.filter(isLinkRelation).map((relation: any) => relation.url),
+      (url) => TFSServices.getItemContent(url, this.token)
+    );
     for (const relation of relations) {
-      if (
-        relation.rel?.includes('System.LinkTypes') ||
-        relation.rel?.includes('Microsoft.VSTS.Common.TestedBy')
-      ) {
+      if (isLinkRelation(relation)) {
         const relatedUrl = relation.url;
         try {
-          const wi = await TFSServices.getItemContent(relatedUrl, this.token);
+          const outcome = fetched.get(relatedUrl)!;
+          if (!outcome.ok) throw outcome.error;
+          const wi = outcome.value;
           if (
             selectedLinkedFieldSet.has('associatedRequirement') &&
             wi.fields['System.WorkItemType'] === 'Requirement'
@@ -5132,22 +5148,40 @@ export default class ResultDataProvider {
         const url = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${chunk.join(',')}&$expand=relations`;
         const { value: workItems } = await TFSServices.getItemContent(url, this.token);
 
+        const relatedUrlsOf = (wi: any): string[] => {
+          const relatedIds = (wi.relations as any[])
+            .filter((relation: any) => relation?.url?.includes('workItems'))
+            .map((rel: any) => rel.url.split('/').pop());
+          const urls: string[] = [];
+          for (let i = 0; i < relatedIds.length; i += CHUNK_SIZE) {
+            urls.push(
+              `${this.orgUrl}${project}/_apis/wit/workItems?ids=${relatedIds
+                .slice(i, i + CHUNK_SIZE)
+                .join(',')}&$expand=1`
+            );
+          }
+          return urls;
+        };
+        // The related-item batches of every work item in this chunk are independent: fetch them with
+        // bounded concurrency up front, then walk the work items in order below. A failed batch is
+        // rethrown where the sequential loop would have hit it, so earlier work items keep their results.
+        const relatedFetched = await fetchSettledBounded(
+          (workItems || [])
+            .filter((wi: any) => summarizedItemMap.get(wi.id) && wi.relations)
+            .flatMap((wi: any) => relatedUrlsOf(wi)),
+          (relatedUrl) => TFSServices.getItemContent(relatedUrl, this.token)
+        );
+
         for (const wi of workItems || []) {
           const mappedItem = summarizedItemMap.get(wi.id);
           if (!mappedItem || !wi.relations) continue;
-          const relatedIds = wi.relations
-            .filter((relation: any) => relation?.url?.includes('workItems'))
-            .map((rel: any) => rel.url.split('/').pop());
 
-          // Fetch related items in batches
-          let allRelatedWi: any[] = [];
-          for (let i = 0; i < relatedIds.length; i += CHUNK_SIZE) {
-            const relChunk = relatedIds.slice(i, i + CHUNK_SIZE);
-            const relatedUrl = `${this.orgUrl}${project}/_apis/wit/workItems?ids=${relChunk.join(
-              ','
-            )}&$expand=1`;
-            const { value: rwi } = await TFSServices.getItemContent(relatedUrl, this.token);
-            allRelatedWi = [...allRelatedWi, ...rwi];
+          // Related items, in batches
+          const allRelatedWi: any[] = [];
+          for (const relatedUrl of relatedUrlsOf(wi)) {
+            const outcome = relatedFetched.get(relatedUrl)!;
+            if (!outcome.ok) throw outcome.error;
+            allRelatedWi.push(...outcome.value.value);
           }
 
           // Filter

@@ -1509,6 +1509,116 @@ describe('TestDataProvider', () => {
     });
   });
 
+  describe('StructureTestCase fetch pattern', () => {
+    afterEach(() => (TFSServices.getItemContent as jest.Mock).mockReset());
+
+    const caseCount = 12;
+    const suite = { id: '1', name: 'Suite 1' } as any;
+    const makeTestCases = () => ({
+      count: caseCount,
+      value: Array.from({ length: caseCount }, (_, i) => ({
+        testCase: { id: 100 + i, url: `https://example.com/wi/${100 + i}` },
+      })),
+    });
+    // Case i relates to the shared requirement (900) and to its own requirement (500 + i).
+    const respond = (url: string): any => {
+      const caseMatch = url.match(/\/wi\/(\d+)\?\$expand=All$/);
+      if (caseMatch) {
+        const id = Number(caseMatch[1]);
+        return {
+          id,
+          fields: { 'System.Title': `TC ${id}`, 'System.AreaPath': 'A', 'System.Description': 'D' },
+          relations: [
+            { url: 'https://example.com/_apis/wit/workItems/900' },
+            { url: `https://example.com/_apis/wit/workItems/${500 + (id - 100)}` },
+            { url: 'https://example.com/_apis/wit/attachments/ignored' },
+          ],
+        };
+      }
+      const wiMatch = url.match(/workItems\/(\d+)$/);
+      const id = Number(wiMatch![1]);
+      return { id, fields: { 'System.WorkItemType': 'Requirement', 'System.Title': `REQ ${id}` } };
+    };
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const urlsRequested: string[] = [];
+
+    beforeEach(() => {
+      inFlight = 0;
+      maxInFlight = 0;
+      urlsRequested.length = 0;
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        urlsRequested.push(url);
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight--;
+        return respond(url);
+      });
+    });
+
+    const run = (cases = makeTestCases()) => {
+      const requirementTrace = new Map<string, string[]>();
+      const testCaseTrace = new Map<string, string[]>();
+      return testDataProvider
+        .StructureTestCase(mockProject, cases as any, suite, true, false, false, requirementTrace, testCaseTrace)
+        .then((result) => ({ result, requirementTrace, testCaseTrace }));
+    };
+
+    it('keeps test case order, relations and trace maps identical to a sequential run', async () => {
+      const { result, requirementTrace, testCaseTrace } = await run();
+
+      expect(result.map((tc: any) => tc.id)).toEqual(Array.from({ length: caseCount }, (_, i) => 100 + i));
+      result.forEach((tc: any, i: number) => {
+        expect(tc.title).toBe(`TC ${100 + i}`);
+        expect(tc.relations.map((r: any) => r.id)).toEqual([900, 500 + i]);
+      });
+      expect(Array.from(testCaseTrace.keys())).toEqual(
+        Array.from({ length: caseCount }, (_, i) => JSON.stringify({ id: 100 + i, title: `TC ${100 + i}` }))
+      );
+      expect(requirementTrace.size).toBe(caseCount + 1);
+      const sharedKey = Array.from(requirementTrace.keys()).find((key) => JSON.parse(key).id === 900);
+      expect(requirementTrace.get(sharedKey as string)).toHaveLength(caseCount);
+      expect(requirementTrace.get(sharedKey as string)?.[0]).toBe(JSON.stringify({ id: 100, title: 'TC 100' }));
+    });
+
+    it('requests each unique URL once, with bounded concurrency', async () => {
+      await run();
+
+      // 12 test cases + 1 shared requirement + 12 own requirements; the attachment relation is skipped.
+      expect(urlsRequested).toHaveLength(caseCount + 1 + caseCount);
+      expect(new Set(urlsRequested).size).toBe(urlsRequested.length);
+      expect(maxInFlight).toBeGreaterThan(1);
+      expect(maxInFlight).toBeLessThanOrEqual(4);
+    });
+
+    it('a failing related item is skipped as before and does not refetch', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        urlsRequested.push(url);
+        if (url.endsWith('workItems/503')) throw new Error('boom');
+        return respond(url);
+      });
+
+      const { result } = await run();
+
+      expect(result).toHaveLength(caseCount);
+      expect(result[3].relations.map((r: any) => r.id)).toEqual([900]);
+      expect(urlsRequested.filter((u) => u.endsWith('workItems/503'))).toHaveLength(1);
+    });
+
+    it('a failing test case ends the suite at that case, returning the ones before it', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        if (url.includes('/wi/105?')) throw new Error('case boom');
+        return respond(url);
+      });
+
+      const { result } = await run();
+
+      expect(result.map((tc: any) => tc.id)).toEqual([100, 101, 102, 103, 104]);
+    });
+  });
+
   describe('ParseSteps', () => {
     it('should parse XML steps correctly', () => {
       // Arrange
