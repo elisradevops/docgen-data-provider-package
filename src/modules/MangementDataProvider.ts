@@ -1,6 +1,43 @@
 import { TFSServices } from '../helpers/tfs';
 import logger from '../utils/logger';
 
+export type AccessStatus = 'ok' | 'denied' | 'notFound' | 'error';
+
+/** Outcome of one read the credential attempted. `count` is how many items it could SEE. */
+export interface AccessArea {
+  status: AccessStatus;
+  httpStatus?: number;
+  count?: number;
+}
+
+export interface ProjectAccess {
+  project: AccessArea;
+  repositories: AccessArea;
+  workItems: AccessArea;
+  builds: AccessArea;
+  releases: AccessArea;
+  testPlans: AccessArea;
+}
+
+const PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Turns a failed read into an access outcome. 401/403 are a denial; 404 is "not found" (it is also what a
+ * server without that API answers, so it is not reported as a denial); anything else (a timeout, a 5xx) is
+ * an error that says nothing about permissions.
+ */
+export const accessOutcomeOfError = (error: any): AccessArea => {
+  // TFSServices rethrows Azure DevOps' "could not be found" answers as a plain Error without a status
+  // ("File not found or insufficient permissions: <url>"); that is a 404 in effect.
+  if (/^File not found or insufficient permissions/i.test(String(error?.message || ''))) {
+    return { status: 'notFound', httpStatus: 404 };
+  }
+  const httpStatus = Number(error?.response?.status ?? error?.status);
+  if (httpStatus === 401 || httpStatus === 403) return { status: 'denied', httpStatus };
+  if (httpStatus === 404) return { status: 'notFound', httpStatus };
+  return { status: 'error', ...(Number.isFinite(httpStatus) ? { httpStatus } : {}) };
+};
+
 export default class MangementDataProvider {
   orgUrl: string = '';
   token: string = '';
@@ -73,5 +110,57 @@ export default class MangementDataProvider {
       identityId
     )}&queryMembership=None&api-version=6.0`;
     return TFSServices.getItemContent(url, this.token, 'get', null, null, false);
+  }
+
+  /**
+   * What THIS credential can actually see in a project, measured with the kind of reads the SVD and STD
+   * make. Effective access rather than permission bits: Azure DevOps often answers a reader without access
+   * with an empty or shorter list instead of a 403, so the counts matter as much as the status. Read-only,
+   * parallel and bounded; a 403 here is an expected outcome, so nothing is logged as an error.
+   */
+  async ProbeProjectAccess(projectName: string, timeoutMs: number = PROBE_TIMEOUT_MS): Promise<ProjectAccess> {
+    const read = (url: string, method = 'get', body: any = {}, headers: any = {}) =>
+      TFSServices.getItemContent(url, this.token, method, body, headers, false);
+    const org = this.orgUrl;
+    const vsrm = (url: string) => (url.startsWith('https://dev.azure.com') ? url.replace('https://dev.azure.com', 'https://vsrm.dev.azure.com') : url);
+
+    const probe = async (run: () => Promise<AccessArea>): Promise<AccessArea> => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          run(),
+          new Promise<AccessArea>((resolve) => {
+            timer = setTimeout(() => resolve({ status: 'error' }), timeoutMs);
+          }),
+        ]);
+      } catch (error: any) {
+        return accessOutcomeOfError(error);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    const listCount = (data: any): number => (Array.isArray(data?.value) ? data.value.length : Number(data?.count) || 0);
+
+    const [project, repositories, workItems, builds, releases, testPlans] = await Promise.all([
+      // Asked for directly (name or id): a project list is paged and may not contain it on the first page.
+      probe(async () => {
+        await read(`${org}_apis/projects/${encodeURIComponent(String(projectName))}`);
+        return { status: 'ok' };
+      }),
+      probe(async () => ({ status: 'ok', count: listCount(await read(`${org}${projectName}/_apis/git/repositories`)) })),
+      probe(async () => {
+        const result = await read(
+          `${org}${projectName}/_apis/wit/wiql?$top=1`,
+          'post',
+          { query: 'Select [System.Id] From WorkItems Where [System.TeamProject] = @project' },
+          { 'Content-Type': 'application/json' }
+        );
+        return { status: 'ok', count: Array.isArray(result?.workItems) ? result.workItems.length : 0 };
+      }),
+      probe(async () => ({ status: 'ok', count: listCount(await read(`${org}${projectName}/_apis/build/definitions?$top=200`)) })),
+      probe(async () => ({ status: 'ok', count: listCount(await read(vsrm(`${org}${projectName}/_apis/release/definitions?$top=200`))) })),
+      probe(async () => ({ status: 'ok', count: listCount(await read(`${org}${projectName}/_apis/test/plans?$top=200`)) })),
+    ]);
+    return { project, repositories, workItems, builds, releases, testPlans };
   }
 }

@@ -941,6 +941,31 @@ describe('ResultDataProvider', () => {
   describe('fetchLinkedWi fetch pattern', () => {
     afterEach(() => (TFSServices.getItemContent as jest.Mock).mockReset());
 
+    it('fetches related items in groups of work items, so a failure stops later groups from being fetched at all', async () => {
+      const testItems = Array.from({ length: 25 }, (_, i) => ({ testId: i + 1, testName: `T${i + 1}`, testCaseUrl: `u${i + 1}` }));
+      const requested: string[] = [];
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        requested.push(url);
+        const ids = idsOf(url);
+        if (url.includes('$expand=relations')) {
+          return { value: ids.map((id) => ({ id, relations: [{ url: `https://x/_apis/wit/workItems/${id * 10}` }] })) };
+        }
+        if (ids[0] === 30) throw new Error('related batch for work item 3 failed');
+        return {
+          value: ids.map((id) => ({ id, fields: { 'System.WorkItemType': 'Bug', 'System.State': 'Active', 'System.Title': `B${id}` } })),
+        };
+      });
+
+      const result = await (resultDataProvider as any).fetchLinkedWi('p', testItems);
+
+      // Work items 1 and 2 (before the failure) keep their results; 3 onwards are empty, as in the sequential loop.
+      expect(result.slice(0, 2).map((r: any) => r.linkItems.map((l: any) => l.pcrId))).toEqual([[10], [20]]);
+      expect(result.slice(2).every((r: any) => r.linkItems.length === 0)).toBe(true);
+      // The second group of 10 (work items 11..20) was never requested.
+      expect(requested.some((u) => u.includes('ids=150'))).toBe(false);
+      expect(requested.some((u) => u.includes('ids=30'))).toBe(true);
+    });
+
     const idsOf = (url: string) => (/ids=([\d,]+)/.exec(url)?.[1] || '').split(',').map(Number);
 
     it('maps linked bugs/CRs per test case in order, and a failing batch stops at that work item', async () => {

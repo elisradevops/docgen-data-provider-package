@@ -1619,6 +1619,60 @@ describe('TestDataProvider', () => {
     });
   });
 
+  describe('StructureTestCase edge cases', () => {
+    const suite = { id: '1', name: 'Suite 1' } as any;
+    const noTrace = () => [new Map<string, string[]>(), new Map<string, string[]>()] as const;
+    afterEach(() => (TFSServices.getItemContent as jest.Mock).mockReset());
+
+    it('fetches the revision URL for a test case that has a recorded test case revision, and not the plain one', async () => {
+      const urls: string[] = [];
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async (url: string) => {
+        urls.push(url);
+        return { id: 101, fields: { 'System.Title': 'TC', 'System.AreaPath': 'A', 'System.Description': 'D' }, relations: [] };
+      });
+      const stepResultDetailsMap = new Map<string, any>([['101', { testCaseRevision: 7, stepList: [], caseEvidenceAttachments: [] }]]);
+      const [requirementTrace, testCaseTrace] = noTrace();
+
+      const result = await testDataProvider.StructureTestCase(
+        mockProject,
+        { count: 1, value: [{ testCase: { id: 101, url: 'https://example.com/wi/101' } }] } as any,
+        suite,
+        false,
+        false,
+        false,
+        requirementTrace,
+        testCaseTrace,
+        stepResultDetailsMap
+      );
+
+      expect(urls).toEqual(['https://example.com/wi/101/revisions/7?$expand=All']);
+      expect(result).toHaveLength(1);
+    });
+
+    it('a malformed entry in the list ends the suite there, returning the test cases before it, without breaking the prefetch', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockImplementation(async () => ({
+        id: 101,
+        fields: { 'System.Title': 'TC', 'System.AreaPath': 'A', 'System.Description': 'D' },
+        relations: [],
+      }));
+      const [requirementTrace, testCaseTrace] = noTrace();
+
+      const result = await testDataProvider.StructureTestCase(
+        mockProject,
+        { count: 2, value: [{ testCase: { id: 101, url: 'https://example.com/wi/101' } }, undefined] } as any,
+        suite,
+        false,
+        false,
+        false,
+        requirementTrace,
+        testCaseTrace
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(101);
+    });
+  });
+
   describe('ParseSteps', () => {
     it('should parse XML steps correctly', () => {
       // Arrange
