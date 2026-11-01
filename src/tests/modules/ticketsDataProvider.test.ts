@@ -1492,6 +1492,31 @@ describe('TicketsDataProvider', () => {
     });
   });
 
+  describe('query result failures are reported, not swallowed', () => {
+    it('GetQueryResultsByWiqlHref logs the failure and still returns undefined', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(new Error('wiql boom'));
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+      const result = await ticketsDataProvider.GetQueryResultsByWiqlHref('https://example.com/wiql', mockProject);
+
+      expect(result).toBeUndefined();
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('WIQL'), expect.anything());
+      consoleSpy.mockRestore();
+    });
+
+    it('GetQueryResultsByWiqlString logs the failure through the logger (not console) and still returns []', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(new Error('wiql string boom'));
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+      const result = await ticketsDataProvider.GetQueryResultsByWiqlString('SELECT 1', mockProject);
+
+      expect(result).toEqual([]);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('WIQL'), expect.anything());
+      expect(consoleSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+  });
+
   describe('GetWorkItemByUrl', () => {
     it('should fetch work item by URL', async () => {
       // Arrange

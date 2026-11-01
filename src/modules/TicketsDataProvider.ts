@@ -1713,7 +1713,10 @@ export default class TicketsDataProvider {
         return levelResults;
       }
       return modeledResult.workItems;
-    } catch (e) {}
+    } catch (e) {
+      // Callers get undefined and render an empty section, so the failure must show up in the run's log.
+      logCaughtError(`Failed to get query results by WIQL href in project ${project}:`, e);
+    }
   }
   // gets query results
   async GetQueryResultsByWiqlString(wiql: string, projectName: string): Promise<any> {
@@ -1724,7 +1727,7 @@ export default class TicketsDataProvider {
         query: wiql,
       });
     } catch (error) {
-      console.log(error);
+      logCaughtError(`Failed to run WIQL query in project ${projectName}:`, error);
       return [];
     }
     return res;
