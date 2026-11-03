@@ -195,17 +195,40 @@ describe('TicketsDataProvider', () => {
       expect(result).toBe(false);
     });
 
-    it('rejects the query and warns when the category cannot be resolved', async () => {
-      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(new Error('404'));
-      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
-        node,
-        linkWiql('Source'),
-        'Source',
-        traceTypes,
-        new Map(),
+    const lookupGroup = () =>
+      (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(node, linkWiql('Source'), 'Source', traceTypes, new Map());
+
+    it('treats a category that is not found as no match, with a warn and no error (status 404)', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 404'), { response: { status: 404 } }),
       );
-      expect(result).toBe(false);
+      expect(await lookupGroup()).toBe(false);
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Microsoft.RequirementCategory'));
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('treats a category that is not found as no match, with a warn and no error (rethrown message shape)', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(
+        new Error('File not found or insufficient permissions: https://dev.azure.com/x'),
+      );
+      expect(await lookupGroup()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('reports any other lookup failure once, as an error, and treats it as no match', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 500'), { response: { status: 500 } }),
+      );
+      expect(await lookupGroup()).toBe(false);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('warns and treats an empty category as no match', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue({ workItemTypes: [] });
+      expect(await lookupGroup()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('has no work item types'));
     });
 
     it('looks a category up once for queries sharing the same cache', async () => {

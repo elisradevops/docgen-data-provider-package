@@ -3412,12 +3412,29 @@ export default class TicketsDataProvider {
           const names: string[] = (category?.workItemTypes ?? [])
             .map((t: any) => String(t?.name || '').trim().toLowerCase())
             .filter(Boolean);
-          return names.length > 0 ? JSON.stringify(names) : null;
+          if (names.length === 0) {
+            logger.warn(
+              `Work item type category "${categoryRefName}" first referenced by saved query "${queryLabel || 'unknown'}" has no work item types; treating it as no match`,
+            );
+            return null;
+          }
+          return JSON.stringify(names);
         } catch (e: any) {
-          logger.warn(
-            `Work item type category "${categoryRefName}" referenced by saved query "${queryLabel || 'unknown'}" could not be resolved; treating it as no match`,
-          );
-          logCaughtError(`Could not look up work item type category ${categoryRefName}:`, e);
+          // TFSServices rethrows "could not be found" as a plain Error (no response), so a missing
+          // category arrives in either shape. A saved query can reference a category this project
+          // lacks (another process template); that is expected, not a failure to report as an error.
+          const notFound =
+            e?.response?.status === 404 || /File not found or insufficient permissions/i.test(String(e?.message));
+          if (notFound) {
+            logger.warn(
+              `Work item type category "${categoryRefName}" first referenced by saved query "${queryLabel || 'unknown'}" was not found; treating it as no match`,
+            );
+          } else {
+            logCaughtError(
+              `Could not look up work item type category "${categoryRefName}" (first referenced by saved query "${queryLabel || 'unknown'}"):`,
+              e,
+            );
+          }
           return null;
         }
       })();
