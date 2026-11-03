@@ -3346,6 +3346,88 @@ export default class TicketsDataProvider {
   }
 
   /**
+   * Extracts the category reference names used in `<field> IN GROUP '<category>'` clauses.
+   * Example: `[System.WorkItemType] IN GROUP 'Microsoft.RequirementCategory'`
+   */
+  private extractGroupNamesForField(wiql: string, fieldPattern: string): string[] {
+    const groupRe = new RegExp(`${fieldPattern}\\s+IN\\s+GROUP\\s+'([^']+)'`, 'gi');
+    const names = new Set<string>();
+    for (const m of String(wiql || '').matchAll(groupRe)) {
+      names.add(String(m[1]).trim());
+    }
+    return [...names];
+  }
+
+  /**
+   * Resolves `IN GROUP` clauses for a field to the lowercased member work item types.
+   * Returns an empty set when the WIQL has no group clause, and `null` when a group
+   * cannot be resolved (the query is then treated as not matching).
+   */
+  private async resolveGroupTypesForField(
+    queryNode: any,
+    wiql: string,
+    fieldPattern: string,
+    workItemTypeCache: Map<string, Promise<string | null>>,
+  ): Promise<Set<string> | null> {
+    const resolved = new Set<string>();
+    const groupNames = this.extractGroupNamesForField(wiql, fieldPattern);
+    if (groupNames.length === 0) return resolved;
+
+    const project = this.getProjectFromQueryNode(queryNode);
+    if (!project) return null;
+
+    for (const groupName of groupNames) {
+      const members = await this.getWorkItemTypesByCategory(
+        project,
+        groupName,
+        workItemTypeCache,
+        this.describeQueryNode(queryNode),
+      );
+      if (!members) return null;
+      members.forEach((t) => resolved.add(t));
+    }
+    return resolved;
+  }
+
+  /**
+   * Fetches the member work item types (lowercased) of a work item type category.
+   * The in-flight promise is cached (JSON-encoded in the shared lookup cache under a
+   * `category:` key) so queries referencing the same category share one request.
+   */
+  private async getWorkItemTypesByCategory(
+    project: string,
+    categoryRefName: string,
+    workItemTypeCache: Map<string, Promise<string | null>>,
+    queryLabel?: string,
+  ): Promise<string[] | null> {
+    const cacheKey = `category:${project}:${categoryRefName.toLowerCase()}`;
+    let lookup = workItemTypeCache.get(cacheKey);
+    if (!lookup) {
+      lookup = (async (): Promise<string | null> => {
+        try {
+          const url = `${this.orgUrl}${project}/_apis/wit/workitemtypecategories/${encodeURIComponent(categoryRefName)}`;
+          const category = await this.limit(() =>
+            TFSServices.getItemContent(url, this.token, 'get', {}, {}, false),
+          );
+          const names: string[] = (category?.workItemTypes ?? [])
+            .map((t: any) => String(t?.name || '').trim().toLowerCase())
+            .filter(Boolean);
+          return names.length > 0 ? JSON.stringify(names) : null;
+        } catch (e: any) {
+          logger.warn(
+            `Work item type category "${categoryRefName}" referenced by saved query "${queryLabel || 'unknown'}" could not be resolved; treating it as no match`,
+          );
+          logCaughtError(`Could not look up work item type category ${categoryRefName}:`, e);
+          return null;
+        }
+      })();
+      workItemTypeCache.set(cacheKey, lookup);
+    }
+    const encoded = await lookup;
+    return encoded ? (JSON.parse(encoded) as string[]) : null;
+  }
+
+  /**
    * Extracts all numeric values used in `=` or `IN (...)` comparisons for a given field.
    * Supports both quoted and unquoted numbers.
    *
@@ -3413,6 +3495,14 @@ export default class TicketsDataProvider {
     const allowed = this.normalizeAllowedTypes(allowedTypes);
     const typeFieldPattern = this.buildWiqlFieldPattern(context, 'System.WorkItemType');
     const typesInWiql = this.extractQuotedValuesForField(wiqlStr, typeFieldPattern);
+    const groupTypes = await this.resolveGroupTypesForField(
+      queryNode,
+      wiqlStr,
+      typeFieldPattern,
+      workItemTypeCache,
+    );
+    if (groupTypes === null) return false;
+    groupTypes.forEach((t) => typesInWiql.add(t));
     if (typesInWiql.size > 0) {
       return this.areAllAllowed(typesInWiql, allowed);
     }
@@ -3457,6 +3547,14 @@ export default class TicketsDataProvider {
     const allowed = this.normalizeAllowedTypes(allowedTypes);
     const typeFieldPattern = this.buildWiqlFieldPattern(null, 'System.WorkItemType');
     const typesInWiql = this.extractQuotedValuesForField(wiqlStr, typeFieldPattern);
+    const groupTypes = await this.resolveGroupTypesForField(
+      queryNode,
+      wiqlStr,
+      typeFieldPattern,
+      workItemTypeCache,
+    );
+    if (groupTypes === null) return false;
+    groupTypes.forEach((t) => typesInWiql.add(t));
     if (typesInWiql.size > 0) {
       return this.areAllAllowed(typesInWiql, allowed);
     }
