@@ -68,6 +68,34 @@ describe('TicketsDataProvider', () => {
       expect(result).toBe(true);
     });
 
+    it('should accept Requirement and Change Request on both link sides', async () => {
+      const traceTypes = ['epic', 'feature', 'requirement', 'change request'];
+      const wiql =
+        "SELECT * FROM WorkItemLinks WHERE ([Source].[System.WorkItemType] IN ('Requirement','Change Request')) AND ([Target].[System.WorkItemType] = 'Change Request')";
+      for (const side of ['Source', 'Target'] as const) {
+        const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+          {},
+          wiql,
+          side,
+          traceTypes,
+          new Map(),
+        );
+        expect(result).toBe(true);
+      }
+    });
+
+    it('should still reject Bug mixed with Requirement for trace types', async () => {
+      const wiql = "SELECT * FROM WorkItemLinks WHERE Source.[System.WorkItemType] IN ('Requirement','Bug')";
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        {},
+        wiql,
+        'Source',
+        ['epic', 'feature', 'requirement', 'change request'],
+        new Map(),
+      );
+      expect(result).toBe(false);
+    });
+
     it('should return false when no types are found in WIQL and no ids exist', async () => {
       const wiql = "SELECT * FROM WorkItemLinks WHERE Target.[System.AreaPath] = 'A'";
       const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
@@ -89,7 +117,148 @@ describe('TicketsDataProvider', () => {
 
       await (ticketsDataProvider as any).fetchSystemRequirementQueries({ hasChildren: false }, []);
 
-      expect(structureSpy.mock.calls[0][3]).toEqual(['epic', 'feature', 'requirement', 'task']);
+      expect(structureSpy.mock.calls[0][3]).toEqual(['epic', 'feature', 'requirement', 'change request', 'task']);
+    });
+  });
+
+  describe('SRS trace helpers', () => {
+    const expectedTypes = ['epic', 'feature', 'requirement', 'change request'];
+
+    it('fetchRequirementsTraceQueriesForFolder should allow Change Request on both sides', async () => {
+      const structureSpy = jest
+        .spyOn(ticketsDataProvider as any, 'structureFetchedQueries')
+        .mockResolvedValue({ tree1: { id: 't1' }, tree2: null });
+
+      await (ticketsDataProvider as any).fetchRequirementsTraceQueriesForFolder({ id: 'f' });
+
+      expect(structureSpy.mock.calls[0][3]).toEqual(expectedTypes);
+      expect(structureSpy.mock.calls[0][4]).toEqual(expectedTypes);
+    });
+
+    it('fetchLinkedRequirementsTraceQueries should allow Change Request on both sides', async () => {
+      const structureSpy = jest
+        .spyOn(ticketsDataProvider as any, 'structureFetchedQueries')
+        .mockResolvedValue({ tree1: { id: 't1' }, tree2: null });
+
+      await (ticketsDataProvider as any).fetchLinkedRequirementsTraceQueries({ hasChildren: false });
+
+      expect(structureSpy.mock.calls[0][3]).toEqual(expectedTypes);
+      expect(structureSpy.mock.calls[0][4]).toEqual(expectedTypes);
+    });
+  });
+
+  describe('IN GROUP work item type clauses', () => {
+    const node = { _links: { wiql: { href: `${mockOrgUrl}proj-guid/_apis/wit/wiql/q1` } } };
+    const traceTypes = ['epic', 'feature', 'requirement', 'change request'];
+    const category = (...names: string[]) => ({ workItemTypes: names.map((name) => ({ name })) });
+    const linkWiql = (side: string) =>
+      `SELECT * FROM WorkItemLinks WHERE ${side}.[System.WorkItemType] IN GROUP 'Microsoft.RequirementCategory'`;
+
+    beforeEach(() => {
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+    });
+
+    it('accepts a group whose members are all allowed on Source, Target and flat queries', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(category('Requirement', 'Change Request'));
+
+      for (const side of ['Source', 'Target'] as const) {
+        const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+          node,
+          linkWiql(side),
+          side,
+          traceTypes,
+          new Map(),
+        );
+        expect(result).toBe(true);
+      }
+      const flat = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId(
+        node,
+        "SELECT * FROM WorkItems WHERE [System.WorkItemType] IN GROUP 'Microsoft.RequirementCategory'",
+        traceTypes,
+        new Map(),
+      );
+      expect(flat).toBe(true);
+      expect((TFSServices.getItemContent as jest.Mock).mock.calls[0][0]).toBe(
+        `${mockOrgUrl}proj-guid/_apis/wit/workitemtypecategories/Microsoft.RequirementCategory`,
+      );
+    });
+
+    it('rejects a group containing a type that is not allowed', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(category('Requirement', 'User Story'));
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        node,
+        linkWiql('Source'),
+        'Source',
+        traceTypes,
+        new Map(),
+      );
+      expect(result).toBe(false);
+    });
+
+    const lookupGroup = () =>
+      (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(node, linkWiql('Source'), 'Source', traceTypes, new Map());
+
+    it('treats a category that is not found as no match, with a warn and no error (status 404)', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 404'), { response: { status: 404 } }),
+      );
+      expect(await lookupGroup()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Microsoft.RequirementCategory'));
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('treats a category that is not found as no match, with a warn and no error (rethrown message shape)', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(
+        new Error('File not found or insufficient permissions: https://dev.azure.com/x'),
+      );
+      expect(await lookupGroup()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('reports any other lookup failure once, as an error, and treats it as no match', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 500'), { response: { status: 500 } }),
+      );
+      expect(await lookupGroup()).toBe(false);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('warns and treats an empty category as no match', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue({ workItemTypes: [] });
+      expect(await lookupGroup()).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('has no work item types'));
+    });
+
+    it('looks a category up once for queries sharing the same cache', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(category('Requirement'));
+      const cache = new Map();
+      await Promise.all(
+        [1, 2, 3].map(() =>
+          (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+            node,
+            linkWiql('Source'),
+            'Source',
+            traceTypes,
+            cache,
+          ),
+        ),
+      );
+      expect(TFSServices.getItemContent as jest.Mock).toHaveBeenCalledTimes(1);
+    });
+
+    it('combines a group with explicit types', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockResolvedValue(category('Requirement'));
+      const wiql =
+        "SELECT * FROM WorkItems WHERE [System.WorkItemType] IN GROUP 'Microsoft.RequirementCategory' OR [System.WorkItemType] = 'Bug'";
+      const result = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId(
+        node,
+        wiql,
+        traceTypes,
+        new Map(),
+      );
+      expect(result).toBe(false);
     });
   });
 
@@ -1104,6 +1273,17 @@ describe('TicketsDataProvider', () => {
   });
 
   describe('isFlatQueryAllowedByTypeOrId', () => {
+    it('should accept Requirement,Change Request IN clause for requirement types', async () => {
+      const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] IN ('Requirement','Change Request')";
+      const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId(
+        {},
+        wiql,
+        ['epic', 'feature', 'requirement', 'change request', 'task'],
+        new Map(),
+      );
+      expect(res).toBe(true);
+    });
+
     it('should accept when allowedTypes is empty and WIQL references [System.WorkItemType]', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] = 'Bug'";
       const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId({}, wiql, [], new Map());
@@ -1489,6 +1669,31 @@ describe('TicketsDataProvider', () => {
       expect(result[0].rel).toBe('AttachedFile');
       // Only the AttachedFile relation should be in the result
       expect(result.some((item) => item.rel === 'Parent')).toBe(false);
+    });
+  });
+
+  describe('query result failures are reported, not swallowed', () => {
+    it('GetQueryResultsByWiqlHref logs the failure and still returns undefined', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(new Error('wiql boom'));
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+      const result = await ticketsDataProvider.GetQueryResultsByWiqlHref('https://example.com/wiql', mockProject);
+
+      expect(result).toBeUndefined();
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('WIQL'), expect.anything());
+      consoleSpy.mockRestore();
+    });
+
+    it('GetQueryResultsByWiqlString logs the failure through the logger (not console) and still returns []', async () => {
+      (TFSServices.getItemContent as jest.Mock).mockRejectedValueOnce(new Error('wiql string boom'));
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+      const result = await ticketsDataProvider.GetQueryResultsByWiqlString('SELECT 1', mockProject);
+
+      expect(result).toEqual([]);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('WIQL'), expect.anything());
+      expect(consoleSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
     });
   });
 
@@ -2854,6 +3059,29 @@ describe('TicketsDataProvider', () => {
       expect(res.categories['Precedence and Criticality of Requirements']).toHaveLength(1);
       expect(res.categories['Other Requirements']).toHaveLength(1);
       expect(logger.warn).toHaveBeenCalledWith('Could not fetch work item 13:', expect.objectContaining({ message: 'boom' }));
+    });
+
+    it('should include Change Request work items as requirements', async () => {
+      const wiqlHref = `${mockOrgUrl}project1/_apis/wit/wiql/cr`;
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({ workItems: [{ id: 30 }, { id: 31 }] })
+        .mockResolvedValueOnce({ value: [] })
+        .mockResolvedValueOnce({
+          id: 30,
+          fields: { 'System.WorkItemType': 'Change Request', 'System.Title': 'CR30' },
+          _links: { html: { href: 'h30' } },
+        })
+        .mockResolvedValueOnce({
+          id: 31,
+          fields: { 'System.WorkItemType': 'Bug', 'System.Title': 'B31' },
+          _links: { html: { href: 'h31' } },
+        });
+
+      const res = await ticketsDataProvider.GetCategorizedRequirementsByType(wiqlHref);
+
+      expect(res.categories['Other Requirements'].map((r: any) => r.id)).toEqual([30]);
     });
 
     it('should extract IDs from workItemRelations for OneHop queries', async () => {

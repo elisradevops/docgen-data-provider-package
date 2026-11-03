@@ -700,7 +700,7 @@ export default class TicketsDataProvider {
    * @returns An object containing `systemRequirementsQueryTree`.
    */
   private async fetchSystemRequirementQueries(queries: any, excludedFolderNames: string[] = []) {
-    const allowedTypes = ['epic', 'feature', 'requirement', 'task'];
+    const allowedTypes = ['epic', 'feature', 'requirement', 'change request', 'task'];
     const { tree1: systemRequirementsQueryTree } = await this.structureFetchedQueries(
       queries,
       false,
@@ -896,8 +896,8 @@ export default class TicketsDataProvider {
         queries,
         onlySourceSide,
         null,
-        ['epic', 'feature', 'requirement'],
-        ['epic', 'feature', 'requirement'],
+        ['epic', 'feature', 'requirement', 'change request'],
+        ['epic', 'feature', 'requirement', 'change request'],
         'sys', // Source area filter for tree1: System area paths
         'soft', // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
       );
@@ -913,8 +913,8 @@ export default class TicketsDataProvider {
       folder,
       false,
       null,
-      ['epic', 'feature', 'requirement'],
-      ['epic', 'feature', 'requirement'],
+      ['epic', 'feature', 'requirement', 'change request'],
+      ['epic', 'feature', 'requirement', 'change request'],
       undefined,
       undefined,
       true,
@@ -1713,7 +1713,10 @@ export default class TicketsDataProvider {
         return levelResults;
       }
       return modeledResult.workItems;
-    } catch (e) {}
+    } catch (e) {
+      // Callers get undefined and render an empty section, so the failure must show up in the run's log.
+      logCaughtError(`Failed to get query results by WIQL href in project ${project}:`, e);
+    }
   }
   // gets query results
   async GetQueryResultsByWiqlString(wiql: string, projectName: string): Promise<any> {
@@ -1724,7 +1727,7 @@ export default class TicketsDataProvider {
         query: wiql,
       });
     } catch (error) {
-      console.log(error);
+      logCaughtError(`Failed to run WIQL query in project ${projectName}:`, error);
       return [];
     }
     return res;
@@ -3343,6 +3346,105 @@ export default class TicketsDataProvider {
   }
 
   /**
+   * Extracts the category reference names used in `<field> IN GROUP '<category>'` clauses.
+   * Example: `[System.WorkItemType] IN GROUP 'Microsoft.RequirementCategory'`
+   */
+  private extractGroupNamesForField(wiql: string, fieldPattern: string): string[] {
+    const groupRe = new RegExp(`${fieldPattern}\\s+IN\\s+GROUP\\s+'([^']+)'`, 'gi');
+    const names = new Set<string>();
+    for (const m of String(wiql || '').matchAll(groupRe)) {
+      names.add(String(m[1]).trim());
+    }
+    return [...names];
+  }
+
+  /**
+   * Resolves `IN GROUP` clauses for a field to the lowercased member work item types.
+   * Returns an empty set when the WIQL has no group clause, and `null` when a group
+   * cannot be resolved (the query is then treated as not matching).
+   */
+  private async resolveGroupTypesForField(
+    queryNode: any,
+    wiql: string,
+    fieldPattern: string,
+    workItemTypeCache: Map<string, Promise<string | null>>,
+  ): Promise<Set<string> | null> {
+    const resolved = new Set<string>();
+    const groupNames = this.extractGroupNamesForField(wiql, fieldPattern);
+    if (groupNames.length === 0) return resolved;
+
+    const project = this.getProjectFromQueryNode(queryNode);
+    if (!project) return null;
+
+    for (const groupName of groupNames) {
+      const members = await this.getWorkItemTypesByCategory(
+        project,
+        groupName,
+        workItemTypeCache,
+        this.describeQueryNode(queryNode),
+      );
+      if (!members) return null;
+      members.forEach((t) => resolved.add(t));
+    }
+    return resolved;
+  }
+
+  /**
+   * Fetches the member work item types (lowercased) of a work item type category.
+   * The in-flight promise is cached (JSON-encoded in the shared lookup cache under a
+   * `category:` key) so queries referencing the same category share one request.
+   */
+  private async getWorkItemTypesByCategory(
+    project: string,
+    categoryRefName: string,
+    workItemTypeCache: Map<string, Promise<string | null>>,
+    queryLabel?: string,
+  ): Promise<string[] | null> {
+    const cacheKey = `category:${project}:${categoryRefName.toLowerCase()}`;
+    let lookup = workItemTypeCache.get(cacheKey);
+    if (!lookup) {
+      lookup = (async (): Promise<string | null> => {
+        try {
+          const url = `${this.orgUrl}${project}/_apis/wit/workitemtypecategories/${encodeURIComponent(categoryRefName)}`;
+          const category = await this.limit(() =>
+            TFSServices.getItemContent(url, this.token, 'get', {}, {}, false),
+          );
+          const names: string[] = (category?.workItemTypes ?? [])
+            .map((t: any) => String(t?.name || '').trim().toLowerCase())
+            .filter(Boolean);
+          if (names.length === 0) {
+            logger.warn(
+              `Work item type category "${categoryRefName}" first referenced by saved query "${queryLabel || 'unknown'}" has no work item types; treating it as no match`,
+            );
+            return null;
+          }
+          return JSON.stringify(names);
+        } catch (e: any) {
+          // TFSServices rethrows "could not be found" as a plain Error (no response), so a missing
+          // category arrives in either shape. A saved query can reference a category this project
+          // lacks (another process template); that is expected, not a failure to report as an error.
+          const notFound =
+            e?.response?.status === 404 || /File not found or insufficient permissions/i.test(String(e?.message));
+          if (notFound) {
+            logger.warn(
+              `Work item type category "${categoryRefName}" first referenced by saved query "${queryLabel || 'unknown'}" was not found; treating it as no match`,
+            );
+          } else {
+            logCaughtError(
+              `Could not look up work item type category "${categoryRefName}" (first referenced by saved query "${queryLabel || 'unknown'}"):`,
+              e,
+            );
+          }
+          return null;
+        }
+      })();
+      workItemTypeCache.set(cacheKey, lookup);
+    }
+    const encoded = await lookup;
+    return encoded ? (JSON.parse(encoded) as string[]) : null;
+  }
+
+  /**
    * Extracts all numeric values used in `=` or `IN (...)` comparisons for a given field.
    * Supports both quoted and unquoted numbers.
    *
@@ -3410,6 +3512,14 @@ export default class TicketsDataProvider {
     const allowed = this.normalizeAllowedTypes(allowedTypes);
     const typeFieldPattern = this.buildWiqlFieldPattern(context, 'System.WorkItemType');
     const typesInWiql = this.extractQuotedValuesForField(wiqlStr, typeFieldPattern);
+    const groupTypes = await this.resolveGroupTypesForField(
+      queryNode,
+      wiqlStr,
+      typeFieldPattern,
+      workItemTypeCache,
+    );
+    if (groupTypes === null) return false;
+    groupTypes.forEach((t) => typesInWiql.add(t));
     if (typesInWiql.size > 0) {
       return this.areAllAllowed(typesInWiql, allowed);
     }
@@ -3454,6 +3564,14 @@ export default class TicketsDataProvider {
     const allowed = this.normalizeAllowedTypes(allowedTypes);
     const typeFieldPattern = this.buildWiqlFieldPattern(null, 'System.WorkItemType');
     const typesInWiql = this.extractQuotedValuesForField(wiqlStr, typeFieldPattern);
+    const groupTypes = await this.resolveGroupTypesForField(
+      queryNode,
+      wiqlStr,
+      typeFieldPattern,
+      workItemTypeCache,
+    );
+    if (groupTypes === null) return false;
+    groupTypes.forEach((t) => typesInWiql.add(t));
     if (typesInWiql.size > 0) {
       return this.areAllAllowed(typesInWiql, allowed);
     }
@@ -3649,7 +3767,8 @@ export default class TicketsDataProvider {
    * Fetches query results and categorizes Requirement work items by their Requirement Type value.
    *
    * Behavior:
-   * - Detects Requirement items by checking if `System.WorkItemType` contains "requirement" (case-insensitive).
+   * - Detects Requirement items by checking if `System.WorkItemType` contains "requirement" or equals
+   *   "Change Request" (case-insensitive); CRs are managed at the Requirement backlog level.
    * - Resolves candidate Requirement Type fields by calling the Work Item Type Fields API for the
    *   current project (Requirement type), selecting all fields whose display name (lowercased, underscores
    *   normalized to spaces) includes "requirement type". If available, `Microsoft.VSTS.CMMI.RequirementType`
@@ -3761,7 +3880,7 @@ export default class TicketsDataProvider {
           const fullWi = await TFSServices.getItemContent(wiUrl, this.token);
 
           const workItemType = fullWi.fields['System.WorkItemType'];
-          if (!(typeof workItemType === 'string' && /requirement/i.test(workItemType))) {
+          if (!(typeof workItemType === 'string' && /requirement|change request/i.test(workItemType))) {
             continue;
           }
 
