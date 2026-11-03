@@ -68,6 +68,34 @@ describe('TicketsDataProvider', () => {
       expect(result).toBe(true);
     });
 
+    it('should accept Requirement and Change Request on both link sides', async () => {
+      const traceTypes = ['epic', 'feature', 'requirement', 'change request'];
+      const wiql =
+        "SELECT * FROM WorkItemLinks WHERE ([Source].[System.WorkItemType] IN ('Requirement','Change Request')) AND ([Target].[System.WorkItemType] = 'Change Request')";
+      for (const side of ['Source', 'Target'] as const) {
+        const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+          {},
+          wiql,
+          side,
+          traceTypes,
+          new Map(),
+        );
+        expect(result).toBe(true);
+      }
+    });
+
+    it('should still reject Bug mixed with Requirement for trace types', async () => {
+      const wiql = "SELECT * FROM WorkItemLinks WHERE Source.[System.WorkItemType] IN ('Requirement','Bug')";
+      const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
+        {},
+        wiql,
+        'Source',
+        ['epic', 'feature', 'requirement', 'change request'],
+        new Map(),
+      );
+      expect(result).toBe(false);
+    });
+
     it('should return false when no types are found in WIQL and no ids exist', async () => {
       const wiql = "SELECT * FROM WorkItemLinks WHERE Target.[System.AreaPath] = 'A'";
       const result = await (ticketsDataProvider as any).isLinkSideAllowedByTypeOrId(
@@ -89,7 +117,33 @@ describe('TicketsDataProvider', () => {
 
       await (ticketsDataProvider as any).fetchSystemRequirementQueries({ hasChildren: false }, []);
 
-      expect(structureSpy.mock.calls[0][3]).toEqual(['epic', 'feature', 'requirement', 'task']);
+      expect(structureSpy.mock.calls[0][3]).toEqual(['epic', 'feature', 'requirement', 'change request', 'task']);
+    });
+  });
+
+  describe('SRS trace helpers', () => {
+    const expectedTypes = ['epic', 'feature', 'requirement', 'change request'];
+
+    it('fetchRequirementsTraceQueriesForFolder should allow Change Request on both sides', async () => {
+      const structureSpy = jest
+        .spyOn(ticketsDataProvider as any, 'structureFetchedQueries')
+        .mockResolvedValue({ tree1: { id: 't1' }, tree2: null });
+
+      await (ticketsDataProvider as any).fetchRequirementsTraceQueriesForFolder({ id: 'f' });
+
+      expect(structureSpy.mock.calls[0][3]).toEqual(expectedTypes);
+      expect(structureSpy.mock.calls[0][4]).toEqual(expectedTypes);
+    });
+
+    it('fetchLinkedRequirementsTraceQueries should allow Change Request on both sides', async () => {
+      const structureSpy = jest
+        .spyOn(ticketsDataProvider as any, 'structureFetchedQueries')
+        .mockResolvedValue({ tree1: { id: 't1' }, tree2: null });
+
+      await (ticketsDataProvider as any).fetchLinkedRequirementsTraceQueries({ hasChildren: false });
+
+      expect(structureSpy.mock.calls[0][3]).toEqual(expectedTypes);
+      expect(structureSpy.mock.calls[0][4]).toEqual(expectedTypes);
     });
   });
 
@@ -1104,6 +1158,17 @@ describe('TicketsDataProvider', () => {
   });
 
   describe('isFlatQueryAllowedByTypeOrId', () => {
+    it('should accept Requirement,Change Request IN clause for requirement types', async () => {
+      const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] IN ('Requirement','Change Request')";
+      const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId(
+        {},
+        wiql,
+        ['epic', 'feature', 'requirement', 'change request', 'task'],
+        new Map(),
+      );
+      expect(res).toBe(true);
+    });
+
     it('should accept when allowedTypes is empty and WIQL references [System.WorkItemType]', async () => {
       const wiql = "SELECT * FROM WorkItems WHERE [System.WorkItemType] = 'Bug'";
       const res = await (ticketsDataProvider as any).isFlatQueryAllowedByTypeOrId({}, wiql, [], new Map());

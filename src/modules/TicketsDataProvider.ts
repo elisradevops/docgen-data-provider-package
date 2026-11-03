@@ -700,7 +700,7 @@ export default class TicketsDataProvider {
    * @returns An object containing `systemRequirementsQueryTree`.
    */
   private async fetchSystemRequirementQueries(queries: any, excludedFolderNames: string[] = []) {
-    const allowedTypes = ['epic', 'feature', 'requirement', 'task'];
+    const allowedTypes = ['epic', 'feature', 'requirement', 'change request', 'task'];
     const { tree1: systemRequirementsQueryTree } = await this.structureFetchedQueries(
       queries,
       false,
@@ -896,8 +896,8 @@ export default class TicketsDataProvider {
         queries,
         onlySourceSide,
         null,
-        ['epic', 'feature', 'requirement'],
-        ['epic', 'feature', 'requirement'],
+        ['epic', 'feature', 'requirement', 'change request'],
+        ['epic', 'feature', 'requirement', 'change request'],
         'sys', // Source area filter for tree1: System area paths
         'soft', // Target area filter for tree1: Software area paths (tree2 will be reversed automatically)
       );
@@ -913,8 +913,8 @@ export default class TicketsDataProvider {
       folder,
       false,
       null,
-      ['epic', 'feature', 'requirement'],
-      ['epic', 'feature', 'requirement'],
+      ['epic', 'feature', 'requirement', 'change request'],
+      ['epic', 'feature', 'requirement', 'change request'],
       undefined,
       undefined,
       true,
