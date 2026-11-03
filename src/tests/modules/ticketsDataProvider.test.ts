@@ -2946,6 +2946,29 @@ describe('TicketsDataProvider', () => {
       expect(logger.warn).toHaveBeenCalledWith('Could not fetch work item 13:', expect.objectContaining({ message: 'boom' }));
     });
 
+    it('should include Change Request work items as requirements', async () => {
+      const wiqlHref = `${mockOrgUrl}project1/_apis/wit/wiql/cr`;
+      (TFSServices.getItemContent as jest.Mock).mockReset();
+
+      (TFSServices.getItemContent as jest.Mock)
+        .mockResolvedValueOnce({ workItems: [{ id: 30 }, { id: 31 }] })
+        .mockResolvedValueOnce({ value: [] })
+        .mockResolvedValueOnce({
+          id: 30,
+          fields: { 'System.WorkItemType': 'Change Request', 'System.Title': 'CR30' },
+          _links: { html: { href: 'h30' } },
+        })
+        .mockResolvedValueOnce({
+          id: 31,
+          fields: { 'System.WorkItemType': 'Bug', 'System.Title': 'B31' },
+          _links: { html: { href: 'h31' } },
+        });
+
+      const res = await ticketsDataProvider.GetCategorizedRequirementsByType(wiqlHref);
+
+      expect(res.categories['Other Requirements'].map((r: any) => r.id)).toEqual([30]);
+    });
+
     it('should extract IDs from workItemRelations for OneHop queries', async () => {
       const wiqlHref = `${mockOrgUrl}project1/_apis/wit/wiql/rel`;
       (TFSServices.getItemContent as jest.Mock).mockReset();

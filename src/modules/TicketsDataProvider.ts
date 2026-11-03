@@ -3652,7 +3652,8 @@ export default class TicketsDataProvider {
    * Fetches query results and categorizes Requirement work items by their Requirement Type value.
    *
    * Behavior:
-   * - Detects Requirement items by checking if `System.WorkItemType` contains "requirement" (case-insensitive).
+   * - Detects Requirement items by checking if `System.WorkItemType` contains "requirement" or equals
+   *   "Change Request" (case-insensitive); CRs are managed at the Requirement backlog level.
    * - Resolves candidate Requirement Type fields by calling the Work Item Type Fields API for the
    *   current project (Requirement type), selecting all fields whose display name (lowercased, underscores
    *   normalized to spaces) includes "requirement type". If available, `Microsoft.VSTS.CMMI.RequirementType`
@@ -3764,7 +3765,7 @@ export default class TicketsDataProvider {
           const fullWi = await TFSServices.getItemContent(wiUrl, this.token);
 
           const workItemType = fullWi.fields['System.WorkItemType'];
-          if (!(typeof workItemType === 'string' && /requirement/i.test(workItemType))) {
+          if (!(typeof workItemType === 'string' && /requirement|change request/i.test(workItemType))) {
             continue;
           }
 
